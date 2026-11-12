@@ -1,0 +1,2 @@
+# tonic::Status (176 bytes) is the idiomatic gRPC error type; boxing it everywhere buys nothing.
+large-error-threshold = 200

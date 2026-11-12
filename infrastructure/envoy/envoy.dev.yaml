@@ -1,0 +1,187 @@
+# Development edge gateway. Mirrors, as a static config, the routing and policies that
+# Envoy Gateway (Gateway API resources in infrastructure/helm) applies in Kubernetes:
+#   - request ids, client address, body-size and rate limits
+#   - coarse JWT validation at the edge (services verify again themselves)
+#   - path-prefix routing to services
+# Services run on the developer's host, hence host.docker.internal.
+admin:
+  address: { socket_address: { address: 0.0.0.0, port_value: 9901 } }
+
+static_resources:
+  listeners:
+    - name: public
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      per_connection_buffer_limit_bytes: 1048576
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: public
+                generate_request_id: true
+                # The gateway is the first trusted hop: it sets X-Forwarded-For itself and
+                # ignores whatever the client sent.
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+                skip_xff_append: false
+                request_timeout: 30s
+                stream_idle_timeout: 60s
+                common_http_protocol_options: { max_headers_count: 100 }
+                max_request_headers_kb: 32
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          ts: "%START_TIME%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          flags: "%RESPONSE_FLAGS%"
+                          duration_ms: "%DURATION%"
+                          upstream: "%UPSTREAM_CLUSTER%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                http_filters:
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: edge
+                      token_bucket: { max_tokens: 400, tokens_per_fill: 200, fill_interval: 1s }
+                      filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                      filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
+                      response_headers_to_add:
+                        - header: { key: retry-after, value: "1" }
+                  - name: envoy.filters.http.jwt_authn
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                      providers:
+                        platform:
+                          issuer: http://localhost:8080
+                          audiences: [platform-api]
+                          forward: true
+                          remote_jwks:
+                            http_uri:
+                              uri: http://host.docker.internal:8101/api/v1/auth/.well-known/jwks.json
+                              cluster: identity
+                              timeout: 2s
+                            cache_duration: 300s
+                            # fast_listener: accept traffic even if identity is not up yet (a fetch
+                            # error is logged once at boot and the keys are fetched on demand).
+                            async_fetch: { fast_listener: true }
+                      rules:
+                        # Credential and cookie endpoints authenticate themselves.
+                        - match: { prefix: /api/v1/auth/ }
+                        # Invitation preview is public; acceptance is enforced by the service.
+                        - match: { prefix: /api/v1/invitations/ }
+                        - match: { prefix: /api/v1/ }
+                          requires: { provider_name: platform }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: public
+                  # Never let a client-supplied identity header reach a service.
+                  request_headers_to_remove: [x-tenant-id, x-user-id, x-internal-service]
+                  response_headers_to_add:
+                    - header: { key: x-frame-options, value: DENY }
+                    - header: { key: x-content-type-options, value: nosniff }
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                  virtual_hosts:
+                    - name: api
+                      domains: ["*"]
+                      routes:
+                        # Credential endpoints: a much tighter bucket (brute-force damping).
+                        - match: { safe_regex: { regex: "^/api/v1/auth/(login|register)$" } }
+                          route: { cluster: identity, timeout: 15s }
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: credentials
+                              token_bucket: { max_tokens: 20, tokens_per_fill: 10, fill_interval: 1s }
+                              filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                              filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
+                        - match: { prefix: /api/v1/auth/ }
+                          route: { cluster: identity, timeout: 15s }
+                        - match: { prefix: /api/v1/users }
+                          route: { cluster: user, timeout: 15s }
+                        - match: { prefix: /api/v1/organizations }
+                          route: { cluster: user, timeout: 15s }
+                        - match: { prefix: /api/v1/invitations/ }
+                          route: { cluster: user, timeout: 15s }
+                        - match: { prefix: /api/v1/projects }
+                          route: { cluster: project, timeout: 15s }
+                        - match: { prefix: /api/v1/issues }
+                          # 60s: attachment uploads and downloads go through this route.
+                          route: { cluster: issue, timeout: 60s }
+                        - match: { prefix: /api/v1/custom-fields }
+                          route: { cluster: issue, timeout: 15s }
+                        - match: { prefix: /api/v1/workflow }
+                          route: { cluster: workflow, timeout: 15s }
+                        - match: { prefix: /api/v1/boards }
+                          route: { cluster: agile, timeout: 15s }
+                        - match: { prefix: /api/v1/sprints }
+                          route: { cluster: agile, timeout: 15s }
+                        # API contracts, for docs tooling and `make gen-api`.
+                        - match: { path: /api/docs/identity/openapi.json }
+                          route: { cluster: identity, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/user/openapi.json }
+                          route: { cluster: user, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/project/openapi.json }
+                          route: { cluster: project, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/issue/openapi.json }
+                          route: { cluster: issue, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/workflow/openapi.json }
+                          route: { cluster: workflow, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/agile/openapi.json }
+                          route: { cluster: agile, prefix_rewrite: /openapi.json }
+                        - match: { prefix: / }
+                          direct_response:
+                            status: 404
+                            body: { inline_string: '{"type":"https://errors.platform.dev/not_found","title":"Not found","status":404,"code":"not_found","detail":"No such route."}' }
+                          response_headers_to_add:
+                            - header: { key: content-type, value: application/problem+json }
+
+  clusters:
+    - name: identity
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: identity
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8101 } } } }] }]
+    - name: user
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: user
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8103 } } } }] }]
+    - name: project
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: project
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8104 } } } }] }]
+    - name: issue
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: issue
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8105 } } } }] }]
+    - name: workflow
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: workflow
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8106 } } } }] }]
+    - name: agile
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: agile
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8107 } } } }] }]

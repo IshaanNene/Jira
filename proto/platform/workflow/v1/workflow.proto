@@ -1,0 +1,78 @@
+syntax = "proto3";
+package platform.workflow.v1;
+
+// The workflow engine. issue-service asks it which workflow governs an issue and
+// whether a status change is allowed; the rules themselves never leave this service.
+service WorkflowEngine {
+  // The published workflow for a project and issue type (statuses for display, initial status).
+  rpc GetWorkflow(WorkflowRequest) returns (Workflow);
+  // Transitions out of `from_status` whose conditions the actor satisfies.
+  rpc ListTransitions(TransitionsRequest) returns (Transitions);
+  // Authoritative decision for one status change, with the post-functions to apply.
+  rpc EvaluateTransition(EvaluateRequest) returns (Evaluation);
+}
+
+message WorkflowRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  string issue_type = 3;
+}
+
+message Status {
+  string key = 1;
+  string name = 2;
+  string category = 3; // todo | in_progress | done
+}
+
+message Workflow {
+  string workflow_id = 1; // empty for the built-in default
+  string name = 2;
+  int32 version = 3;
+  repeated Status statuses = 4;
+  string initial_status = 5;
+}
+
+// What the caller knows about the actor and the issue. The engine evaluates
+// declarative rules against these; it never sees or executes anything else.
+message Facts {
+  string actor_role = 1; // administrator | member | viewer
+  bool actor_is_assignee = 2;
+  bool actor_is_reporter = 3;
+  repeated string present_fields = 4; // e.g. assignee, due_date, custom:<field id>
+  bool children_done = 5;
+}
+
+message TransitionsRequest {
+  WorkflowRequest workflow = 1;
+  string from_status = 2;
+  Facts facts = 3;
+}
+
+message TransitionOption {
+  string id = 1;
+  string name = 2;
+  Status to = 3;
+}
+
+message Transitions { repeated TransitionOption transitions = 1; }
+
+message EvaluateRequest {
+  WorkflowRequest workflow = 1;
+  string from_status = 2;
+  string to_status = 3;
+  Facts facts = 4;
+}
+
+message PostFunction {
+  string type = 1;  // assign_to_current_user | assign_to_reporter | clear_assignee | set_resolution | clear_resolution
+  string value = 2; // for set_resolution
+}
+
+message Evaluation {
+  bool allowed = 1;
+  string denial_code = 2;    // no_transition | condition_failed | validator_failed
+  string denial_message = 3; // safe to show to the person
+  Status to = 4;
+  string transition_name = 5;
+  repeated PostFunction post_functions = 6;
+}

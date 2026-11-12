@@ -1,0 +1,21 @@
+syntax = "proto3";
+package platform.project.v1;
+
+service Projects {
+  // Resolve a project key inside a tenant. Authorization is the caller's job.
+  rpc GetProject(GetProjectRequest) returns (Project);
+}
+
+message GetProjectRequest { string tenant_id = 1; string key = 2; }
+message Project {
+  string id = 1;
+  string key = 2;
+  string name = 3;
+  bool archived = 4;
+  repeated Ref components = 5;
+  repeated Ref versions = 6;
+}
+message Ref {
+  string id = 1;
+  string name = 2;
+}

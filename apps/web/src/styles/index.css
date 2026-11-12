@@ -1,0 +1,107 @@
+@import "@fontsource-variable/inter";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens. Cool neutral greys with a strong blue accent, in the visual language
+ * people expect from an issue tracker.
+ * Every colour used by a component comes from here, in both themes.
+ */
+@layer base {
+  :root {
+    --canvas: 0 0% 100%;
+    --surface: 0 0% 100%;
+    --raised: 0 0% 100%;
+    --sunken: 216 14% 97%;
+    --line: 216 12% 88%;
+    --line-strong: 216 10% 76%;
+    --ink: 216 55% 20%;
+    --ink-muted: 215 21% 35%;
+    --ink-subtle: 214 12% 46%;
+    --accent: 215 90% 47%;
+    --accent-hover: 216 100% 40%;
+    --accent-soft: 214 100% 95%;
+    --accent-ink: 0 0% 100%;
+    --danger: 8 76% 45%;
+    --danger-soft: 8 100% 96%;
+    --warning: 30 90% 34%;
+    --warning-soft: 42 100% 92%;
+    --success: 150 56% 30%;
+    --success-soft: 146 60% 92%;
+    --shadow: 216 55% 12%;
+    color-scheme: light;
+  }
+
+  .dark {
+    --canvas: 210 12% 13%;
+    --surface: 210 12% 13%;
+    --raised: 206 12% 19%;
+    --sunken: 208 12% 16%;
+    --line: 210 10% 24%;
+    --line-strong: 210 9% 34%;
+    --ink: 211 22% 80%;
+    --ink-muted: 211 14% 66%;
+    --ink-subtle: 211 10% 54%;
+    --accent: 215 100% 67%;
+    --accent-hover: 215 100% 76%;
+    --accent-soft: 215 55% 20%;
+    --accent-ink: 210 12% 13%;
+    --danger: 6 90% 68%;
+    --danger-soft: 6 45% 18%;
+    --warning: 38 90% 60%;
+    --warning-soft: 38 45% 16%;
+    --success: 150 50% 55%;
+    --success-soft: 150 36% 15%;
+    --shadow: 0 0% 0%;
+    color-scheme: dark;
+  }
+
+  html {
+    @apply h-full bg-canvas text-ink antialiased;
+    font-feature-settings: "cv11", "ss01", "calt";
+    text-rendering: optimizeLegibility;
+  }
+  body, #root {
+    @apply h-full text-base;
+  }
+  /* One consistent, visible focus treatment for keyboard users. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-surface;
+  }
+  ::selection {
+    background: hsl(var(--accent) / 0.22);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Rich text (editor and read-only rendering share these rules). */
+.rich-text { @apply text-base text-ink; }
+.rich-text:focus { outline: none; }
+.rich-text > * + * { margin-top: 0.5rem; }
+.rich-text h1 { @apply text-xl font-semibold; }
+.rich-text h2 { @apply text-lg font-semibold; }
+.rich-text h3 { @apply text-base font-semibold; }
+.rich-text ul { @apply list-disc pl-5; }
+.rich-text ol { @apply list-decimal pl-5; }
+.rich-text a { @apply text-accent underline; }
+.rich-text code { @apply rounded-sm bg-sunken px-1 py-0.5 font-mono text-sm; }
+.rich-text pre { @apply overflow-x-auto rounded bg-sunken p-3 font-mono text-sm; }
+.rich-text pre code { @apply bg-transparent p-0; }
+.rich-text blockquote { @apply border-l-2 border-line-strong pl-3 text-ink-muted; }
+.rich-text hr { @apply border-line; }
+.rich-text p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  @apply pointer-events-none float-left h-0 text-ink-subtle;
+}

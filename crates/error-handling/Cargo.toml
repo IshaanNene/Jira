@@ -1,0 +1,21 @@
+[package]
+name = "error-handling"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+axum.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tonic.workspace = true
+validator.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

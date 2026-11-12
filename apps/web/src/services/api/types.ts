@@ -1,0 +1,92 @@
+// Types generated from each service's OpenAPI document (`pnpm gen:api`).
+// Never hand-edit the generated files; change the Rust DTO and regenerate.
+import type { components as AgileComponents } from "./generated/agile";
+import type { components as IdentityComponents } from "./generated/identity";
+import type { components as UserComponents } from "./generated/user";
+import type { components as WorkflowComponents } from "./generated/workflow";
+
+import type { components as IssueComponents } from "./generated/issue";
+import type { components as ProjectComponents } from "./generated/project";
+
+type Identity = IdentityComponents["schemas"];
+type User = UserComponents["schemas"];
+
+export type Account = Identity["AccountDto"];
+export type TokenResponse = Identity["TokenResponse"];
+export type Session = Identity["SessionDto"];
+export type SessionList = Identity["SessionList"];
+export type RegisterRequest = Identity["RegisterRequest"];
+export type LoginRequest = Identity["LoginRequest"];
+
+export type Profile = User["ProfileDto"];
+export type UpdateProfileRequest = User["UpdateProfileRequest"];
+export type Organization = User["OrganizationDto"];
+export type OrganizationList = User["OrganizationList"];
+export type Member = User["MemberDto"];
+export type MemberPage = User["MemberPage"];
+export type Invitation = User["InvitationDto"];
+export type InvitationList = User["InvitationList"];
+export type InvitationPreview = User["InvitationPreview"];
+export type AcceptInvitationResponse = User["AcceptInvitationResponse"];
+
+type ProjectApi = ProjectComponents["schemas"];
+type WorkflowApi = WorkflowComponents["schemas"];
+type IssueApi = IssueComponents["schemas"];
+
+export type Project = ProjectApi["ProjectDto"];
+export type ProjectList = ProjectApi["ProjectList"];
+export type CreateProjectRequest = ProjectApi["CreateProjectRequest"];
+export type UpdateProjectRequest = ProjectApi["UpdateProjectRequest"];
+export type Component = ProjectApi["ComponentDto"];
+export type ComponentList = ProjectApi["ComponentList"];
+export type Version = ProjectApi["VersionDto"];
+export type VersionList = ProjectApi["VersionList"];
+export type ProjectAccess = ProjectApi["ProjectAccessDto"];
+export type ProjectRole = "administrator" | "member" | "viewer";
+
+export type Issue = IssueApi["IssueDto"];
+export type IssueDetail = IssueApi["IssueDetail"];
+export type IssuePage = IssueApi["IssuePage"];
+export type IssueMeta = IssueApi["IssueMeta"];
+export type CreateIssueRequest = IssueApi["CreateIssueRequest"];
+export type UpdateIssueRequest = IssueApi["UpdateIssueRequest"];
+export type IssueComment = IssueApi["CommentDto"];
+export type CommentList = IssueApi["CommentList"];
+export type IssueLink = IssueApi["LinkDto"];
+export type LinkList = IssueApi["LinkList"];
+export type HistoryEntry = IssueApi["HistoryEntry"];
+export type HistoryList = IssueApi["HistoryList"];
+export type CustomField = IssueApi["CustomFieldDto"];
+export type CustomFieldList = IssueApi["CustomFieldList"];
+export type Attachment = IssueApi["AttachmentDto"];
+export type AttachmentList = IssueApi["AttachmentList"];
+export type WorkflowSummary = WorkflowApi["WorkflowSummary"];
+export type WorkflowDetail = WorkflowApi["WorkflowDetail"];
+export type WorkflowList = WorkflowApi["WorkflowList"];
+export type WorkflowDefinition = WorkflowApi["Definition"];
+export type WorkflowStatus = WorkflowApi["StatusDef"];
+export type WorkflowTransition = WorkflowApi["Transition"];
+export type WorkflowCondition = WorkflowApi["Condition"];
+export type WorkflowValidator = WorkflowApi["Validator"];
+export type WorkflowPostFunction = WorkflowApi["PostFunction"];
+export type WorkflowProblem = WorkflowApi["Problem"];
+export type WorkflowAssignmentList = WorkflowApi["AssignmentList"];
+export type WorkflowStatusList = WorkflowApi["StatusList"];
+export type IssueTransition = IssueApi["TransitionDto"];
+export type TransitionList = IssueApi["TransitionList"];
+type AgileApi = AgileComponents["schemas"];
+export type Board = AgileApi["BoardDto"];
+export type BoardList = AgileApi["BoardList"];
+export type BoardColumn = AgileApi["Column"];
+export type BoardCard = AgileApi["CardDto"];
+export type BoardView = AgileApi["BoardView"];
+export type BacklogView = AgileApi["BacklogView"];
+export type Sprint = AgileApi["SprintDto"];
+export type SprintList = AgileApi["SprintList"];
+export type SprintReport = AgileApi["SprintReport"];
+export type BurndownSample = AgileApi["BurndownSample"];
+export type VelocityReport = AgileApi["VelocityReport"];
+/** A rich-text document in the editor's JSON format. */
+export type RichDoc = Record<string, unknown>;
+
+export type OrgRole = "owner" | "admin" | "member" | "guest";

@@ -1,0 +1,13 @@
+[package]
+name = "test-utilities"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+auth-middleware.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+time.workspace = true
+anyhow.workspace = true

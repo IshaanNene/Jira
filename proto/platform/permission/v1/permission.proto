@@ -1,0 +1,31 @@
+syntax = "proto3";
+package platform.permission.v1;
+
+// Source of truth for project role bindings. Other services evaluate permissions locally
+// from the snapshot (ADR-0007). `tenant_id` is supplied by the calling service from a
+// verified token; these RPCs are reachable only with a service token.
+service Authorizer {
+  rpc GetPolicySnapshot(GetPolicySnapshotRequest) returns (PolicySnapshot);
+  rpc SetProjectRole(SetProjectRoleRequest) returns (PolicyVersion);
+  rpc RemoveProjectRole(RemoveProjectRoleRequest) returns (PolicyVersion);
+  // Role every organization member (not guests) gets on the project. Empty = private project.
+  rpc SetProjectDefaultRole(SetProjectDefaultRoleRequest) returns (PolicyVersion);
+  rpc ListProjectMembers(ListProjectMembersRequest) returns (ProjectMembers);
+  rpc DeleteProject(DeleteProjectRequest) returns (PolicyVersion);
+}
+
+message GetPolicySnapshotRequest { string tenant_id = 1; string user_id = 2; }
+message ProjectRole { string project_id = 1; string role = 2; } // administrator | member | viewer
+message PolicySnapshot {
+  int64 version = 1;
+  repeated ProjectRole roles = 2;         // explicit bindings of this user
+  repeated ProjectRole default_roles = 3; // per-project default for organization members
+}
+message PolicyVersion { int64 version = 1; }
+message SetProjectRoleRequest { string tenant_id = 1; string project_id = 2; string user_id = 3; string role = 4; }
+message RemoveProjectRoleRequest { string tenant_id = 1; string project_id = 2; string user_id = 3; }
+message SetProjectDefaultRoleRequest { string tenant_id = 1; string project_id = 2; string role = 3; }
+message ListProjectMembersRequest { string tenant_id = 1; string project_id = 2; }
+message ProjectMember { string user_id = 1; string role = 2; }
+message ProjectMembers { repeated ProjectMember members = 1; string default_role = 2; }
+message DeleteProjectRequest { string tenant_id = 1; string project_id = 2; }

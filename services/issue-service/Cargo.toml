@@ -1,0 +1,38 @@
+[package]
+name = "issue-service"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+error-handling.workspace = true
+observability.workspace = true
+auth-middleware.workspace = true
+tenant-context.workspace = true
+event-contracts.workspace = true
+api-contracts.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+http.workspace = true
+tonic.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+validator.workspace = true
+object_store.workspace = true
+infer.workspace = true
+bytes.workspace = true
+sha2.workspace = true
+hex.workspace = true
+utoipa.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+test-utilities.workspace = true
+tower.workspace = true

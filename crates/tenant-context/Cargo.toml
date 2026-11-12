@@ -1,0 +1,18 @@
+[package]
+name = "tenant-context"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+error-handling.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+auth-middleware.workspace = true
+api-contracts.workspace = true
+tonic.workspace = true

@@ -1,0 +1,46 @@
+syntax = "proto3";
+package platform.issue.v1;
+
+// Read access to issues for other services (boards, sprints). Authorization is the
+// caller's job: it must have checked the end user's access to the project first.
+service Issues {
+  // The fields a board card or sprint report needs, for issues of one project.
+  rpc ListCards(ListCardsRequest) returns (Cards);
+}
+
+message ListCardsRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  // When non-empty: exactly these issues (those that exist in the project); the
+  // filters below are ignored.
+  repeated string issue_ids = 3;
+  // RFC 3339. When set, finished issues resolved before this instant are left out.
+  string done_since = 4;
+  // Issue types to leave out (e.g. "epic", "subtask").
+  repeated string exclude_types = 5;
+  // Server caps this; `truncated` reports when more issues matched.
+  uint32 limit = 6;
+}
+
+message Card {
+  string id = 1;
+  string key = 2;
+  int64 number = 3;
+  string type = 4;
+  string status = 5;
+  string status_category = 6; // todo | in_progress | done
+  string priority = 7;
+  string summary = 8;
+  string assignee_id = 9;     // empty when unassigned
+  optional double story_points = 10;
+  string resolved_at = 11;    // RFC 3339, empty when unresolved
+  string parent_key = 12;     // empty when there is no parent
+  string parent_summary = 13;
+  int64 version = 14;         // for If-Match on a later edit
+  repeated string labels = 15;
+}
+
+message Cards {
+  repeated Card cards = 1;
+  bool truncated = 2;
+}

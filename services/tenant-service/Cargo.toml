@@ -1,0 +1,27 @@
+[package]
+name = "tenant-service"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+error-handling.workspace = true
+observability.workspace = true
+auth-middleware.workspace = true
+tenant-context.workspace = true
+event-contracts.workspace = true
+api-contracts.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tonic.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+test-utilities.workspace = true

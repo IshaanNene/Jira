@@ -1,0 +1,12 @@
+[package]
+name = "api-contracts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+tonic.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true

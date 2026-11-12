@@ -1,0 +1,102 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "services/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# internal
+platform-common = { path = "crates/platform-common" }
+error-handling = { path = "crates/error-handling" }
+observability = { path = "crates/observability" }
+auth-middleware = { path = "crates/auth-middleware" }
+tenant-context = { path = "crates/tenant-context" }
+event-contracts = { path = "crates/event-contracts" }
+api-contracts = { path = "crates/api-contracts" }
+test-utilities = { path = "crates/test-utilities" }
+
+# runtime / web
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-extra = { version = "0.10", features = ["cookie", "typed-header"] }
+tower = { version = "0.5", features = ["timeout", "limit", "util"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "timeout", "limit", "set-header", "catch-panic"] }
+http = "1"
+tonic = { version = "0.13", features = ["transport"] }
+prost = "0.13"
+tonic-build = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# data
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "migrate", "macros"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+object_store = { version = "0.11", features = ["aws"] }
+infer = "0.16"
+bytes = "1"
+
+# serde & types
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+base64 = "0.22"
+hex = "0.4"
+
+# security
+jsonwebtoken = "9"
+argon2 = "0.5"
+ring = "0.17"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+
+# api docs & validation
+utoipa = { version = "5", features = ["axum_extras", "uuid", "time"] }
+validator = { version = "0.20", features = ["derive"] }
+
+# observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-opentelemetry = "0.28"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-client", "trace"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+
+# misc
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+
+# Dependencies carry no debug info (smaller target dir). `strip = false` is explicit because
+# cargo's implicit strip of debug-less artifacts produces proc-macro dylibs that the
+# current macOS dynamic loader rejects.
+[profile.dev]
+debug = "line-tables-only"
+strip = false
+
+[profile.dev.package."*"]
+debug = false
+strip = false
+
+[profile.dev.build-override]
+strip = false
+
+# Password hashing is deliberately expensive; keep it tolerable in debug builds and tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"

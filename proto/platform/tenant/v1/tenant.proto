@@ -1,0 +1,38 @@
+syntax = "proto3";
+package platform.tenant.v1;
+
+// Tenant registry. Internal only: never exposed through the public gateway.
+service TenantRegistry {
+  // Idempotent on organization_id: a retry returns the existing tenant.
+  rpc ProvisionTenant(ProvisionTenantRequest) returns (Tenant);
+  rpc ResolveTenant(ResolveTenantRequest) returns (Tenant);
+  rpc GetTenantByOrganization(GetTenantByOrganizationRequest) returns (Tenant);
+  // Compensation for a failed organization creation. Only tenants that never became
+  // visible to users (no organization row committed) may be abandoned.
+  rpc AbandonTenant(AbandonTenantRequest) returns (AbandonTenantResponse);
+}
+
+message ProvisionTenantRequest {
+  string organization_id = 1;
+  string deployment_tier = 2; // standard | business | enterprise
+  string region = 3;          // empty = service default
+}
+
+message ResolveTenantRequest { string tenant_id = 1; }
+message GetTenantByOrganizationRequest { string organization_id = 1; }
+message AbandonTenantRequest { string tenant_id = 1; }
+message AbandonTenantResponse {}
+
+message Tenant {
+  string tenant_id = 1;
+  string organization_id = 2;
+  string deployment_tier = 3;
+  string database_cluster_id = 4;
+  // Logical destination name. Callers map it to a connection through their own
+  // secret configuration; it is never a connection string.
+  string database_destination = 5;
+  string region = 6;
+  string tenant_status = 7;       // active | suspended | migrating | deleted
+  string provisioning_status = 8; // pending | provisioned | failed | abandoned
+  int64 configuration_version = 9;
+}

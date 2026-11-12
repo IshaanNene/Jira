@@ -1,0 +1,110 @@
+# API specification
+
+Each service serves its own machine-readable contract at `/openapi.json` (generated from the handlers with
+`utoipa`), reachable through the gateway at `/api/docs/<service>/openapi.json`. Load it in any OpenAPI viewer; the web app's types are generated from it (`make gen-api`). Those documents are authoritative; this file
+defines the conventions and the resource map. gRPC contracts live in [`proto/`](../proto).
+
+## 1. REST conventions
+
+| Topic | Rule |
+|---|---|
+| Base | `/api/v1/...`; breaking changes get `/api/v2`, old version supported for a published window |
+| Auth | `Authorization: Bearer <access token>`; refresh token only in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth` |
+| Tenant | taken from the token. Never from a header, query or body |
+| Media | `application/json`; errors are `application/problem+json` (RFC 9457) |
+| IDs | UUIDs; issues are also addressable by key (`PAY-101`) |
+| Concurrency | responses for versioned resources carry `ETag: "<version>"`; `PATCH/PUT/DELETE` require `If-Match` → `412` if absent, `409 version_conflict` (with current entity) on mismatch |
+| Idempotency | `POST` that creates accepts `Idempotency-Key`; replays within 24 h return the original response |
+| Pagination | `?limit=` (default 50, max 200) `&cursor=`; response `{ "items": [...], "next_cursor": "..." | null }` |
+| Filtering / sort | explicit allow-listed query params per endpoint; free-form querying only through the search API |
+| Timestamps | RFC 3339 UTC |
+| Correlation | `X-Request-Id` accepted or generated, echoed; W3C `traceparent` propagated |
+| Rate limits | `429` with `Retry-After`, `RateLimit-*` headers |
+| Long operations | `202 Accepted` + `{ "job_id" }`; progress on `GET /rt/sse/jobs/{job_id}` |
+
+### Error body
+
+```json
+{
+  "type": "https://errors.platform.dev/validation_failed",
+  "title": "Validation failed",
+  "status": 422,
+  "code": "validation_failed",
+  "detail": "One or more fields are invalid.",
+  "request_id": "0195...",
+  "errors": [{ "field": "email", "code": "invalid_email", "message": "Enter a valid email address." }]
+}
+```
+
+Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_failed`, `version_conflict`,
+`conflict`, `rate_limited`, `precondition_required`, `tenant_unavailable`, `dependency_unavailable`, `internal`.
+`not_found` is returned instead of `forbidden` when revealing existence would leak information.
+
+## 2. Resource map
+
+✅ = implemented and exercised, 🚧 = in progress, ⬜ = specified, not built. Kept in sync with the roadmap.
+
+### Identity — `/api/v1/auth`
+| Method | Path | Purpose | |
+|---|---|---|---|
+| POST | `/register` | create account (email, password, display name) | ✅ |
+| POST | `/login` | password login → access token + refresh cookie | ✅ |
+| POST | `/token/refresh` | rotate refresh token | ✅ |
+| POST | `/token/exchange` | account/organization token → token for `organization_id` | ✅ |
+| POST | `/logout` | revoke current session | ✅ |
+| GET | `/me` | current account | ✅ |
+| GET / DELETE | `/sessions`, `/sessions/{id}` | list / revoke devices | ✅ |
+| POST | `/email/verify`, `/password/forgot`, `/password/reset` | email flows | ⬜ |
+| GET | `/.well-known/jwks.json` | public signing keys | ✅ |
+| … | `/mfa/*`, `/webauthn/*`, `/sso/{org}/*`, `/api-tokens` | Phase 6 | ⬜ |
+
+### Organizations & users — `/api/v1`
+| Method | Path | Purpose | |
+|---|---|---|---|
+| GET / POST | `/organizations` | my organizations / create (provisions tenant) | ✅ |
+| GET / PATCH | `/organizations/current` | profile, settings | ✅ |
+| GET | `/organizations/current/members` | list members | ✅ |
+| PATCH / DELETE | `/organizations/current/members/{user_id}` | change role, suspend / remove | ✅ |
+| GET / POST | `/organizations/current/invitations` | list / invite | ✅ |
+| DELETE | `/organizations/current/invitations/{id}` | revoke | ✅ |
+| GET | `/invitations/{token}` | preview an invitation (public, token is the secret) | ✅ |
+| POST | `/invitations/{token}/accept` | accept as the signed-in account | ✅ |
+| GET / POST / PATCH / DELETE | `/teams`, `/teams/{id}`, `/teams/{id}/members` | teams & departments | ⬜ |
+| GET / PATCH | `/users/me` | own profile | ✅ |
+| GET | `/users/{id}`, `/users?query=` | directory search | ⬜ |
+| … | `/scim/v2/*`, `/groups`, `/audit-log`, `/domains` | Phase 6 | ⬜ |
+
+### Later phases (paths fixed now so the frontend router and gateway routes are stable)
+| Area | Paths |
+|---|---|
+| Projects ✅ | `/projects`, `/projects/{key}` (+`/archive`, `/restore`), `/projects/{key}/components`, `/versions` (+`/release`), `/members/{user_id}`, `/access` |
+| Issues ✅ (partly) | built: `/issues`, `/issues/meta`, `/issues/{key}`, `/issues/{key}/comments`, `/links`, `/history`, `/watch`, `/attachments` (+`/{id}/content`), `/custom-fields`. Not built: `/transitions`, `/issues/bulk`, `/issue-types` |
+| Workflows ✅ | `/workflows`, `/workflows/{id}` (+`/draft`, `/publish`, `/versions`), `/workflow-assignments`, `/workflow-statuses`; issues: `/issues/{key}/transitions` |
+| Agile ✅ | `/boards` (`?project_key=`), `/boards/{id}` (columns are part of the board), `/view`, `/backlog`, `/move` (rank and sprint membership), `/sprints`, `/velocity`; `/sprints/{id}` (+`/start`, `/complete`, `/report`) |
+| Permissions | `/roles`, `/permission-schemes`, `/permissions/check`, `/permissions/mine` |
+| Search | `/search/issues` (POST `{query, cursor}`), `/search/validate`, `/filters`, `/filters/{id}/subscriptions` |
+| Notifications | `/notifications`, `/notifications/{id}/read`, `/notification-preferences` |
+| Automation | `/automation/rules`, `/automation/rules/{id}/executions` |
+| Integrations | `/integrations`, `/webhooks`, `/webhooks/{id}/deliveries`, `/hooks/{provider}` (inbound) |
+| Analytics | `/dashboards`, `/dashboards/{id}/widgets`, `/reports/{kind}` |
+| Jobs | `/imports`, `/exports`, `/jobs/{id}` |
+
+## 3. Internal gRPC
+
+Package per service under `proto/platform/<service>/v1`. Rules: every RPC has a deadline; unary only unless
+streaming is the point (reindex); fields are only added, never renumbered; `buf breaking`-style compatibility is
+checked in CI.
+
+| Service | RPC | Used by |
+|---|---|---|
+| `tenant.v1.TenantRegistry` | `ProvisionTenant`, `ResolveTenant`, `GetTenantByOrganization` | user, all (router) |
+| `user.v1.Membership` | `CheckMembership(user_id, organization_id) → {tenant_id, org_role, status}`, `BatchGetUsers` | identity, issue, notification |
+| `permission.v1.Authorizer` | `GetPolicySnapshot(tenant, user) → {version, grants}`, `Check` | all |
+| `workflow.v1.WorkflowEngine` | `GetInitialStatus`, `ValidateTransition`, `ListTransitions` | issue |
+| `project.v1.Projects` | `GetProjectConfig` | issue, agile |
+| `issue.v1.Issues` | `ListCards` (built); `GetIssue`, `ApplyAction` (automation), `StreamIssues` (reindex) planned | agile; automation, search |
+
+**Service authentication**: mTLS at the mesh level in Kubernetes, plus an application-level service token
+(short-lived EdDSA JWT, `aud` = callee) in metadata so that authorization does not depend on network position.
+The end-user context (`user_id`, `tenant_id`, `request_id`) is forwarded in metadata and trusted **only** when the
+service token verifies.
