@@ -61,11 +61,12 @@ impl Membership for MembershipService {
         Ok(Response::new(Members {
             members: rows
                 .into_iter()
-                .map(|(user_id, org_role, status, display_name)| Member {
+                .map(|(user_id, org_role, status, display_name, email)| Member {
                     user_id: user_id.to_string(),
                     org_role,
                     status,
                     display_name,
+                    email,
                 })
                 .collect(),
         }))

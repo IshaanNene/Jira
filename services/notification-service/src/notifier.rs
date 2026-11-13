@@ -20,6 +20,16 @@ pub struct Notifier {
     pub db: Arc<DbRouter>,
     pub directory: Arc<dyn Directory>,
     pub policy: Arc<PolicyClient>,
+    /// `None`: in-app only.
+    pub email: Option<EmailSettings>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmailSettings {
+    /// Base URL of the web app for links, without a trailing slash.
+    pub app_url: String,
+    /// How long an email waits, so that reading the notification in the app first cancels it.
+    pub delay: Duration,
 }
 
 impl Notifier {
@@ -68,7 +78,7 @@ impl Handler for Notifier {
         for (user, kind) in candidates {
             let Some(person) = people.iter().find(|p| p.user_id == user && p.active) else { continue };
             if self.can_see(tenant_id, person, audience.project_id).await? {
-                send.push((user, kind));
+                send.push((person, kind));
             }
         }
 
@@ -78,7 +88,10 @@ impl Handler for Notifier {
             return Ok(());
         }
         let detail = trigger.detail();
-        for (user, kind) in send {
+        let recipients: Vec<Uuid> = send.iter().map(|(p, _)| p.user_id).collect();
+        let preferences = store::preferences_of(tx.conn(), tenant_id, &recipients).await?;
+        for (person, kind) in send {
+            let user = person.user_id;
             let id = platform_common::new_id();
             let inserted = store::insert(
                 tx.conn(),
@@ -113,6 +126,34 @@ impl Handler for Notifier {
                 )
                 .caused_by(event.event_id());
                 outbox::enqueue(tx.conn(), &created).await?;
+                let prefs = preferences.iter().find(|(u, _)| *u == user).map(|(_, p)| p.clone()).unwrap_or_default();
+                if let Some(email) = &self.email {
+                    if !person.email.is_empty() && prefs.wants_email(kind.as_str()) {
+                        let rendered = crate::email::render(&crate::email::EmailInput {
+                            kind,
+                            actor_name: &actor_name,
+                            issue_key: &audience.key,
+                            issue_summary: &audience.summary,
+                            to_status: detail.get("to_status").and_then(|v| v.as_str()),
+                            app_url: &email.app_url,
+                        });
+                        store::enqueue_email(
+                            tx.conn(),
+                            tenant_id,
+                            &store::NewDelivery {
+                                notification_id: id,
+                                recipient_id: user,
+                                kind: kind.as_str(),
+                                to_address: &person.email,
+                                subject: &rendered.subject,
+                                text_body: &rendered.text,
+                                html_body: &rendered.html,
+                                send_after: time::OffsetDateTime::now_utc() + email.delay,
+                            },
+                        )
+                        .await?;
+                    }
+                }
             }
         }
         tx.commit().await?;

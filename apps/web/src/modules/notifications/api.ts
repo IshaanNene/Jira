@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useLiveChannel } from "@/modules/live";
-import { api, type NotificationList, type UnreadCount } from "@/services/api";
+import { api, type NotificationList, type NotificationPreferences, type UnreadCount } from "@/services/api";
 import { useSession } from "@/state/session";
 
 const BASE = "/api/v1/notifications";
@@ -10,6 +10,7 @@ export const notificationKeys = {
   all: (orgId: string | undefined) => ["org", orgId, "notifications"] as const,
   list: (orgId: string | undefined, unread: boolean) => ["org", orgId, "notifications", "list", unread] as const,
   unread: (orgId: string | undefined) => ["org", orgId, "notifications", "unread"] as const,
+  preferences: (orgId: string | undefined) => ["org", orgId, "notification-preferences"] as const,
 };
 
 const useOrgId = () => useSession((s) => s.organization?.id);
@@ -52,4 +53,31 @@ export function useNotificationLive() {
   const userId = useSession((s) => s.account?.id);
   const refresh = () => void qc.invalidateQueries({ queryKey: notificationKeys.all(orgId) });
   return useLiveChannel(orgId && userId ? `user:${userId}` : undefined, refresh, refresh);
+}
+
+export function usePreferences() {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: notificationKeys.preferences(orgId),
+    queryFn: () => api.get<NotificationPreferences>(`${BASE}/preferences`),
+    enabled: Boolean(orgId),
+  });
+}
+
+/** Saves at once; the switch moves immediately and moves back if saving fails. */
+export function useSavePreferences() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  const key = notificationKeys.preferences(orgId);
+  return useMutation({
+    mutationFn: (next: NotificationPreferences) => api.put<NotificationPreferences>(`${BASE}/preferences`, next),
+    onMutate: async (next) => {
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<NotificationPreferences>(key);
+      qc.setQueryData(key, next);
+      return { previous };
+    },
+    onError: (_error, _next, context) => qc.setQueryData(key, context?.previous),
+    onSuccess: (saved) => qc.setQueryData(key, saved),
+  });
 }

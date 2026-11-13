@@ -51,6 +51,45 @@ pub struct UnreadCount {
     pub count: i64,
 }
 
+/// What the person wants emailed in this workspace. In-app notifications are always on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct NotificationPreferences {
+    /// Master switch for email.
+    pub email_enabled: bool,
+    pub email_assigned: bool,
+    pub email_mentioned: bool,
+    pub email_commented: bool,
+    pub email_status_changed: bool,
+}
+
+impl From<store::Preferences> for NotificationPreferences {
+    fn from(p: store::Preferences) -> Self {
+        let on = |k: &str| !p.email_muted.iter().any(|m| m == k);
+        Self {
+            email_enabled: p.email_enabled,
+            email_assigned: on("assigned"),
+            email_mentioned: on("mentioned"),
+            email_commented: on("commented"),
+            email_status_changed: on("status_changed"),
+        }
+    }
+}
+
+impl From<&NotificationPreferences> for store::Preferences {
+    fn from(p: &NotificationPreferences) -> Self {
+        let muted = [
+            ("assigned", p.email_assigned),
+            ("mentioned", p.email_mentioned),
+            ("commented", p.email_commented),
+            ("status_changed", p.email_status_changed),
+        ];
+        Self {
+            email_enabled: p.email_enabled,
+            email_muted: muted.iter().filter(|(_, on)| !on).map(|(k, _)| (*k).to_owned()).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListQuery {
     pub limit: Option<u32>,
@@ -151,11 +190,34 @@ pub async fn read_all(State(state): State<AppState>, ctx: OrgContext) -> ApiResu
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/v1/notifications/preferences", security(("bearer" = [])),
+    responses((status = 200, body = NotificationPreferences)))]
+pub async fn get_preferences(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<Json<NotificationPreferences>> {
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let prefs = store::preferences(tx.conn(), ctx.tenant_id, ctx.user_id).await?;
+    tx.commit().await?;
+    Ok(Json(prefs.into()))
+}
+
+#[utoipa::path(put, path = "/api/v1/notifications/preferences", request_body = NotificationPreferences, security(("bearer" = [])),
+    responses((status = 200, body = NotificationPreferences)))]
+pub async fn put_preferences(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Json(body): Json<NotificationPreferences>,
+) -> ApiResult<Json<NotificationPreferences>> {
+    let prefs = store::Preferences::from(&body);
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    store::save_preferences(tx.conn(), ctx.tenant_id, ctx.user_id, &prefs).await?;
+    tx.commit().await?;
+    Ok(Json(prefs.into()))
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Notifications API", version = "1.0.0", description = "The signed-in person's in-app notifications."),
-    paths(list, unread, read_one, read_all),
-    components(schemas(NotificationDto, NotificationList, UnreadCount))
+    paths(list, unread, read_one, read_all, get_preferences, put_preferences),
+    components(schemas(NotificationDto, NotificationList, UnreadCount, NotificationPreferences))
 )]
 pub struct ApiDoc;
 
@@ -164,11 +226,12 @@ pub fn router(state: AppState) -> Router {
         .route("/notifications", get(list))
         .route("/notifications/unread-count", get(unread))
         .route("/notifications/read-all", post(read_all))
+        .route("/notifications/preferences", get(get_preferences).put(put_preferences))
         .route("/notifications/{id}/read", post(read_one));
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
     Router::new()
         .nest("/api/v1", api)

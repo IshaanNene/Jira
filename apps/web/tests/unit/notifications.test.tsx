@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { badgeLabel, describe as describeNotification, issuePath, NotificationBell } from "@/modules/notifications";
 import type { AppNotification } from "@/services/api";
 
-import { fakeApi, renderAt, signIn } from "./harness";
+import { fakeApi, renderAt, signIn, type Call } from "./harness";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -75,5 +75,34 @@ describe("notification bell", () => {
     expect(api.sent("POST", "/api/v1/notifications/read-all")).toHaveLength(1);
     // The badge clears once the count is refetched.
     expect(await screen.findByRole("button", { name: "Notifications", hidden: true })).toBeInTheDocument();
+  });
+});
+
+describe("notification settings", () => {
+  it("saves each switch at once and puts it back when saving fails", async () => {
+    signIn();
+    const { NotificationSettingsPage } = await import("@/modules/notifications");
+    let fail = false;
+    const api = fakeApi({
+      "GET /api/v1/notifications/preferences": {
+        email_enabled: true, email_assigned: true, email_mentioned: true, email_commented: true, email_status_changed: true,
+      },
+      "PUT /api/v1/notifications/preferences": (call: Call) => (fail ? { status: 503, body: { code: "unavailable" } } : { body: call.body }),
+    });
+    renderAt(<NotificationSettingsPage />, "/settings/notifications", "/settings/notifications");
+
+    const comments = await screen.findByRole("switch", { name: "Comments" });
+    await userEvent.click(comments);
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(1));
+    expect(api.sent("PUT", "/api/v1/notifications/preferences")[0]!.body).toMatchObject({ email_enabled: true, email_commented: false });
+    expect(comments).toHaveAttribute("aria-checked", "false");
+
+    fail = true;
+    const master = screen.getByRole("switch", { name: "Send me email notifications" });
+    await userEvent.click(master);
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(2));
+    await waitFor(() => expect(master).toHaveAttribute("aria-checked", "true"));
+    expect(await screen.findByText("Couldn't save your notification settings. Try again.")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Status changes" })).toBeEnabled();
   });
 });

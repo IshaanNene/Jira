@@ -38,6 +38,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 # librdkafka built from source (needs cmake); TLS/SASL support is added with the production
 # deployment (Phase 8).
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
 rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
 
 object_store = { version = "0.11", features = ["aws"] }

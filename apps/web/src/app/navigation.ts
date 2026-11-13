@@ -1,4 +1,4 @@
-import { FolderKanban, GitBranch, Home, MonitorSmartphone, Settings, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Bell, FolderKanban, GitBranch, Home, MonitorSmartphone, Settings, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
 
 import type { OrgPermission } from "@/modules/organizations";
 
@@ -29,6 +29,7 @@ export const SETTINGS_NAV: NavItem[] = [
   { to: "/settings/workflows", label: "Workflows", icon: GitBranch },
   { to: "/settings/custom-fields", label: "Custom fields", icon: SlidersHorizontal, requires: "manageOrganization" },
   { to: "/settings/profile", label: "Profile", icon: UserRound },
+  { to: "/settings/notifications", label: "Notifications", icon: Bell },
   { to: "/settings/sessions", label: "Sessions", icon: MonitorSmartphone },
 ];
 

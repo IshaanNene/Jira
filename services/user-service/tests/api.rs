@@ -641,7 +641,7 @@ async fn grpc_membership_check_reflects_role_and_status() {
     let summary: Vec<(String, &str, &str)> =
         found.iter().map(|m| (m.user_id.clone(), m.org_role.as_str(), m.status.as_str())).collect();
     assert_eq!(summary, [(grace.id.to_string(), "member", "suspended"), (ada.id.to_string(), "owner", "active")]);
-    assert!(found.iter().all(|m| !m.display_name.is_empty()));
+    assert!(found.iter().all(|m| !m.display_name.is_empty() && m.email.contains('@')));
     assert!(members(Uuid::now_v7(), vec![ada.id.to_string()]).await.unwrap().into_inner().members.is_empty(), "other tenant");
     assert_eq!(members(tenant, vec!["x".into()]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
     assert_eq!(members(tenant, vec![ada.id.to_string(); 501]).await.unwrap_err().code(), tonic::Code::InvalidArgument);

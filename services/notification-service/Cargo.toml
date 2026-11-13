@@ -26,8 +26,12 @@ time.workspace = true
 utoipa.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+metrics.workspace = true
 anyhow.workspace = true
+lettre.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 test-utilities.workspace = true
 tower.workspace = true
+reqwest.workspace = true

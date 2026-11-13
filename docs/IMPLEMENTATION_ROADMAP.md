@@ -16,7 +16,7 @@ Last updated: 2026-11-13 (end of Phase 5).
 | 2 | Project + issue engine, **permission-service core** (moved up from Phase 6) | ✅ (smaller gaps listed below) |
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
-| 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | 🚧 everything except email delivery (gaps listed below) |
+| 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
 | 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | ⬜ |
 | 7 | ClickHouse pipeline, dashboards | ⬜ |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
@@ -27,7 +27,7 @@ Against the brief's 45 final deliverables: roughly the foundations of items 1–
 15–16 (password auth and org-level RBAC only), 26–27, 34 (instrumentation, no collector stack), 36–37, 41–43, 45
 exist, plus items 12 (attachment storage), 17–18 (issue and project management), 20 (workflow designer and
 engine), plus the agile item (boards, backlog, sprints and sprint reports), and the event pipeline, realtime updates,
-in-app notifications and full-text issue search.
+in-app and email notifications and full-text issue search.
 Everything else is not started. Four of the fifteen logical services have no code.
 
 ## Implemented and verified
@@ -60,20 +60,21 @@ Everything else is not started. Four of the fifteen logical services have no cod
 | Event pipeline | Transactional outbox → Kafka relay in every service (advisory-locked, one relay per database, ordered per aggregate, failures hold back later events of the same key), consumers with manual commits, bounded retry and a dead-letter topic, tenant required on every envelope, inbox de-duplication, retention sweep | 2 integration tests against real Kafka + PostgreSQL; live: every service's outbox drained to 0, including events held since Phase 1 |
 | realtime-service | SSE change hints per project, per person and per workspace; Redis Streams buffer with cursor resume and `resync` when a gap is detected; access and session revocation re-checked every 60 s; token expiry ends the stream; connection cap | 4 integration tests against real Redis; live: an edit by another user appeared on an open backlog within 2 s |
 | notification-service | Notifications for assignment, mention, comment and status change to reporter, assignee and watchers, only for active members who can still browse the project; never to the actor; idempotent on redelivery; list / unread count / mark read / mark all; hidden when access is lost | 3 unit + 2 integration tests incl. cross-tenant and cross-user isolation |
+| Email notifications | Queued with each notification per the person's preferences, sent after a short delay unless read in the app first; leased sender safe across instances; retry with backoff, permanent failures recorded; escaped content, no header injection; per-workspace preferences (master switch + per kind) | 3 unit + 2 integration tests sending through a real Mailpit; live: an assignment by Maya reached Olivia's Mailpit inbox and rendered correctly |
 | search-service | OpenSearch index fed from issue and project events (fresh document per event, external versioning, deletes), tenant-filtered and routed, limited to visible projects; key, prefix and typo-tolerant matching over summary, description, comments and labels; structured highlights (no HTML); cursor paging; `reindex <tenant>` that also drops vanished issues | 3 unit + 2 integration tests against real OpenSearch; live: reindexed the demo workspace, an edit was searchable within 3 s through Kafka |
 | New internal RPCs | `issue.v1.Issues/GetAudience`, `GetDocuments` (≤ 500), `ListIssueIds` (≤ 1000); `user.v1.Membership/GetMembers` (≤ 500) | `audiences_and_search_documents_are_served_to_other_services`, `grpc_membership_check_reflects_role_and_status` |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
-| Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 6 web tests; driven in a real browser in light and dark themes |
+| Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **170 Rust tests, 72 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **175 Rust tests, 73 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
 | Item | State |
 |---|---|
-| Email | Not built: no SMTP delivery, digests or Mailpit container. Notifications are in-app only |
-| Notification preferences | None; everyone gets every kind. No notifications for sprint, project or workflow events |
+| Email | One email per notification (no digests); no one-click unsubscribe; comment emails do not quote the comment; no bounce or complaint handling |
+| Notification preferences | Email only (in-app is always on), per workspace. No notifications for sprint, project or workflow events |
 | Agile consumer | Board placements and scope-log rows of deleted issues are still not cleaned up (they are ignored); boards still read cards from issue-service on each load |
 | Search | No query language (Phase 6), no custom fields, components or versions in the index, no search for projects or people; `reindex` takes one tenant id; no index alias for mapping changes; the shared `search_db` database is unused |
 | Realtime | No presence, no WebSocket transport, no per-tenant connection quotas; fan-out has not been load tested |
@@ -162,7 +163,7 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Close the Phase 5 gaps that matter most: email delivery (Mailpit locally, SMTP in production) with per-person
-   preferences, and an agile consumer that drops placements of deleted issues.
+1. Close the remaining Phase 5 gaps: an agile consumer that drops placements of deleted issues, email digests and
+   one-click unsubscribe.
 2. Phase 6: SSO / SCIM / MFA, admin console, audit log, the issue query language on top of search-service,
    declarative automation, integrations.

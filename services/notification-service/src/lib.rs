@@ -3,8 +3,11 @@
 
 pub mod directory;
 pub mod domain;
+pub mod email;
 pub mod http;
+pub mod mailer;
 pub mod notifier;
+pub mod sender;
 pub mod store;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -59,12 +62,29 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
     let policy = Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis.clone()));
 
+    // Email is optional: without SMTP_URL notifications are in-app only.
+    let email = match config::optional("SMTP_URL") {
+        Some(url) => {
+            let mailer = mailer::SmtpMailer::new(&url, &config::or("EMAIL_FROM", "Meridian <notifications@meridian.localhost>"))?;
+            sender::spawn(db.pools(), Arc::new(mailer));
+            Some(notifier::EmailSettings {
+                app_url: config::required("APP_URL")?.trim_end_matches('/').to_owned(),
+                delay: std::time::Duration::from_secs(config::or("EMAIL_DELAY_SECONDS", "60").parse()?),
+            })
+        }
+        None => {
+            tracing::warn!("SMTP_URL is not set: notifications are not emailed");
+            None
+        }
+    };
+
     match KafkaSettings::from_env(SERVICE_NAME) {
         Some(settings) => {
             let handler = Arc::new(notifier::Notifier {
                 db: Arc::clone(&db),
                 directory: Arc::new(directory::GrpcDirectory::new(&issue, &user, &secret)?),
                 policy: Arc::clone(&policy),
+                email,
             });
             tokio::spawn(async move {
                 if let Err(error) = run_consumer(&settings, notifier::CONSUMER, &[topics::ISSUE], handler).await {

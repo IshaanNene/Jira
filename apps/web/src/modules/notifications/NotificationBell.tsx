@@ -1,6 +1,6 @@
-import { Bell, CheckCheck } from "lucide-react";
+import { Bell, CheckCheck, Settings } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Avatar, Button, DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, EmptyState, ErrorState, Skeleton, Tooltip } from "@/components/ui";
 import type { AppNotification } from "@/services/api";
@@ -93,13 +93,20 @@ export function NotificationBell() {
             </ul>
           )}
         </div>
-        {(count.data ?? 0) > 0 && (
-          <div className="border-t border-line px-2 py-2">
+        <div className="flex items-center justify-between border-t border-line px-2 py-2">
+          {(count.data ?? 0) > 0 ? (
             <Button variant="ghost" size="sm" onClick={() => mark.all.mutate()} disabled={mark.all.isPending}>
               <CheckCheck className="h-4 w-4" aria-hidden /> Mark all as read
             </Button>
-          </div>
-        )}
+          ) : (
+            <span />
+          )}
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/settings/notifications" onClick={() => setOpen(false)}>
+              <Settings className="h-4 w-4" aria-hidden /> Settings
+            </Link>
+          </Button>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

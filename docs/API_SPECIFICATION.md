@@ -83,7 +83,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | Agile ✅ | `/boards` (`?project_key=`), `/boards/{id}` (columns are part of the board), `/view`, `/backlog`, `/move` (rank and sprint membership), `/sprints`, `/velocity`; `/sprints/{id}` (+`/start`, `/complete`, `/report`) |
 | Permissions | `/roles`, `/permission-schemes`, `/permissions/check`, `/permissions/mine` |
 | Search 🚧 | built: `GET /search/issues?q&project_id&status_category&assignee&limit&cursor` (text search, structured highlights). Not built: the query language (`POST /search/issues {query}`), `/search/validate`, `/filters`, `/filters/{id}/subscriptions` |
-| Notifications 🚧 | built: `/notifications` (`?unread=true`), `/notifications/unread-count`, `/notifications/{id}/read`, `/notifications/read-all`. Not built: `/notification-preferences` |
+| Notifications ✅ | `/notifications` (`?unread=true`), `/notifications/unread-count`, `/notifications/{id}/read`, `/notifications/read-all`, `/notifications/preferences` (GET/PUT email choices) |
 | Realtime ✅ | `GET /rt/stream?channel=project:{id}\|user:{id}\|org` (Server-Sent Events: `ready`, `change`, `resync`, `expired`, `denied`; resume with `Last-Event-ID`) |
 | Automation | `/automation/rules`, `/automation/rules/{id}/executions` |
 | Integrations | `/integrations`, `/webhooks`, `/webhooks/{id}/deliveries`, `/hooks/{provider}` (inbound) |
@@ -99,7 +99,7 @@ checked in CI.
 | Service | RPC | Used by |
 |---|---|---|
 | `tenant.v1.TenantRegistry` | `ProvisionTenant`, `ResolveTenant`, `GetTenantByOrganization` | user, all (router) |
-| `user.v1.Membership` | `CheckMembership(user_id, organization_id) → {tenant_id, org_role, status}`, `GetMembers(tenant_id, user_ids ≤ 500)` (built) | identity, issue, notification |
+| `user.v1.Membership` | `CheckMembership(user_id, organization_id) → {tenant_id, org_role, status}`, `GetMembers(tenant_id, user_ids ≤ 500) → {role, status, name, email}` (built) | identity, issue, notification |
 | `permission.v1.Authorizer` | `GetPolicySnapshot(tenant, user) → {version, grants}`, `Check` | all |
 | `workflow.v1.WorkflowEngine` | `GetInitialStatus`, `ValidateTransition`, `ListTransitions` | issue |
 | `project.v1.Projects` | `GetProjectConfig` | issue, agile |

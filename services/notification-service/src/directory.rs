@@ -23,6 +23,8 @@ pub struct Person {
     pub role: OrgRole,
     pub active: bool,
     pub display_name: String,
+    /// Empty when unknown.
+    pub email: String,
 }
 
 #[async_trait]
@@ -103,6 +105,7 @@ impl Directory for GrpcDirectory {
                     role,
                     active: m.status == "active",
                     display_name: m.display_name,
+                    email: m.email,
                 });
             }
         }

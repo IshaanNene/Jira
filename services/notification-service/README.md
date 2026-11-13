@@ -17,6 +17,16 @@ are ignored, so replaying history does not flood inboxes. The issue's audience c
 `(tenant, recipient, source event)` key makes redelivery harmless. Every notification emits
 `notification.created` through the outbox, which realtime-service routes to `user:<recipient>`.
 
+**Email.** When `SMTP_URL` is set, each new notification is also queued in `email_deliveries` for people whose
+preferences allow that kind and whose member record has an address (`GetMembers`). A sender loop per database
+leases due rows (`FOR UPDATE SKIP LOCKED`, 5-minute lease so a crashed instance's rows are retried) and sends a
+plain-text + HTML message with lettre. Each email waits `EMAIL_DELAY_SECONDS` (default 60) first and is skipped if
+the notification was read in the app meanwhile or the person has turned that kind off. Temporary SMTP failures are
+retried after 1, 2, 4, 8 and 16 minutes; permanent ones (5xx, invalid address) are marked `failed`. Finished rows
+are deleted after 7 days. All names and summaries are HTML-escaped and flattened to one line in the subject; links
+are built only from keys of the form `ABC-123` under `APP_URL`. Addresses are never logged. Locally, Mailpit
+catches everything (inbox at http://localhost:58025).
+
 **API.** REST, contract at `/openapi.json`; always the caller's own notifications, limited to projects they can
 see now (losing access hides them):
 
@@ -26,18 +36,24 @@ see now (losing access hides them):
 | `GET /api/v1/notifications/unread-count` | |
 | `POST /api/v1/notifications/{id}/read` | 204, or 404 when it is not yours |
 | `POST /api/v1/notifications/read-all` | |
+| `GET/PUT /api/v1/notifications/preferences` | email on/off, and per kind (assigned, mentioned, commented, status changed) |
 
-**Database.** Owns `notification_db`: `notifications` (FORCE RLS), `outbox`, `inbox`.
+**Database.** Owns `notification_db`: `notifications` and `notification_preferences` (FORCE RLS); `email_deliveries`,
+`outbox` and `inbox` are system queues without RLS that no API reads.
 
 | Variable | Required | Default |
 |---|---|---|
 | `DATABASE_URL`, `DATABASE_MIGRATION_URL` | yes / for `migrate` | |
 | `REDIS_URL`, `TOKEN_ISSUER`, `JWKS_URL`, `INTERNAL_SERVICE_SECRET` | yes | |
 | `KAFKA_BROKERS` | no | unset: no notifications are created |
+| `SMTP_URL` | no | unset: no email. `smtp://host:port`, `smtp://host?tls=required`, `smtps://user:pass@host:465` |
+| `APP_URL` | with `SMTP_URL` | base URL for links in emails |
+| `EMAIL_FROM`, `EMAIL_DELAY_SECONDS` | no | `Meridian <notifications@meridian.localhost>`, 60 |
 | `TENANT_SERVICE_GRPC_URL`, `PERMISSION_SERVICE_GRPC_URL`, `ISSUE_SERVICE_GRPC_URL`, `USER_SERVICE_GRPC_URL` | no | local ports 9102 / 9108 / 9105 / 9103 |
 | `ALLOWED_ORIGINS`, `HTTP_ADDR` | no | –, `127.0.0.1:8110` |
 
-**Tests:** `cargo test -p notification-service` (PostgreSQL).
+**Tests:** `cargo test -p notification-service` (PostgreSQL and Mailpit from `make infra`).
 
-**Not built yet.** Email delivery (and digests); per-person notification preferences; notifications for sprint,
-project or workflow events; retention of old notifications.
+**Not built yet.** Digests (one email per notification today); one-click unsubscribe links (the footer links to the
+settings page, which needs sign-in); the comment text in comment emails; bounce and complaint handling from the
+mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications.

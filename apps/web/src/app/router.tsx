@@ -5,6 +5,7 @@ import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { LoginPage, RegisterPage } from "@/modules/auth";
 import { AcceptInvitationPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
+import { NotificationSettingsPage } from "@/modules/notifications";
 import { SearchPage } from "@/modules/search";
 import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
@@ -83,6 +84,7 @@ export const router = createBrowserRouter([
                       { path: "/settings/custom-fields", element: <CustomFieldsPage /> },
                       { path: "/settings/workflows", element: <WorkflowsPage /> },
                       { path: "/settings/profile", element: <ProfilePage /> },
+                      { path: "/settings/notifications", element: <NotificationSettingsPage /> },
                       { path: "/settings/sessions", element: <SessionsPage /> },
                     ],
                   },

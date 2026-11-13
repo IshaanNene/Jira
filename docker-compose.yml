@@ -111,6 +111,20 @@ services:
       timeout: 5s
       retries: 40
 
+  # Catches outgoing email locally: nothing leaves the machine. Inbox at http://localhost:58025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    environment:
+      MP_MAX_MESSAGES: "2000"
+    ports:
+      - "127.0.0.1:51025:1025"
+      - "127.0.0.1:58025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   gateway:
     image: envoyproxy/envoy:v1.33-latest
     command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]

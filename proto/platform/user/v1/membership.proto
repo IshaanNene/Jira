@@ -31,6 +31,7 @@ message Member {
   string org_role = 2;
   string status = 3;
   string display_name = 4;
+  string email = 5; // for notification email; never shown to other users by callers
 }
 
 message Members {

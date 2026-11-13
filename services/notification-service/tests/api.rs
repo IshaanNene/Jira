@@ -15,7 +15,7 @@ use notification_service::{
     directory::{Directory, Person},
     domain::Audience,
     http,
-    notifier::Notifier,
+    notifier::{EmailSettings, Notifier},
     AppState, MIGRATOR,
 };
 use serde_json::{json, Value};
@@ -74,7 +74,12 @@ async fn harness() -> Harness {
         policy: Arc::clone(&policy),
         allowed_origins: Arc::new(vec![]),
     };
-    let notifier = Notifier { db: router, directory: world.clone(), policy };
+    let notifier = Notifier {
+        db: router,
+        directory: world.clone(),
+        policy,
+        email: Some(EmailSettings { app_url: "https://app.example.com".into(), delay: std::time::Duration::ZERO }),
+    };
     Harness { db, app: http::router(state), notifier, auth, world, tenant: Uuid::now_v7() }
 }
 
@@ -82,11 +87,16 @@ impl Harness {
     /// A workspace member; `project` access as a viewer when given.
     fn person(&self, tenant: Uuid, name: &str, project: Option<Uuid>, active: bool) -> Uuid {
         let id = Uuid::now_v7();
-        self.world
-            .people
-            .lock()
-            .unwrap()
-            .insert((tenant, id), Person { user_id: id, role: OrgRole::Member, active, display_name: name.into() });
+        self.world.people.lock().unwrap().insert(
+            (tenant, id),
+            Person {
+                user_id: id,
+                role: OrgRole::Member,
+                active,
+                display_name: name.into(),
+                email: format!("{}-{id}@example.test", name.split(' ').next().unwrap().to_lowercase()),
+            },
+        );
         if let Some(project) = project {
             self.world.roles.lock().unwrap().insert((tenant, id), HashMap::from([(project, ProjectRole::Viewer)]));
         }
@@ -110,6 +120,28 @@ impl Harness {
         // Redelivery changes nothing.
         self.notifier.handle(&event).await.unwrap();
         event_id
+    }
+
+    async fn put_json(&self, path: &str, token: &str, body: Value) -> (u16, Value) {
+        let req = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// The email queue as (recipient, status) pairs.
+    async fn deliveries(&self) -> Vec<(Uuid, String)> {
+        sqlx::query_as("SELECT recipient_id, status FROM email_deliveries ORDER BY created_at")
+            .fetch_all(&self.db.owner)
+            .await
+            .unwrap()
     }
 
     async fn call(&self, method: &str, path: &str, token: &str) -> (u16, Value) {
@@ -254,5 +286,187 @@ async fn people_read_only_their_own_notifications_in_their_own_workspace() {
     // The database itself refuses rows of another tenant to the runtime role.
     let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM notifications").fetch_one(&h.db.app).await.unwrap();
     assert_eq!(visible, 0, "no tenant set, no rows");
+    h.db.cleanup().await;
+}
+
+fn smtp_url() -> String {
+    std::env::var("TEST_SMTP_URL").unwrap_or_else(|_| "smtp://127.0.0.1:51025".to_owned())
+}
+
+fn mailpit_api() -> String {
+    std::env::var("TEST_MAILPIT_URL").unwrap_or_else(|_| "http://127.0.0.1:58025".to_owned())
+}
+
+/// Messages Mailpit received for `address`.
+async fn inbox_of(address: &str) -> Vec<Value> {
+    let url = format!("{}/api/v1/search?query={}", mailpit_api(), urlencode(&format!("to:{address}")));
+    let body: Value = reqwest::get(url).await.unwrap().json().await.unwrap();
+    body["messages"].as_array().cloned().unwrap_or_default()
+}
+
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+#[tokio::test]
+async fn notifications_are_emailed_unless_read_first_or_turned_off() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let project = Uuid::now_v7();
+    let maya = h.person(t, "Maya <b>Member</b>", Some(project), true);
+    let olivia = h.person(t, "Olivia Owner", Some(project), true);
+    let rae = h.person(t, "Rae Reporter", Some(project), true);
+    let issue = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue,
+        Audience {
+            key: "PAY-7".into(),
+            summary: "Refunds <script>fail</script>".into(),
+            project_id: project,
+            reporter_id: rae,
+            assignee_id: None,
+            watcher_ids: vec![],
+        },
+    );
+    let address = |id: Uuid| h.world.people.lock().unwrap()[&(t, id)].email.clone();
+
+    // Rae turns off status-change email; the API reports it back.
+    let (status, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, rae)).await;
+    assert_eq!(
+        (status, prefs["email_enabled"].as_bool(), prefs["email_status_changed"].as_bool()),
+        (200, Some(true), Some(true))
+    );
+    let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": false });
+    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, rae), off.clone()).await, (200, off));
+
+    h.deliver(
+        t,
+        "issue.assigned",
+        maya,
+        json!({ "issue_id": issue, "key": "PAY-7", "project_id": project, "assignee_id": olivia, "previous_assignee_id": null }),
+    )
+    .await;
+    h.deliver(
+        t,
+        "issue.transitioned",
+        maya,
+        json!({ "issue_id": issue, "key": "PAY-7", "project_id": project, "from_status": "todo", "to_status": "in_review" }),
+    )
+    .await;
+    let queued = h.deliveries().await;
+    assert!(queued.contains(&(olivia, "pending".into())), "{queued:?}");
+    assert!(!queued.iter().any(|(who, _)| *who == rae), "muted kind is not queued");
+
+    let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
+    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    assert!(h.deliveries().await.iter().filter(|(who, _)| *who == olivia).all(|(_, s)| s == "sent"));
+
+    let mails = inbox_of(&address(olivia)).await;
+    let subjects: Vec<&str> = mails.iter().map(|m| m["Subject"].as_str().unwrap()).collect();
+    assert!(subjects.contains(&"[PAY-7] Refunds <script>fail</script>"), "{subjects:?}");
+    let id = mails[0]["ID"].as_str().unwrap();
+    let full: Value = reqwest::get(format!("{}/api/v1/message/{id}", mailpit_api())).await.unwrap().json().await.unwrap();
+    let html = full["HTML"].as_str().unwrap();
+    assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"), "escaped");
+    assert!(full["Text"].as_str().unwrap().contains("https://app.example.com/projects/PAY/issues/PAY-7"));
+
+    // Read in the app before the email went out: it is skipped.
+    let issue2 = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue2,
+        Audience {
+            key: "PAY-8".into(),
+            summary: "Second".into(),
+            project_id: project,
+            reporter_id: rae,
+            assignee_id: None,
+            watcher_ids: vec![],
+        },
+    );
+    h.deliver(
+        t,
+        "issue.assigned",
+        maya,
+        json!({ "issue_id": issue2, "key": "PAY-8", "project_id": project, "assignee_id": olivia, "previous_assignee_id": null }),
+    )
+    .await;
+    let (_, inbox) = h.call("GET", "/api/v1/notifications?unread=true", &h.token(t, olivia)).await;
+    let nid = inbox["items"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(h.call("POST", &format!("/api/v1/notifications/{nid}/read"), &h.token(t, olivia)).await.0, 204);
+    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    assert_eq!(h.deliveries().await.last().unwrap().1, "skipped");
+    assert_eq!(inbox_of(&address(olivia)).await.len(), 1);
+
+    // Email switched off entirely: nothing is queued.
+    let none = json!({ "email_enabled": false, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": true });
+    h.put_json("/api/v1/notifications/preferences", &h.token(t, olivia), none).await;
+    let before = h.deliveries().await.len();
+    let issue3 = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue3,
+        Audience {
+            key: "PAY-9".into(),
+            summary: "Third".into(),
+            project_id: project,
+            reporter_id: rae,
+            assignee_id: None,
+            watcher_ids: vec![],
+        },
+    );
+    h.deliver(
+        t,
+        "issue.assigned",
+        maya,
+        json!({ "issue_id": issue3, "key": "PAY-9", "project_id": project, "assignee_id": olivia, "previous_assignee_id": null }),
+    )
+    .await;
+    assert_eq!(h.deliveries().await.len(), before);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_unreachable_mail_server_is_retried_later() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let project = Uuid::now_v7();
+    let maya = h.person(t, "Maya", Some(project), true);
+    let olivia = h.person(t, "Olivia", Some(project), true);
+    let issue = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue,
+        Audience {
+            key: "OPS-1".into(),
+            summary: "S".into(),
+            project_id: project,
+            reporter_id: maya,
+            assignee_id: None,
+            watcher_ids: vec![],
+        },
+    );
+    h.deliver(
+        t,
+        "issue.assigned",
+        maya,
+        json!({ "issue_id": issue, "key": "OPS-1", "project_id": project, "assignee_id": olivia, "previous_assignee_id": null }),
+    )
+    .await;
+
+    // Nothing listens on port 9.
+    let down = SmtpMailer::new("smtp://127.0.0.1:9", "Meridian <notifications@meridian.localhost>").unwrap();
+    assert_eq!(sender::run_once(&h.db.app, &down).await.unwrap(), 1);
+    let (status, attempts, later): (String, i32, bool) =
+        sqlx::query_as("SELECT status, attempts, send_after > now() + interval '50 seconds' FROM email_deliveries")
+            .fetch_one(&h.db.owner)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), attempts, later), ("pending", 1, true));
+    assert_eq!(sender::run_once(&h.db.app, &down).await.unwrap(), 0, "not due yet");
     h.db.cleanup().await;
 }

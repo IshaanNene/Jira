@@ -120,3 +120,90 @@ pub async fn mark_all_read(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uu
         .await?
         .rows_affected())
 }
+
+// --- Email preferences -------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Preferences {
+    pub email_enabled: bool,
+    pub email_muted: Vec<String>,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { email_enabled: true, email_muted: Vec::new() }
+    }
+}
+
+impl Preferences {
+    pub fn wants_email(&self, kind: &str) -> bool {
+        self.email_enabled && !self.email_muted.iter().any(|k| k == kind)
+    }
+}
+
+pub async fn preferences(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Preferences> {
+    Ok(sqlx::query_as("SELECT email_enabled, email_muted FROM notification_preferences WHERE tenant_id = $1 AND user_id = $2")
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_optional(conn)
+        .await?
+        .unwrap_or_default())
+}
+
+pub async fn preferences_of(conn: &mut PgConnection, tenant_id: Uuid, user_ids: &[Uuid]) -> ApiResult<Vec<(Uuid, Preferences)>> {
+    let rows: Vec<(Uuid, bool, Vec<String>)> = sqlx::query_as(
+        "SELECT user_id, email_enabled, email_muted FROM notification_preferences WHERE tenant_id = $1 AND user_id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(user_ids)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(u, email_enabled, email_muted)| (u, Preferences { email_enabled, email_muted })).collect())
+}
+
+pub async fn save_preferences(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uuid, p: &Preferences) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO notification_preferences (tenant_id, user_id, email_enabled, email_muted) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (tenant_id, user_id) DO UPDATE SET email_enabled = $3, email_muted = $4, updated_at = now()",
+    )
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(p.email_enabled)
+    .bind(&p.email_muted)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+// --- Email queue -------------------------------------------------------------------
+
+pub struct NewDelivery<'a> {
+    pub notification_id: Uuid,
+    pub recipient_id: Uuid,
+    pub kind: &'a str,
+    pub to_address: &'a str,
+    pub subject: &'a str,
+    pub text_body: &'a str,
+    pub html_body: &'a str,
+    pub send_after: OffsetDateTime,
+}
+
+pub async fn enqueue_email(conn: &mut PgConnection, tenant_id: Uuid, d: &NewDelivery<'_>) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO email_deliveries (id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, send_after) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (notification_id) DO NOTHING",
+    )
+    .bind(platform_common::new_id())
+    .bind(tenant_id)
+    .bind(d.notification_id)
+    .bind(d.recipient_id)
+    .bind(d.kind)
+    .bind(d.to_address)
+    .bind(d.subject)
+    .bind(d.text_body)
+    .bind(d.html_body)
+    .bind(d.send_after)
+    .execute(conn)
+    .await?;
+    Ok(())
+}

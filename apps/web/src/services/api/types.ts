@@ -93,6 +93,7 @@ type NotificationApi = NotificationComponents["schemas"];
 export type AppNotification = NotificationApi["NotificationDto"];
 export type NotificationList = NotificationApi["NotificationList"];
 export type UnreadCount = NotificationApi["UnreadCount"];
+export type NotificationPreferences = NotificationApi["NotificationPreferences"];
 
 type SearchApi = SearchComponents["schemas"];
 export type SearchHit = SearchApi["SearchHit"];
