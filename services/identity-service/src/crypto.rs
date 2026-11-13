@@ -66,21 +66,31 @@ impl KeySealer {
 
     /// Returns `(ciphertext || tag, nonce)`. A fresh random nonce per sealed key.
     pub fn seal(&self, plaintext: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        self.seal_for(plaintext, &[])
+    }
+
+    pub fn open(&self, sealed: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
+        self.open_for(sealed, nonce, &[])
+    }
+
+    /// Like `seal`, but bound to `context` (e.g. the owning account id): the ciphertext
+    /// only opens with the same context, so it cannot be copied onto another row.
+    pub fn seal_for(&self, plaintext: &[u8], context: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         let mut nonce = [0_u8; NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let mut buf = plaintext.to_vec();
         self.0
-            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut buf)
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(context), &mut buf)
             .map_err(|_| anyhow::anyhow!("sealing failed"))?;
         Ok((buf, nonce.to_vec()))
     }
 
-    pub fn open(&self, sealed: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
+    pub fn open_for(&self, sealed: &[u8], nonce: &[u8], context: &[u8]) -> anyhow::Result<Vec<u8>> {
         let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| anyhow::anyhow!("invalid nonce"))?;
         let mut buf = sealed.to_vec();
         let plain = self
             .0
-            .open_in_place(nonce, Aad::empty(), &mut buf)
+            .open_in_place(nonce, Aad::from(context), &mut buf)
             .map_err(|_| anyhow::anyhow!("signing key could not be decrypted (wrong key-encryption key?)"))?;
         Ok(plain.to_vec())
     }
@@ -116,6 +126,15 @@ mod tests {
         let other = KeySealer::from_base64(&base64::engine::general_purpose::STANDARD.encode([8_u8; 32])).unwrap();
         sealed[0] ^= 1;
         assert!(other.open(&sealed, &nonce).is_err());
+    }
+
+    #[test]
+    fn sealed_values_only_open_in_their_context() {
+        let sealer = KeySealer::from_base64(&base64::engine::general_purpose::STANDARD.encode([7_u8; 32])).unwrap();
+        let (sealed, nonce) = sealer.seal_for(b"secret", b"account-a").unwrap();
+        assert_eq!(sealer.open_for(&sealed, &nonce, b"account-a").unwrap(), b"secret");
+        assert!(sealer.open_for(&sealed, &nonce, b"account-b").is_err());
+        assert!(sealer.open(&sealed, &nonce).is_err());
     }
 
     #[test]

@@ -48,7 +48,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | Method | Path | Purpose | |
 |---|---|---|---|
 | POST | `/register` | create account (email, password, display name) | ✅ |
-| POST | `/login` | password login → access token + refresh cookie | ✅ |
+| POST | `/login` | password login → access token + refresh cookie, or `202` with an `mfa_token` when two-step verification is on | ✅ |
 | POST | `/token/refresh` | rotate refresh token | ✅ |
 | POST | `/token/exchange` | account/organization token → token for `organization_id` | ✅ |
 | POST | `/logout` | revoke current session | ✅ |
@@ -56,7 +56,11 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET / DELETE | `/sessions`, `/sessions/{id}` | list / revoke devices | ✅ |
 | POST | `/email/verify`, `/password/forgot`, `/password/reset` | email flows | ⬜ |
 | GET | `/.well-known/jwks.json` | public signing keys | ✅ |
-| … | `/mfa/*`, `/webauthn/*`, `/sso/{org}/*`, `/api-tokens` | Phase 6 | ⬜ |
+| POST | `/login/mfa` | second step after `/login` answered `202` with `mfa_token`: authenticator or recovery code → access token + refresh cookie | ✅ |
+| GET | `/mfa` | two-step verification status, recovery codes left | ✅ |
+| POST | `/mfa/totp/setup`, `/mfa/totp/confirm` | start (password) / finish (code) set-up; finishing returns recovery codes once | ✅ |
+| POST | `/mfa/recovery-codes`, `/mfa/totp/disable` | new recovery codes / turn off (password and a code) | ✅ |
+| … | `/webauthn/*`, `/sso/{org}/*`, `/api-tokens` | Phase 6 | ⬜ |
 
 ### Organizations & users — `/api/v1`
 | Method | Path | Purpose | |

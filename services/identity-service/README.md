@@ -5,18 +5,21 @@ rotation, organization-scoped token exchange, signing keys (JWKS).
 
 **API.** REST under `/api/v1/auth` — contract at `/openapi.json` (`/api/docs/identity/openapi.json`
 through the gateway): `register`, `login`, `token/refresh`, `token/exchange`, `logout`, `me`,
-`sessions`, `.well-known/jwks.json`. Calls user-service over gRPC (`CheckMembership`) before signing
+`sessions`, `.well-known/jwks.json`, and two-step verification: `login/mfa`, `mfa`, `mfa/totp/setup`,
+`mfa/totp/confirm`, `mfa/totp/disable`, `mfa/recovery-codes`. Calls user-service over gRPC (`CheckMembership`) before signing
 an organization token.
 
 **Security notes.** Argon2id (19 MiB, t=2) off the async runtime; identical response for unknown
 email and wrong password; lockout from the 5th failure; refresh tokens stored as SHA-256, rotated on
 every use, reuse after a 10 s grace revokes the session; Ed25519 keys sealed with AES-256-GCM;
 cookie endpoints check `Origin`; revoked sessions are published to Redis (`revoked:{sid}`).
+Two-step verification: TOTP secrets sealed under the same key-encryption key and bound to the account;
+no code is accepted twice; wrong codes count towards the lockout; see SECURITY_DESIGN.md §2.
 
 **Database.** Owns `identity_db`: `accounts`, `sessions`, `refresh_tokens`, `signing_keys`,
-`login_events`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
+`login_events`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
 
-**Not built yet.** Email verification and password reset (need email delivery), MFA/TOTP, WebAuthn,
+**Not built yet.** Email verification and password reset (need email delivery), WebAuthn, requiring two-step verification per workspace,
 OIDC/SAML, API tokens, suspicious-login detection, signing-key rotation command.
 
 | Variable | Required | Default | Purpose |

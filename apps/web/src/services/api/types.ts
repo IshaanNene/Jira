@@ -19,6 +19,10 @@ export type Session = Identity["SessionDto"];
 export type SessionList = Identity["SessionList"];
 export type RegisterRequest = Identity["RegisterRequest"];
 export type LoginRequest = Identity["LoginRequest"];
+export type MfaChallenge = Identity["MfaChallenge"];
+export type MfaStatus = Identity["MfaStatus"];
+export type TotpSetup = Identity["TotpSetup"];
+export type RecoveryCodes = Identity["RecoveryCodes"];
 
 export type Profile = User["ProfileDto"];
 export type UpdateProfileRequest = User["UpdateProfileRequest"];

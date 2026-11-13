@@ -1,4 +1,4 @@
-import { api, ApiError, configureAuth, NetworkError, type OrgRole, type TokenResponse } from "@/services/api";
+import { api, ApiError, configureAuth, NetworkError, type MfaChallenge, type OrgRole, type TokenResponse } from "@/services/api";
 import { queryClient } from "@/services/query-client";
 import { useSession } from "@/state/session";
 
@@ -93,8 +93,21 @@ export async function bootstrapSession(): Promise<void> {
   }
 }
 
-export async function signIn(email: string, password: string): Promise<void> {
-  apply(await api.post<TokenResponse>(`${AUTH}/login`, { email, password }, { auth: false }));
+/**
+ * Check the password. Resolves `null` when signed in, or the challenge to answer with an
+ * authenticator or recovery code when the account has two-step verification on.
+ */
+export async function signIn(email: string, password: string): Promise<MfaChallenge | null> {
+  const result = await api.post<TokenResponse | MfaChallenge>(`${AUTH}/login`, { email, password }, { auth: false });
+  if ("mfa_token" in result) return result;
+  apply(result);
+  channel?.postMessage("signed-in");
+  return null;
+}
+
+/** Second step of signing in. */
+export async function completeSignIn(mfaToken: string, code: string): Promise<void> {
+  apply(await api.post<TokenResponse>(`${AUTH}/login/mfa`, { mfa_token: mfaToken, code }, { auth: false }));
   channel?.postMessage("signed-in");
 }
 

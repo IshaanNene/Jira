@@ -4,6 +4,7 @@ use auth_middleware::{revocation_key, AuthContext, Claims, JwkSet, TokenKind, AC
 use axum::{
     extract::{ConnectInfo, State},
     http::{header::USER_AGENT, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -18,7 +19,10 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::dto::{AccountDto, ExchangeRequest, LoginRequest, RefreshRequest, RegisterRequest, TokenOrganization, TokenResponse};
+use super::{
+    dto::{AccountDto, ExchangeRequest, LoginRequest, RefreshRequest, RegisterRequest, TokenOrganization, TokenResponse},
+    mfa::{self, MfaChallenge},
+};
 use crate::{
     crypto,
     membership::MembershipInfo,
@@ -34,12 +38,12 @@ const SESSION_ENDED: ApiError = ApiError::Unauthenticated("Your session has ende
 /// race between browser tabs rather than token theft.
 const REUSE_GRACE_SECS: i64 = 10;
 
-struct ClientInfo {
-    ip: Option<String>,
-    user_agent: Option<String>,
+pub(crate) struct ClientInfo {
+    pub(crate) ip: Option<String>,
+    pub(crate) user_agent: Option<String>,
 }
 
-fn client_info(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> ClientInfo {
+pub(crate) fn client_info(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> ClientInfo {
     // Only believe X-Forwarded-For when we are deployed behind our own gateway, and then
     // only the right-most entry, which is the one the gateway appended.
     let forwarded = state
@@ -56,7 +60,7 @@ fn client_info(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> Clien
     }
 }
 
-fn refresh_cookie(state: &AppState, value: String) -> Cookie<'static> {
+pub(crate) fn refresh_cookie(state: &AppState, value: String) -> Cookie<'static> {
     Cookie::build((REFRESH_COOKIE, value))
         .http_only(true)
         .secure(state.settings.cookie_secure)
@@ -76,7 +80,7 @@ fn expired_cookie(state: &AppState) -> Cookie<'static> {
         .build()
 }
 
-fn issue_access_token(
+pub(crate) fn issue_access_token(
     state: &AppState,
     account: &Account,
     session_id: Uuid,
@@ -109,7 +113,7 @@ fn issue_access_token(
 }
 
 /// Create a session and its first refresh token. Returns `(session_id, refresh_token)`.
-async fn start_session(
+pub(crate) async fn start_session(
     conn: &mut PgConnection,
     state: &AppState,
     account: &Account,
@@ -177,14 +181,16 @@ pub async fn register(
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/login", request_body = LoginRequest,
-    responses((status = 200, body = TokenResponse), (status = 401, description = "Incorrect email or password")))]
+    responses((status = 200, body = TokenResponse),
+        (status = 202, body = MfaChallenge, description = "Password accepted; two-step verification code needed (`POST /auth/login/mfa`)"),
+        (status = 401, description = "Incorrect email or password")))]
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
     Json(mut body): Json<LoginRequest>,
-) -> ApiResult<(CookieJar, Json<TokenResponse>)> {
+) -> ApiResult<Response> {
     body.email = normalize_email(&body.email);
     body.validate()?;
     let client = client_info(&state, &headers, peer);
@@ -223,6 +229,14 @@ pub async fn login(
         return Err(ApiError::Forbidden);
     }
 
+    // With two-step verification on, the password alone opens nothing: the failure count
+    // is left alone (wrong codes add to it) and the caller gets a challenge to answer.
+    if mfa::totp_enabled(&state.pool, account.id).await? {
+        let challenge = mfa::issue_challenge(&state.pool, account.id).await?;
+        log(Some(account.id), "mfa_required").await;
+        return Ok((StatusCode::ACCEPTED, Json(challenge)).into_response());
+    }
+
     let mut tx = state.pool.begin().await?;
     store::reset_failed_logins(&mut tx, account.id).await?;
     let (session_id, refresh) = start_session(&mut tx, &state, &account, &client).await?;
@@ -235,10 +249,10 @@ pub async fn login(
     log(Some(account.id), "success").await;
 
     let response = issue_access_token(&state, &account, session_id, None)?;
-    Ok((jar.add(refresh_cookie(&state, refresh)), Json(response)))
+    Ok((jar.add(refresh_cookie(&state, refresh)), Json(response)).into_response())
 }
 
-async fn revoke_everywhere(
+pub(crate) async fn revoke_everywhere(
     state: &AppState,
     conn: &mut PgConnection,
     session_id: Uuid,

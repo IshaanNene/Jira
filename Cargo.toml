@@ -60,6 +60,7 @@ ring = "0.17"
 rand = "0.8"
 sha2 = "0.10"
 subtle = "2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # api docs & validation
 utoipa = { version = "5", features = ["axum_extras", "uuid", "time"] }

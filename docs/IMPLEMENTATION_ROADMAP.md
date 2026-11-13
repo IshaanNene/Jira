@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-13 (Phase 6: issue query language, audit log).
+Last updated: 2026-11-13 (Phase 6: issue query language, audit log, two-step verification).
 
 ## Phase status
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-13 (Phase 6: issue query language, audit log).
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
-| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language and audit log done; the rest not started) |
+| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language, audit log and authenticator-app two-step verification done; the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ⬜ |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
 
@@ -68,11 +68,13 @@ Everything else is not started. Four of the fifteen logical services have no cod
 | Web: MQL search | Basic / MQL switch on `/search` (basic filters carried over as a query), query editor with suggestions for fields, operators, values (project keys, statuses, people from the directory, dates) and connectives; Tab completes, Enter runs; invalid queries show the message with the faulty part underlined; syntax help with runnable examples; query kept in the URL | 5 web tests; driven in a real browser against the demo workspace |
 | Audit log | user-service consumer turns admin-relevant domain events (members, invitations, projects, project access, releases, workflows, boards, sprints, deleted issues and comments) plus validated `audit.recorded` events into entries; one SHA-256 hash chain per tenant (serialized appends, de-duplicated by event id); append-only by trigger and revoked grants; forced RLS; admin/owner-only list with category, person and date filters and cursor paging, CSV export (formula-safe cells), on-demand chain verification that names the first broken entry; project-service emits `audit.recorded` for access changes | 3 unit + 1 integration test (redelivery, forged payloads rejected, filters, tenant isolation, 403 for members, export, runtime role cannot UPDATE, an owner's edit with the trigger disabled is detected); 1 project-service test asserts the access audit events; live: the dev consumer backfilled history from Kafka |
 | Web: audit log | Settings → Audit log for admins and owners: entries as sentences ("gave Maya Chen Viewer access to PAY"), expandable details, activity / person / date filters kept in the URL, older entries on demand, CSV export, "Check integrity" banner | 4 web tests; checked in a real browser (17 entries intact) |
+| Two-step verification (TOTP) | Authenticator-app codes (RFC 6238: SHA-1, 6 digits, 30 s, one step of drift) and ten single-use recovery codes; set-up and changes need the password again; turning it on or off ends the account's other sessions; after a correct password, sign-in returns `202` with a single-use 5-minute challenge instead of tokens; 5 wrong codes end the challenge and every wrong code counts towards the account lockout; a used time step is never accepted again; secrets sealed with AES-256-GCM bound to the account id; recovery codes stored as SHA-256; QR code rendered server-side as SVG | 5 unit tests (RFC 6238 and RFC 4648 vectors, replay, drift, recovery code typing) + 1 crypto test + 1 integration test (set-up, sign-in, replay, recovery codes, challenge exhaustion, lockout, new codes, turning off) |
+| Web: two-step verification | Settings → Security (was Sessions): set up with a QR code or typed key, recovery codes to copy or download, new codes, turn off; sign-in asks for the app code or a recovery code after the password and goes back to the password when the attempt expires | 4 web tests; set up, signed in with a code and turned off with a recovery code in a real browser |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
 | Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **192 Rust tests, 84 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **199 Rust tests, 88 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -141,7 +143,7 @@ so that a new migration file is always embedded in the binary.
 | Email verification, password reset, invitation email | Not built — need email delivery (Phase 5). Invitation links are shown once to the inviter instead. **Consequence: an invitation can be accepted by whoever registers the invited address first; email ownership is not proven** |
 | Teams, departments, groups, avatars, org logo/branding, domains | Not built |
 | Tenant tier migration; business/enterprise provisioning | Schema and placement decision only; dedicated tiers are recorded as `pending` and are not routable |
-| MFA, WebAuthn, OIDC, SAML, SCIM, API tokens | Not built (Phase 6) |
+| WebAuthn, OIDC, SAML, SCIM, API tokens | Not built (Phase 6); TOTP two-step verification is built |
 | Per-IP rate limiting | Dev gateway has global and credential-route buckets only; per-IP needs the rate-limit service planned with Envoy Gateway |
 | OpenTelemetry export | Code path exists (OTLP/HTTP) but has not been run against a collector |
 | Playwright end-to-end tests, Storybook | Not set up |
@@ -166,7 +168,8 @@ so that a new migration file is always embedded in the binary.
 | Item | State |
 |---|---|
 | Query language | Built (see above). Not built: saved filters, filter subscriptions, sharing; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog do not accept MQL yet |
-| SSO (OIDC, SAML), SCIM, MFA / WebAuthn, API tokens | Not started |
+| Two-step verification | TOTP built (see above). Not built: WebAuthn / passkeys; a workspace setting that requires it of members; an email when it is turned on or off or a recovery code is used; an `amr` claim in tokens; admin reset for a member who lost their phone and codes (today only a database operator can) |
+| SSO (OIDC, SAML), SCIM, API tokens | Not started |
 | Audit log | Built (see above). Not built: client IP address on entries; retention and purge (append-only for now, so entries are kept forever); workflow and board entries have no name (their events carry none); entries are listed in the order they were recorded, which can differ slightly from when they happened across topics; project access entries are written just after the permission change rather than in the same transaction, so a crash between the two loses the entry; no scheduled verifier; no audit of sign-ins (identity-service emits no events yet) |
 | Admin console | Not started (settings pages exist for members, invitations, notifications and the audit log) |
 | Automation, integrations (webhooks, Git, Slack) | Not started |
@@ -178,5 +181,5 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Phase 6, remaining: admin console, MFA (TOTP, WebAuthn) and API tokens, SSO (OIDC, SAML) and
+1. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.

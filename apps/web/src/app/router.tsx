@@ -9,7 +9,7 @@ import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notificatio
 import { SearchPage } from "@/modules/search";
 import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
-import { ProfilePage, SessionsPage } from "@/modules/users";
+import { ProfilePage, SecurityPage } from "@/modules/users";
 import { WorkflowDesignerPage, WorkflowsPage } from "@/modules/workflows";
 import { HomePage } from "@/modules/workspace";
 
@@ -88,7 +88,8 @@ export const router = createBrowserRouter([
                       { path: "/settings/workflows", element: <WorkflowsPage /> },
                       { path: "/settings/profile", element: <ProfilePage /> },
                       { path: "/settings/notifications", element: <NotificationSettingsPage /> },
-                      { path: "/settings/sessions", element: <SessionsPage /> },
+                      { path: "/settings/security", element: <SecurityPage /> },
+                      { path: "/settings/sessions", element: <Navigate to="/settings/security" replace /> },
                     ],
                   },
                   { path: "*", element: <NotFoundPage /> },

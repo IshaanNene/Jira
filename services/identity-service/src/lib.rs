@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod http;
 pub mod keys;
 pub mod membership;
+pub mod mfa;
 pub mod store;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -40,6 +41,8 @@ pub struct AppState {
     pub redis: RedisHandle,
     /// A valid hash of a random password, verified against when the email is unknown.
     pub dummy_hash: Arc<String>,
+    /// Seals and opens authenticator secrets.
+    pub sealer: Arc<crypto::KeySealer>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -53,11 +56,11 @@ impl AppState {
     pub async fn build(
         pool: PgPool,
         settings: Settings,
-        sealer: &crypto::KeySealer,
+        sealer: crypto::KeySealer,
         membership: Arc<dyn MembershipChecker>,
         redis: RedisHandle,
     ) -> anyhow::Result<Self> {
-        let material = keys::load_or_create(&pool, sealer).await?;
+        let material = keys::load_or_create(&pool, &sealer).await?;
         let verifier = TokenVerifier::local(settings.issuer.clone()).with_revocations(redis.clone());
         for jwk in &material.jwks.keys {
             verifier.add_key(jwk)?;
@@ -72,6 +75,7 @@ impl AppState {
             membership,
             redis,
             dummy_hash: Arc::new(dummy_hash),
+            sealer: Arc::new(sealer),
         })
     }
 }
@@ -132,7 +136,7 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
     let sealer = crypto::KeySealer::from_base64(&config.key_encryption_key)?;
     let membership = Arc::new(GrpcMembership::new(&config.user_service_grpc_url, &config.internal_secret)?);
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;
-    let state = AppState::build(pool, config.settings, &sealer, membership, redis).await?;
+    let state = AppState::build(pool, config.settings, sealer, membership, redis).await?;
     server::serve_http(config.http_addr, app(state, &telemetry)).await?;
     Ok(telemetry)
 }

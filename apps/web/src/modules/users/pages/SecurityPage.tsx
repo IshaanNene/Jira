@@ -5,11 +5,23 @@ import { useRevokeSession, useSessions } from "@/modules/auth";
 import { errorMessage } from "@/services/api";
 import { describeUserAgent, formatDate, formatRelative } from "@/utils/format";
 
-export default function SessionsPage() {
+import { TwoStepVerification } from "../components/TwoStepVerification";
+
+export default function SecurityPage() {
+  return (
+    <Page title="Security" description="How you sign in, and where you are signed in." width="narrow">
+      <div className="space-y-5">
+        <TwoStepVerification />
+        <Sessions />
+      </div>
+    </Page>
+  );
+}
+
+function Sessions() {
   const sessions = useSessions();
   const revoke = useRevokeSession();
   return (
-    <Page title="Sessions" description="Devices and browsers where you are signed in." width="narrow">
       <Card>
         <CardHeader title="Active sessions" description="Sign out a session you don't recognise. It loses access immediately." />
         {sessions.isPending ? (
@@ -51,6 +63,5 @@ export default function SessionsPage() {
           </ul>
         )}
       </Card>
-    </Page>
   );
 }

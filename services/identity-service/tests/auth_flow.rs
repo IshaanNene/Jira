@@ -53,7 +53,7 @@ async fn harness() -> Harness {
         session_ttl_days: 30,
         trust_forwarded_for: false,
     };
-    let state = AppState::build(db.app.clone(), settings, &sealer, membership.clone(), RedisHandle::default()).await.unwrap();
+    let state = AppState::build(db.app.clone(), settings, sealer, membership.clone(), RedisHandle::default()).await.unwrap();
     let app = http::router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))));
     Harness { db, app, membership }
 }
@@ -467,5 +467,165 @@ async fn jwks_exposes_public_key_only() {
     // The private key at rest is sealed, not the raw PKCS#8 document.
     let (sealed,): (Vec<u8>,) = sqlx::query_as("SELECT private_key_enc FROM signing_keys").fetch_one(&h.db.owner).await.unwrap();
     assert!(!sealed.starts_with(&[0x30, 0x51]) && !sealed.starts_with(&[0x30, 0x53]));
+    h.db.cleanup().await;
+}
+
+fn base32_decode(input: &str) -> Vec<u8> {
+    let (mut buffer, mut bits, mut out) = (0_u32, 0_u32, Vec::new());
+    for c in input.bytes() {
+        let value = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".iter().position(|&a| a == c).unwrap() as u32;
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
+}
+
+fn step_now() -> i64 {
+    identity_service::mfa::step_at(time::OffsetDateTime::now_utc().unix_timestamp())
+}
+
+/// A six-digit code that is wrong at every step the server could accept right now.
+fn wrong_code(secret: &[u8]) -> String {
+    let now = step_now();
+    let valid: Vec<String> = (now - 2..=now + 2).map(|s| identity_service::mfa::code_at(secret, s)).collect();
+    (0..).map(|n| format!("{n:06}")).find(|c| !valid.contains(c)).unwrap()
+}
+
+#[tokio::test]
+async fn two_step_verification_guards_sign_in() {
+    use identity_service::mfa::code_at;
+    let h = harness().await;
+    let password = "a-long-enough-password";
+    let registered = register(&h.app, "mfa@example.com").await;
+    let me = token(&registered);
+    let login = |body: Value| {
+        let app = h.app.clone();
+        async move { call(&app, Method::POST, "/api/v1/auth/login", Some(body), None, None).await }
+    };
+    let second_step = |mfa_token: &str, code: &str| {
+        let (app, body) = (h.app.clone(), json!({ "mfa_token": mfa_token, "code": code }));
+        async move { call(&app, Method::POST, "/api/v1/auth/login/mfa", Some(body), None, None).await }
+    };
+    let credentials = json!({ "email": "mfa@example.com", "password": password });
+    // A second session, which turning two-step verification on will end.
+    assert_eq!(login(credentials.clone()).await.status, StatusCode::OK);
+
+    let status = call(&h.app, Method::GET, "/api/v1/auth/mfa", None, Some(&me), None).await;
+    assert_eq!(status.body, json!({ "totp_enabled": false, "enabled_at": null, "recovery_codes_remaining": 0 }));
+
+    // Set-up needs the password again.
+    let bad =
+        call(&h.app, Method::POST, "/api/v1/auth/mfa/totp/setup", Some(json!({ "password": "nope" })), Some(&me), None).await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(bad.body["errors"][0]["field"], "password");
+    sqlx::query("UPDATE accounts SET failed_login_count = 0").execute(&h.db.owner).await.unwrap();
+
+    let setup =
+        call(&h.app, Method::POST, "/api/v1/auth/mfa/totp/setup", Some(json!({ "password": password })), Some(&me), None).await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
+    let encoded = setup.body["secret"].as_str().unwrap().to_owned();
+    let secret = base32_decode(&encoded);
+    assert_eq!(secret.len(), 20);
+    assert!(setup.body["otpauth_uri"].as_str().unwrap().contains(&format!("secret={encoded}")));
+    assert!(setup.body["qr_svg"].as_str().unwrap().contains("<svg"));
+    // Not on until a code proves the app has the secret.
+    assert_eq!(login(credentials.clone()).await.status, StatusCode::OK);
+    // The secret is stored sealed, not in clear.
+    let (stored,): (Vec<u8>,) = sqlx::query_as("SELECT secret_enc FROM totp_factors").fetch_one(&h.db.owner).await.unwrap();
+    assert!(!stored.windows(secret.len()).any(|w| w == secret.as_slice()));
+
+    let confirm = |code: String| {
+        let app = h.app.clone();
+        let me = me.clone();
+        async move { call(&app, Method::POST, "/api/v1/auth/mfa/totp/confirm", Some(json!({ "code": code })), Some(&me), None).await }
+    };
+    let wrong = confirm(wrong_code(&secret)).await;
+    assert_eq!(wrong.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(wrong.body["errors"][0]["field"], "code");
+    let now = step_now();
+    let enabled = confirm(code_at(&secret, now)).await;
+    assert_eq!(enabled.status, StatusCode::OK, "{}", enabled.body);
+    let recovery: Vec<String> = serde_json::from_value(enabled.body["codes"].clone()).unwrap();
+    assert_eq!(recovery.len(), 10);
+
+    // Every other session ended; this one carries on.
+    let sessions = call(&h.app, Method::GET, "/api/v1/auth/sessions", None, Some(&me), None).await;
+    assert_eq!(sessions.body["items"].as_array().unwrap().len(), 1);
+    let status = call(&h.app, Method::GET, "/api/v1/auth/mfa", None, Some(&me), None).await;
+    assert_eq!((status.body["totp_enabled"].as_bool(), status.body["recovery_codes_remaining"].as_i64()), (Some(true), Some(10)));
+    let again =
+        call(&h.app, Method::POST, "/api/v1/auth/mfa/totp/setup", Some(json!({ "password": password })), Some(&me), None).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+
+    // The password alone now opens nothing.
+    let challenged = login(credentials.clone()).await;
+    assert_eq!(challenged.status, StatusCode::ACCEPTED);
+    assert!(challenged.raw_set_cookie.is_none() && challenged.body.get("access_token").is_none());
+    let mfa_token = challenged.body["mfa_token"].as_str().unwrap().to_owned();
+    assert_eq!(second_step("forged", &code_at(&secret, now + 1)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(second_step(&mfa_token, &wrong_code(&secret)).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (failures,): (i32,) = sqlx::query_as("SELECT failed_login_count FROM accounts").fetch_one(&h.db.owner).await.unwrap();
+    assert_eq!(failures, 1, "wrong codes count towards the lockout");
+
+    let signed_in = second_step(&mfa_token, &code_at(&secret, now + 1)).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+    assert!(signed_in.cookie.as_deref().is_some_and(|c| !c.is_empty()));
+    assert_eq!(jwt_payload(&token(&signed_in))["email"], "mfa@example.com");
+    // The challenge is single use, and so is the code.
+    assert_eq!(second_step(&mfa_token, &code_at(&secret, now + 1)).await.status, StatusCode::UNAUTHORIZED);
+    let next = login(credentials.clone()).await.body["mfa_token"].as_str().unwrap().to_owned();
+    assert_eq!(second_step(&next, &code_at(&secret, now + 1)).await.status, StatusCode::UNPROCESSABLE_ENTITY, "no replay");
+
+    // A recovery code works once, however it is typed.
+    let typed = recovery[0].to_lowercase().replace('-', " ");
+    assert_eq!(second_step(&next, &typed).await.status, StatusCode::OK);
+    let next = login(credentials.clone()).await.body["mfa_token"].as_str().unwrap().to_owned();
+    assert_eq!(second_step(&next, &recovery[0]).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Five wrong codes (the reused one above was the first) and the attempt is over, even
+    // for a right code.
+    for attempt in 2..=4 {
+        assert_eq!(second_step(&next, &wrong_code(&secret)).await.status, StatusCode::UNPROCESSABLE_ENTITY, "attempt {attempt}");
+    }
+    assert_eq!(second_step(&next, &wrong_code(&secret)).await.status, StatusCode::UNAUTHORIZED, "attempt 5");
+    assert_eq!(second_step(&next, &recovery[1]).await.status, StatusCode::UNAUTHORIZED);
+    // ...and those failures locked the account, so a fresh sign-in is refused for a while.
+    assert_eq!(login(credentials.clone()).await.status, StatusCode::UNAUTHORIZED);
+    sqlx::query("UPDATE accounts SET failed_login_count = 0, locked_until = NULL").execute(&h.db.owner).await.unwrap();
+
+    // New recovery codes replace the old ones.
+    let renewed = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/mfa/recovery-codes",
+        Some(json!({ "password": password, "code": recovery[1] })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(renewed.status, StatusCode::OK, "{}", renewed.body);
+    let renewed: Vec<String> = serde_json::from_value(renewed.body["codes"].clone()).unwrap();
+    let next = login(credentials.clone()).await.body["mfa_token"].as_str().unwrap().to_owned();
+    assert_eq!(second_step(&next, &recovery[2]).await.status, StatusCode::UNPROCESSABLE_ENTITY, "old codes are gone");
+
+    // Turning it off needs the password and a code.
+    let off = |password: &str, code: &str| {
+        let (app, me, body) = (h.app.clone(), me.clone(), json!({ "password": password, "code": code }));
+        async move { call(&app, Method::POST, "/api/v1/auth/mfa/totp/disable", Some(body), Some(&me), None).await }
+    };
+    assert_eq!(off(password, &wrong_code(&secret)).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(off(password, &renewed[0]).await.status, StatusCode::NO_CONTENT);
+    let status = call(&h.app, Method::GET, "/api/v1/auth/mfa", None, Some(&me), None).await;
+    assert_eq!(status.body["totp_enabled"], false);
+    assert_eq!(login(credentials).await.status, StatusCode::OK);
+
+    let outcomes: Vec<(String,)> =
+        sqlx::query_as("SELECT DISTINCT outcome FROM login_events ORDER BY outcome").fetch_all(&h.db.owner).await.unwrap();
+    let outcomes: Vec<&str> = outcomes.iter().map(|(o,)| o.as_str()).collect();
+    assert_eq!(outcomes, ["locked", "mfa_failed", "mfa_required", "success"]);
     h.db.cleanup().await;
 }

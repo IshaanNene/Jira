@@ -1,4 +1,4 @@
-import { Bell, FolderKanban, GitBranch, Home, MonitorSmartphone, ScrollText, Settings, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Bell, FolderKanban, GitBranch, Home, ScrollText, Settings, ShieldCheck, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
 
 import type { OrgPermission } from "@/modules/organizations";
 
@@ -31,7 +31,7 @@ export const SETTINGS_NAV: NavItem[] = [
   { to: "/settings/audit-log", label: "Audit log", icon: ScrollText, requires: "viewAuditLog" },
   { to: "/settings/profile", label: "Profile", icon: UserRound },
   { to: "/settings/notifications", label: "Notifications", icon: Bell },
-  { to: "/settings/sessions", label: "Sessions", icon: MonitorSmartphone },
+  { to: "/settings/security", label: "Security", icon: ShieldCheck },
 ];
 
 export const ALL_NAV: NavItem[] = [...MAIN_NAV, ...SETTINGS_NAV];

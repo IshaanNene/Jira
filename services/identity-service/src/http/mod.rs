@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod dto;
+pub mod mfa;
 pub mod sessions;
 
 use axum::{
@@ -27,6 +28,12 @@ use crate::AppState;
         auth::logout,
         auth::me,
         auth::jwks,
+        mfa::login,
+        mfa::status,
+        mfa::setup,
+        mfa::confirm,
+        mfa::regenerate,
+        mfa::disable,
         sessions::list,
         sessions::revoke
     ),
@@ -39,7 +46,15 @@ use crate::AppState;
         dto::TokenOrganization,
         dto::AccountDto,
         dto::SessionDto,
-        dto::SessionList
+        dto::SessionList,
+        mfa::MfaChallenge,
+        mfa::MfaLoginRequest,
+        mfa::MfaStatus,
+        mfa::PasswordConfirmation,
+        mfa::TotpSetup,
+        mfa::CodeConfirmation,
+        mfa::PasswordAndCode,
+        mfa::RecoveryCodes
     ))
 )]
 pub struct ApiDoc;
@@ -54,6 +69,12 @@ pub fn router(state: AppState) -> Router {
     let auth_routes = Router::new()
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
+        .route("/login/mfa", post(mfa::login))
+        .route("/mfa", get(mfa::status))
+        .route("/mfa/totp/setup", post(mfa::setup))
+        .route("/mfa/totp/confirm", post(mfa::confirm))
+        .route("/mfa/totp/disable", post(mfa::disable))
+        .route("/mfa/recovery-codes", post(mfa::regenerate))
         .route("/token/exchange", post(auth::exchange))
         .route("/me", get(auth::me))
         .route("/sessions", get(sessions::list))
