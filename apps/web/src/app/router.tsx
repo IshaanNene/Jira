@@ -5,7 +5,7 @@ import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { LoginPage, RegisterPage } from "@/modules/auth";
 import { AcceptInvitationPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
-import { NotificationSettingsPage } from "@/modules/notifications";
+import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notifications";
 import { SearchPage } from "@/modules/search";
 import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
@@ -43,6 +43,8 @@ export const router = createBrowserRouter([
       },
       // Reachable signed in or out: shows a preview first, accepts once signed in.
       { path: "/invite/:token", element: <AcceptInvitationPage /> },
+      // From notification emails; works signed out.
+      { path: "/unsubscribe", element: <UnsubscribePage /> },
       {
         element: <RequireAuth />,
         children: [

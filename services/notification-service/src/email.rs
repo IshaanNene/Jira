@@ -13,6 +13,18 @@ pub struct EmailInput<'a> {
     pub to_status: Option<&'a str>,
     /// Base URL of the web app, without a trailing slash.
     pub app_url: &'a str,
+    /// Page that turns this kind of email off without signing in.
+    pub unsubscribe_url: Option<&'a str>,
+}
+
+/// "comments", "status changes", … for "Stop emails about …".
+pub fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Assigned => "assignments",
+        Kind::Mentioned => "mentions",
+        Kind::Commented => "comments",
+        Kind::StatusChanged => "status changes",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +104,15 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
     text.push_str(&format!(
         "\n--\nYou are receiving this because you are involved in this issue.\nChoose which emails you get: {settings_url}\n"
     ));
+    if let Some(url) = input.unsubscribe_url {
+        text.push_str(&format!("Stop emails about {}: {url}\n", kind_label(input.kind)));
+    }
+    let unsubscribe = input
+        .unsubscribe_url
+        .map(|u| {
+            format!(r#" · <a href="{}" style="color:#0c66e4">Stop emails about {}</a>"#, escape_html(u), kind_label(input.kind))
+        })
+        .unwrap_or_default();
 
     let button = issue_url
         .as_ref()
@@ -109,7 +130,7 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
 <p style="margin:0;font-size:16px;font-weight:600"><span style="color:#44546f">{key}</span> {summary}</p>
 {button}
 <hr style="border:none;border-top:1px solid #dcdfe4;margin:24px 0 12px">
-<p style="margin:0;font-size:12px;color:#626f86">You are receiving this because you are involved in this issue. <a href="{settings}" style="color:#0c66e4">Choose which emails you get</a>.</p>
+<p style="margin:0;font-size:12px;color:#626f86">You are receiving this because you are involved in this issue. <a href="{settings}" style="color:#0c66e4">Choose which emails you get</a>{unsubscribe}.</p>
 </div></body></html>"#,
         headline = escape_html(&headline),
         key = escape_html(&key),
@@ -131,6 +152,7 @@ mod tests {
             issue_summary: "Refunds\r\nBcc: victim@example.com <b>fail</b>",
             to_status: Some("in_review"),
             app_url: "https://app.example.com",
+            unsubscribe_url: Some("https://app.example.com/unsubscribe?token=abc.def"),
         }
     }
 
@@ -142,6 +164,8 @@ mod tests {
         assert!(r.html.contains("Maya &lt;script&gt; assigned you PAY-12"));
         assert!(!r.html.contains("<script>") && !r.html.contains("<b>fail"));
         assert!(r.text.contains("View the issue: https://app.example.com/projects/PAY/issues/PAY-12"));
+        assert!(r.text.contains("Stop emails about assignments: https://app.example.com/unsubscribe?token=abc.def"));
+        assert!(r.html.contains(r#"href="https://app.example.com/unsubscribe?token=abc.def""#));
     }
 
     #[test]

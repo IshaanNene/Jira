@@ -68,6 +68,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/unsubscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Public (the link works signed out). Reading a link changes nothing, so mail scanners
+         *     that follow links cannot unsubscribe anyone.
+         */
+        get: operations["describe_unsubscribe"];
+        put?: never;
+        /**
+         * Public. Turns off email about the link's kind; with a JSON body `{"all": true}`, all
+         *     email. A form body `List-Unsubscribe=One-Click` (RFC 8058, sent by mail clients) is
+         *     the same as no body.
+         */
+        post: operations["unsubscribe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications/{id}/read": {
         parameters: {
             query?: never;
@@ -127,6 +152,18 @@ export interface components {
         UnreadCount: {
             /** Format: int64 */
             count: number;
+        };
+        /** @description What an unsubscribe link would turn off. Says nothing about who it is for. */
+        UnsubscribeLink: {
+            /** @description assigned | commented | mentioned | status_changed */
+            kind: string;
+            /** @description e.g. "comments" */
+            kind_label: string;
+        };
+        /** @description Optional body of an unsubscribe request. */
+        UnsubscribeRequest: {
+            /** @description Turn off all email, not just this kind. */
+            all?: boolean | null;
         };
     };
     responses: never;
@@ -236,6 +273,66 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["UnreadCount"];
                 };
+            };
+        };
+    };
+    describe_unsubscribe: {
+        parameters: {
+            query: {
+                /** @description From the link in the email. */
+                token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnsubscribeLink"];
+                };
+            };
+            /** @description Invalid or expired link */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unsubscribe: {
+        parameters: {
+            query: {
+                /** @description From the link in the email. */
+                token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["UnsubscribeRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid or expired link */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

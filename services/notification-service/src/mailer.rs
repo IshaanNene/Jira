@@ -2,7 +2,10 @@
 
 use async_trait::async_trait;
 use lettre::{
-    message::{header::ContentType, Mailbox, MultiPart, SinglePart},
+    message::{
+        header::{ContentType, HeaderName, HeaderValue},
+        Mailbox, MultiPart, SinglePart,
+    },
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 
@@ -12,6 +15,8 @@ pub struct Outgoing<'a> {
     pub subject: &'a str,
     pub text: &'a str,
     pub html: &'a str,
+    /// One-click unsubscribe endpoint (RFC 8058).
+    pub unsubscribe_url: Option<&'a str>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +55,7 @@ impl SmtpMailer {
 impl Mailer for SmtpMailer {
     async fn send(&self, email: &Outgoing<'_>) -> Result<(), SendError> {
         let to: Mailbox = email.to.parse().map_err(|_| SendError::Permanent("invalid recipient address".into()))?;
-        let message = Message::builder()
+        let mut message = Message::builder()
             .from(self.from.clone())
             .to(to)
             .subject(email.subject)
@@ -60,6 +65,14 @@ impl Mailer for SmtpMailer {
                     .singlepart(SinglePart::builder().header(ContentType::TEXT_HTML).body(email.html.to_owned())),
             )
             .map_err(|e| SendError::Permanent(e.to_string()))?;
+        if let Some(url) = email.unsubscribe_url {
+            let headers = message.headers_mut();
+            headers.insert_raw(HeaderValue::new(HeaderName::new_from_ascii_str("List-Unsubscribe"), format!("<{url}>")));
+            headers.insert_raw(HeaderValue::new(
+                HeaderName::new_from_ascii_str("List-Unsubscribe-Post"),
+                "List-Unsubscribe=One-Click".to_owned(),
+            ));
+        }
         match self.transport.send(message).await {
             Ok(_) => Ok(()),
             Err(e) if e.is_permanent() => Err(SendError::Permanent(e.to_string())),

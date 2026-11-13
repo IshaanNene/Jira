@@ -45,10 +45,14 @@ answers 404. The board response carries the caller's `permissions` so the UI can
 `outbox` and `inbox`. Emits `board.updated`, `sprint.created`, `sprint.started`, `sprint.completed`,
 `issue.ranked` on the agile topic.
 
+**Cleanup consumer** (`agile-service.cleanup`, issue and project topics). `issue.deleted` removes the issue's
+placement and, when it was in a running sprint, logs it as removed from scope so the burndown drops it (closed
+sprints keep their frozen reports). `project.deleted` marks the project's boards deleted and removes its
+placements. Inbox-deduplicated; tenant from the event envelope.
+
 **Not built yet.** Epics and subtasks are not shown on boards; swimlanes and quick filters (the web board has
 search and "Only my issues"); a rank rebalancing job (ranks grow when many moves land in one gap); an event-fed
-copy of issue data (each board load asks issue-service, capped at 2000 cards); placements are not cleaned up
-when an issue is deleted; cumulative flow and control charts.
+copy of issue data (each board load asks issue-service, capped at 2000 cards); cumulative flow and control charts.
 
 | Variable | Required | Default |
 |---|---|---|

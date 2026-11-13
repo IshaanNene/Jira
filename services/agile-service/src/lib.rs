@@ -1,5 +1,6 @@
 //! Agile service: boards, their columns, the order of issues, and sprints.
 
+pub mod cleanup;
 pub mod domain;
 pub mod http;
 pub mod rank;
@@ -55,6 +56,18 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         Arc::new(RegistryPlacement::new(&registry, &secret, SERVICE_NAME)?),
     ));
     event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
+    match event_bus::KafkaSettings::from_env(SERVICE_NAME) {
+        Some(settings) => {
+            let handler = Arc::new(cleanup::Cleanup { db: Arc::clone(&db) });
+            let topics = [event_contracts::topics::ISSUE, event_contracts::topics::PROJECT];
+            tokio::spawn(async move {
+                if let Err(error) = event_bus::run_consumer(&settings, cleanup::CONSUMER, &topics, handler).await {
+                    tracing::error!(%error, "agile cleanup consumer stopped");
+                }
+            });
+        }
+        None => tracing::warn!("KAFKA_BROKERS is not set: placements of deleted issues are not cleaned up"),
+    }
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
     let state = AppState {
         db: Arc::clone(&db),

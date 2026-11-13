@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useLiveChannel } from "@/modules/live";
-import { api, type NotificationList, type NotificationPreferences, type UnreadCount } from "@/services/api";
+import { api, type NotificationList, type NotificationPreferences, type UnreadCount, type UnsubscribeLink } from "@/services/api";
 import { useSession } from "@/state/session";
 
 const BASE = "/api/v1/notifications";
@@ -79,5 +79,21 @@ export function useSavePreferences() {
     },
     onError: (_error, _next, context) => qc.setQueryData(key, context?.previous),
     onSuccess: (saved) => qc.setQueryData(key, saved),
+  });
+}
+
+/** What an emailed unsubscribe link would turn off. Works signed out. */
+export function useUnsubscribeLink(token: string) {
+  return useQuery({
+    queryKey: ["unsubscribe", token],
+    queryFn: () => api.get<UnsubscribeLink>(`${BASE}/unsubscribe`, { query: { token }, auth: false }),
+    enabled: token.length > 0,
+    retry: false,
+  });
+}
+
+export function useUnsubscribe(token: string) {
+  return useMutation({
+    mutationFn: (all: boolean) => api.post(`${BASE}/unsubscribe`, all ? { all: true } : {}, { query: { token }, auth: false }),
   });
 }

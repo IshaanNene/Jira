@@ -14,6 +14,16 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "assigned" => Self::Assigned,
+            "commented" => Self::Commented,
+            "mentioned" => Self::Mentioned,
+            "status_changed" => Self::StatusChanged,
+            _ => return None,
+        })
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Assigned => "assigned",

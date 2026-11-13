@@ -213,11 +213,82 @@ pub async fn put_preferences(
     Ok(Json(prefs.into()))
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct UnsubscribeQuery {
+    /// From the link in the email.
+    pub token: String,
+}
+
+/// Optional body of an unsubscribe request.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UnsubscribeRequest {
+    /// Turn off all email, not just this kind.
+    pub all: Option<bool>,
+}
+
+/// What an unsubscribe link would turn off. Says nothing about who it is for.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnsubscribeLink {
+    /// assigned | commented | mentioned | status_changed
+    pub kind: String,
+    /// e.g. "comments"
+    pub kind_label: String,
+}
+
+fn verify_link(state: &AppState, token: &str) -> ApiResult<crate::unsubscribe::Claims> {
+    let claims = state
+        .unsubscribe
+        .verify(token, OffsetDateTime::now_utc().unix_timestamp())
+        .ok_or(ApiError::NotFound("unsubscribe link"))?;
+    if crate::domain::Kind::parse(&claims.kind).is_none() {
+        return Err(ApiError::NotFound("unsubscribe link"));
+    }
+    Ok(claims)
+}
+
+/// Public (the link works signed out). Reading a link changes nothing, so mail scanners
+/// that follow links cannot unsubscribe anyone.
+#[utoipa::path(get, path = "/api/v1/notifications/unsubscribe", params(UnsubscribeQuery),
+    responses((status = 200, body = UnsubscribeLink), (status = 404, description = "Invalid or expired link")))]
+pub async fn describe_unsubscribe(
+    State(state): State<AppState>,
+    Query(q): Query<UnsubscribeQuery>,
+) -> ApiResult<Json<UnsubscribeLink>> {
+    let claims = verify_link(&state, &q.token)?;
+    let kind = crate::domain::Kind::parse(&claims.kind).expect("checked");
+    Ok(Json(UnsubscribeLink { kind: claims.kind, kind_label: crate::email::kind_label(kind).into() }))
+}
+
+/// Public. Turns off email about the link's kind; with a JSON body `{"all": true}`, all
+/// email. A form body `List-Unsubscribe=One-Click` (RFC 8058, sent by mail clients) is
+/// the same as no body.
+#[utoipa::path(post, path = "/api/v1/notifications/unsubscribe", params(UnsubscribeQuery), request_body(content = Option<UnsubscribeRequest>),
+    responses((status = 204), (status = 404, description = "Invalid or expired link")))]
+pub async fn unsubscribe(
+    State(state): State<AppState>,
+    Query(q): Query<UnsubscribeQuery>,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    let claims = verify_link(&state, &q.token)?;
+    let all = serde_json::from_slice::<UnsubscribeRequest>(&body).ok().and_then(|b| b.all).unwrap_or(false);
+    let mut tx = state.db.begin(claims.tenant_id).await?;
+    store::mute_email(tx.conn(), claims.tenant_id, claims.user_id, if all { None } else { Some(&claims.kind) }).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Notifications API", version = "1.0.0", description = "The signed-in person's in-app notifications."),
-    paths(list, unread, read_one, read_all, get_preferences, put_preferences),
-    components(schemas(NotificationDto, NotificationList, UnreadCount, NotificationPreferences))
+    paths(list, unread, read_one, read_all, get_preferences, put_preferences, describe_unsubscribe, unsubscribe),
+    components(schemas(
+        NotificationDto,
+        NotificationList,
+        UnreadCount,
+        NotificationPreferences,
+        UnsubscribeLink,
+        UnsubscribeRequest
+    ))
 )]
 pub struct ApiDoc;
 
@@ -227,6 +298,7 @@ pub fn router(state: AppState) -> Router {
         .route("/notifications/unread-count", get(unread))
         .route("/notifications/read-all", post(read_all))
         .route("/notifications/preferences", get(get_preferences).put(put_preferences))
+        .route("/notifications/unsubscribe", get(describe_unsubscribe).post(unsubscribe))
         .route("/notifications/{id}/read", post(read_one));
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()

@@ -68,17 +68,19 @@ async fn harness() -> Harness {
     let router = Arc::new(DbRouter::single(db.app.clone()));
     let policy = Arc::new(PolicyClient::new(world.clone(), RedisHandle::default()));
     let auth = TestAuth::new().unwrap();
+    let unsubscribe = Arc::new(notification_service::unsubscribe::UnsubscribeKey::derive("test-secret-for-unsubscribe-links"));
     let state = AppState {
         db: Arc::clone(&router),
         verifier: Arc::clone(&auth.verifier),
         policy: Arc::clone(&policy),
         allowed_origins: Arc::new(vec![]),
+        unsubscribe: Arc::clone(&unsubscribe),
     };
     let notifier = Notifier {
         db: router,
         directory: world.clone(),
         policy,
-        email: Some(EmailSettings { app_url: "https://app.example.com".into(), delay: std::time::Duration::ZERO }),
+        email: Some(EmailSettings { app_url: "https://app.example.com".into(), delay: std::time::Duration::ZERO, unsubscribe }),
     };
     Harness { db, app: http::router(state), notifier, auth, world, tenant: Uuid::now_v7() }
 }
@@ -120,6 +122,20 @@ impl Harness {
         // Redelivery changes nothing.
         self.notifier.handle(&event).await.unwrap();
         event_id
+    }
+
+    /// A request without a session, as a mail client or a signed-out browser sends it.
+    async fn anonymous(&self, method: &str, path: &str, content_type: &str, body: &str) -> (u16, Value) {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", content_type)
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
     async fn put_json(&self, path: &str, token: &str, body: Value) -> (u16, Value) {
@@ -468,5 +484,84 @@ async fn an_unreachable_mail_server_is_retried_later() {
             .unwrap();
     assert_eq!((status.as_str(), attempts, later), ("pending", 1, true));
     assert_eq!(sender::run_once(&h.db.app, &down).await.unwrap(), 0, "not due yet");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn emails_carry_one_click_unsubscribe_links_that_only_turn_email_off() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let project = Uuid::now_v7();
+    let maya = h.person(t, "Maya", Some(project), true);
+    let olivia = h.person(t, "Olivia", Some(project), true);
+    let issue = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue,
+        Audience {
+            key: "WEB-3".into(),
+            summary: "Footer".into(),
+            project_id: project,
+            reporter_id: olivia,
+            assignee_id: None,
+            watcher_ids: vec![],
+        },
+    );
+    let comment = json!({ "comment_id": Uuid::now_v7(), "issue_id": issue, "key": "WEB-3", "project_id": project, "author_id": maya, "mentioned_user_ids": [] });
+    h.deliver(t, "comment.created", maya, comment).await;
+    let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
+    sender::run_once(&h.db.app, &mailer).await.unwrap();
+
+    // The delivered message has the RFC 8058 headers and a confirmation link in its body.
+    let address = h.world.people.lock().unwrap()[&(t, olivia)].email.clone();
+    let id = inbox_of(&address).await[0]["ID"].as_str().unwrap().to_owned();
+    let headers: Value =
+        reqwest::get(format!("{}/api/v1/message/{id}/headers", mailpit_api())).await.unwrap().json().await.unwrap();
+    assert_eq!(headers["List-Unsubscribe-Post"][0], "List-Unsubscribe=One-Click");
+    let one_click = headers["List-Unsubscribe"][0].as_str().unwrap().trim_matches(|c| c == '<' || c == '>').to_owned();
+    assert!(one_click.starts_with("https://app.example.com/api/v1/notifications/unsubscribe?token="), "{one_click}");
+    let full: Value = reqwest::get(format!("{}/api/v1/message/{id}", mailpit_api())).await.unwrap().json().await.unwrap();
+    assert!(full["Text"].as_str().unwrap().contains("Stop emails about comments: https://app.example.com/unsubscribe?token="));
+    let path = one_click.trim_start_matches("https://app.example.com");
+
+    // Looking at the link changes nothing; it describes only the kind.
+    let (status, link) = h.anonymous("GET", path, "text/plain", "").await;
+    assert_eq!((status, link), (200, json!({ "kind": "commented", "kind_label": "comments" })));
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await;
+    assert_eq!(prefs["email_commented"], true);
+
+    // The mail client's one-click POST turns off that kind only, without a session.
+    let (status, _) = h.anonymous("POST", path, "application/x-www-form-urlencoded", "List-Unsubscribe=One-Click").await;
+    assert_eq!(status, 204);
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await;
+    assert_eq!(
+        (prefs["email_enabled"].as_bool(), prefs["email_commented"].as_bool(), prefs["email_assigned"].as_bool()),
+        (Some(true), Some(false), Some(true))
+    );
+    // Repeating it is harmless; "all" switches every email off.
+    assert_eq!(h.anonymous("POST", path, "application/json", r#"{"all": true}"#).await.0, 204);
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await;
+    assert_eq!(prefs["email_enabled"], false);
+    assert_eq!(
+        h.call("GET", "/api/v1/notifications/preferences", &h.token(t, maya)).await.1["email_enabled"],
+        true,
+        "nobody else"
+    );
+
+    // Tampered, foreign or missing tokens.
+    let token = path.split("token=").nth(1).unwrap();
+    let tampered = format!("/api/v1/notifications/unsubscribe?token={}x", token);
+    assert_eq!(h.anonymous("POST", &tampered, "text/plain", "").await.0, 404);
+    let foreign = notification_service::unsubscribe::UnsubscribeKey::derive("some-other-deployments-secret!!").issue(
+        &notification_service::unsubscribe::Claims {
+            tenant_id: t,
+            user_id: maya,
+            kind: "commented".into(),
+            issued_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+        },
+    );
+    assert_eq!(h.anonymous("POST", &format!("/api/v1/notifications/unsubscribe?token={foreign}"), "text/plain", "").await.0, 404);
+    assert_eq!(h.anonymous("POST", "/api/v1/notifications/unsubscribe", "text/plain", "").await.0, 400);
     h.db.cleanup().await;
 }

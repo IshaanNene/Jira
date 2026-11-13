@@ -34,6 +34,7 @@ struct Claimed {
     subject: String,
     text_body: String,
     html_body: String,
+    unsubscribe_url: Option<String>,
     attempts: i32,
 }
 
@@ -74,7 +75,7 @@ pub async fn run_once(pool: &PgPool, mailer: &dyn Mailer) -> sqlx::Result<usize>
                 send_after = now() + make_interval(secs => $2) \
          WHERE id IN (SELECT id FROM email_deliveries WHERE status IN ('pending', 'sending') AND send_after <= now() \
                       ORDER BY send_after LIMIT $1 FOR UPDATE SKIP LOCKED) \
-         RETURNING id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, attempts",
+         RETURNING id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, unsubscribe_url, attempts",
     )
     .bind(BATCH)
     .bind(LEASE_SECONDS as f64)
@@ -86,7 +87,13 @@ pub async fn run_once(pool: &PgPool, mailer: &dyn Mailer) -> sqlx::Result<usize>
             finish(pool, c.id, "skipped", None).await?;
             continue;
         }
-        let email = Outgoing { to: &c.to_address, subject: &c.subject, text: &c.text_body, html: &c.html_body };
+        let email = Outgoing {
+            to: &c.to_address,
+            subject: &c.subject,
+            text: &c.text_body,
+            html: &c.html_body,
+            unsubscribe_url: c.unsubscribe_url.as_deref(),
+        };
         match mailer.send(&email).await {
             Ok(()) => {
                 finish(pool, c.id, "sent", None).await?;

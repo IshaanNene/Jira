@@ -85,6 +85,8 @@ service could impersonate another; per-workload identity (SPIFFE/SPIRE) is the p
 | File upload | size limit at gateway and service; content sniffing (`infer`) vs declared type; extension allow-list; object key generated server-side; malware scan hook sets `scan_status`; downloads via short-lived pre-signed URL issued after an authorization check, `Content-Disposition: attachment` |
 | Mass assignment | separate request DTOs; `deny_unknown_fields` |
 | Headers | HSTS, `X-Content-Type-Options`, `Referrer-Policy`, `frame-ancestors 'none'`; strict CORS allow-list |
+| Outgoing email | names and summaries HTML-escaped and flattened to one line in subjects (no header injection); links only to well-formed issue keys under the configured `APP_URL`; recipient addresses never logged; finished deliveries deleted after 7 days |
+| Unsubscribe links | public endpoint (gateway exempts only `/api/v1/notifications/unsubscribe`); HMAC-SHA256 token over (tenant, user, kind, issued-at) with a purpose-derived key, 90-day expiry, constant-time verification; the token can only turn email **off**; `GET` only describes the link (mail scanners prefetch links), `POST` acts (RFC 8058) |
 | Abuse | gateway global + per-IP limits; service per-user/tenant token bucket in Redis; body size limits; pagination caps |
 
 ## 6. Secrets and data protection

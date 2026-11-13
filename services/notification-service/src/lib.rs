@@ -9,6 +9,7 @@ pub mod mailer;
 pub mod notifier;
 pub mod sender;
 pub mod store;
+pub mod unsubscribe;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -30,6 +31,7 @@ pub struct AppState {
     pub verifier: Arc<TokenVerifier>,
     pub policy: Arc<PolicyClient>,
     pub allowed_origins: Arc<Vec<String>>,
+    pub unsubscribe: Arc<unsubscribe::UnsubscribeKey>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -62,6 +64,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
     let policy = Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis.clone()));
 
+    let unsubscribe = Arc::new(unsubscribe::UnsubscribeKey::derive(&secret));
     // Email is optional: without SMTP_URL notifications are in-app only.
     let email = match config::optional("SMTP_URL") {
         Some(url) => {
@@ -70,6 +73,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
             Some(notifier::EmailSettings {
                 app_url: config::required("APP_URL")?.trim_end_matches('/').to_owned(),
                 delay: std::time::Duration::from_secs(config::or("EMAIL_DELAY_SECONDS", "60").parse()?),
+                unsubscribe: Arc::clone(&unsubscribe),
             })
         }
         None => {
@@ -102,6 +106,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         ),
         policy,
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
+        unsubscribe,
     };
     let health = server::health_router(move || {
         let db = Arc::clone(&db);

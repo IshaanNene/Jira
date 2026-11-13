@@ -30,6 +30,7 @@ pub struct EmailSettings {
     pub app_url: String,
     /// How long an email waits, so that reading the notification in the app first cancels it.
     pub delay: Duration,
+    pub unsubscribe: Arc<crate::unsubscribe::UnsubscribeKey>,
 }
 
 impl Notifier {
@@ -129,6 +130,14 @@ impl Handler for Notifier {
                 let prefs = preferences.iter().find(|(u, _)| *u == user).map(|(_, p)| p.clone()).unwrap_or_default();
                 if let Some(email) = &self.email {
                     if !person.email.is_empty() && prefs.wants_email(kind.as_str()) {
+                        let token = email.unsubscribe.issue(&crate::unsubscribe::Claims {
+                            tenant_id,
+                            user_id: user,
+                            kind: kind.as_str().into(),
+                            issued_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+                        });
+                        let page = format!("{}/unsubscribe?token={token}", email.app_url);
+                        let one_click = format!("{}/api/v1/notifications/unsubscribe?token={token}", email.app_url);
                         let rendered = crate::email::render(&crate::email::EmailInput {
                             kind,
                             actor_name: &actor_name,
@@ -136,6 +145,7 @@ impl Handler for Notifier {
                             issue_summary: &audience.summary,
                             to_status: detail.get("to_status").and_then(|v| v.as_str()),
                             app_url: &email.app_url,
+                            unsubscribe_url: Some(&page),
                         });
                         store::enqueue_email(
                             tx.conn(),
@@ -148,6 +158,7 @@ impl Handler for Notifier {
                                 subject: &rendered.subject,
                                 text_body: &rendered.text,
                                 html_body: &rendered.html,
+                                unsubscribe_url: Some(&one_click),
                                 send_after: time::OffsetDateTime::now_utc() + email.delay,
                             },
                         )

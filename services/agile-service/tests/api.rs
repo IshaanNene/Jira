@@ -508,3 +508,88 @@ async fn boards_and_sprints_never_cross_tenants() {
     }
     h.db.cleanup().await;
 }
+
+fn event(tenant: Uuid, topic: &str, event_type: &str, payload: Value) -> event_bus::Event {
+    let raw = json!({
+        "event_id": Uuid::now_v7(), "event_type": event_type, "schema_version": 1, "tenant_id": tenant,
+        "aggregate_type": "issue", "aggregate_id": Uuid::now_v7(), "aggregate_version": 1,
+        "occurred_at": "2026-11-13T09:00:00Z", "correlation_id": null, "causation_id": null,
+        "actor": {"type": "user", "id": Uuid::now_v7()}, "payload": payload
+    });
+    event_bus::Event::parse(topic, &serde_json::to_vec(&raw).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn deleted_issues_and_projects_leave_the_boards() {
+    use agile_service::cleanup::Cleanup;
+    use event_bus::Handler;
+    use event_contracts::topics;
+
+    let h = harness().await;
+    let project = h.project("DEMO");
+    let admin = h.user(&[(project, ProjectRole::Administrator)]);
+    let (a, b, c) =
+        (h.issue(project, 1, "story", Some(5.0)), h.issue(project, 2, "task", Some(3.0)), h.issue(project, 3, "task", None));
+    let board = h.board(&admin, "scrum").await;
+    let sprint =
+        h.post(&format!("/api/v1/boards/{board}/sprints"), &admin, json!({})).await.body["id"].as_str().unwrap().to_owned();
+    let moved =
+        h.post(&format!("/api/v1/boards/{board}/move"), &admin, json!({ "issue_ids": [a, b], "sprint_id": sprint })).await;
+    assert_eq!(moved.status, StatusCode::NO_CONTENT);
+    h.post(&format!("/api/v1/boards/{board}/move"), &admin, json!({ "issue_ids": [c], "sprint_id": null })).await;
+    assert_eq!(h.post(&format!("/api/v1/sprints/{sprint}/start"), &admin, json!({})).await.status, StatusCode::OK);
+
+    let cleanup = Cleanup { db: Arc::new(DbRouter::single(h.db.app.clone())) };
+    let placements = || async {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT issue_id FROM issue_placements ORDER BY issue_id").fetch_all(&h.db.owner).await.unwrap();
+        ids
+    };
+    let removed = || async {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM sprint_scope_events WHERE action = 'removed'")
+            .fetch_one(&h.db.owner)
+            .await
+            .unwrap();
+        n
+    };
+
+    // An issue in the running sprint leaves its scope; one in the backlog just disappears.
+    h.world.issues.lock().unwrap().retain(|(_, _, card)| card.id != a);
+    let deleted =
+        event(h.tenant, topics::ISSUE, "issue.deleted", json!({ "issue_id": a, "key": "DEMO-1", "project_id": project }));
+    cleanup.handle(&deleted).await.unwrap();
+    cleanup.handle(&deleted).await.unwrap(); // redelivered: no second scope entry
+    assert_eq!(removed().await, 1);
+    cleanup
+        .handle(&event(
+            h.tenant,
+            topics::ISSUE,
+            "issue.deleted",
+            json!({ "issue_id": c, "key": "DEMO-3", "project_id": project }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(removed().await, 1, "backlog issues are not sprint scope");
+    assert_eq!(placements().await, [b]);
+
+    // Another tenant's event about the same ids changes nothing here.
+    cleanup
+        .handle(&event(
+            Uuid::now_v7(),
+            topics::ISSUE,
+            "issue.deleted",
+            json!({ "issue_id": b, "key": "DEMO-2", "project_id": project }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(placements().await, [b]);
+
+    // A deleted project takes its boards and backlog order with it.
+    cleanup
+        .handle(&event(h.tenant, topics::PROJECT, "project.deleted", json!({ "project_id": project, "key": "DEMO" })))
+        .await
+        .unwrap();
+    assert!(placements().await.is_empty());
+    assert_eq!(h.call(Method::GET, &format!("/api/v1/boards/{board}"), &admin, None, None).await.status, StatusCode::NOT_FOUND);
+    h.db.cleanup().await;
+}

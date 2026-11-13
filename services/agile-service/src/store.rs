@@ -403,3 +403,38 @@ pub async fn scope_log(
     .fetch_all(conn)
     .await?)
 }
+
+// --- cleanup after deletions elsewhere -----------------------------------------------
+
+/// Remove an issue's placement. Returns the sprint it was in when that sprint is running.
+pub async fn remove_placement(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Option<Uuid>> {
+    let sprint: Option<Option<Uuid>> =
+        sqlx::query_scalar("DELETE FROM issue_placements WHERE tenant_id = $1 AND issue_id = $2 RETURNING sprint_id")
+            .bind(tenant_id)
+            .bind(issue_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some(Some(sprint)) = sprint else { return Ok(None) };
+    let active: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sprints WHERE tenant_id = $1 AND id = $2 AND state = 'active')")
+            .bind(tenant_id)
+            .bind(sprint)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(active.then_some(sprint))
+}
+
+/// A project was deleted: its boards go, and so does its backlog order.
+pub async fn retire_project(conn: &mut PgConnection, tenant_id: Uuid, project_id: Uuid) -> ApiResult<()> {
+    sqlx::query("UPDATE boards SET deleted_at = now(), updated_at = now() WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL")
+        .bind(tenant_id)
+        .bind(project_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM issue_placements WHERE tenant_id = $1 AND project_id = $2")
+        .bind(tenant_id)
+        .bind(project_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}

@@ -185,13 +185,14 @@ pub struct NewDelivery<'a> {
     pub subject: &'a str,
     pub text_body: &'a str,
     pub html_body: &'a str,
+    pub unsubscribe_url: Option<&'a str>,
     pub send_after: OffsetDateTime,
 }
 
 pub async fn enqueue_email(conn: &mut PgConnection, tenant_id: Uuid, d: &NewDelivery<'_>) -> ApiResult<()> {
     sqlx::query(
-        "INSERT INTO email_deliveries (id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, send_after) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (notification_id) DO NOTHING",
+        "INSERT INTO email_deliveries (id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, send_after, unsubscribe_url) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (notification_id) DO NOTHING",
     )
     .bind(platform_common::new_id())
     .bind(tenant_id)
@@ -203,7 +204,19 @@ pub async fn enqueue_email(conn: &mut PgConnection, tenant_id: Uuid, d: &NewDeli
     .bind(d.text_body)
     .bind(d.html_body)
     .bind(d.send_after)
+    .bind(d.unsubscribe_url)
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Turn email off for one kind, or entirely (`kind` = None). Never turns anything on.
+pub async fn mute_email(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uuid, kind: Option<&str>) -> ApiResult<()> {
+    let mut prefs = preferences(&mut *conn, tenant_id, user_id).await?;
+    match kind {
+        Some(kind) if !prefs.email_muted.iter().any(|k| k == kind) => prefs.email_muted.push(kind.to_owned()),
+        Some(_) => {}
+        None => prefs.email_enabled = false,
+    }
+    save_preferences(conn, tenant_id, user_id, &prefs).await
 }

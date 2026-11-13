@@ -27,6 +27,12 @@ are deleted after 7 days. All names and summaries are HTML-escaped and flattened
 are built only from keys of the form `ABC-123` under `APP_URL`. Addresses are never logged. Locally, Mailpit
 catches everything (inbox at http://localhost:58025).
 
+**Unsubscribe.** Every email carries a signed link (HMAC-SHA256 over workspace, person, kind and issue time, key
+derived from `INTERNAL_SERVICE_SECRET` with a purpose label, valid 90 days) in its footer and in
+`List-Unsubscribe` / `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers (RFC 8058). The links work signed
+out and can only turn email off. The footer opens the web page `/unsubscribe`, which asks first; mail clients POST
+directly. `GET` never changes anything, so link-scanning mail filters cannot unsubscribe anyone.
+
 **API.** REST, contract at `/openapi.json`; always the caller's own notifications, limited to projects they can
 see now (losing access hides them):
 
@@ -37,6 +43,7 @@ see now (losing access hides them):
 | `POST /api/v1/notifications/{id}/read` | 204, or 404 when it is not yours |
 | `POST /api/v1/notifications/read-all` | |
 | `GET/PUT /api/v1/notifications/preferences` | email on/off, and per kind (assigned, mentioned, commented, status changed) |
+| `GET/POST /api/v1/notifications/unsubscribe?token=` | public: describe the link / turn that kind off (`{"all": true}` for all email); 404 for invalid or expired links |
 
 **Database.** Owns `notification_db`: `notifications` and `notification_preferences` (FORCE RLS); `email_deliveries`,
 `outbox` and `inbox` are system queues without RLS that no API reads.
@@ -54,6 +61,5 @@ see now (losing access hides them):
 
 **Tests:** `cargo test -p notification-service` (PostgreSQL and Mailpit from `make infra`).
 
-**Not built yet.** Digests (one email per notification today); one-click unsubscribe links (the footer links to the
-settings page, which needs sign-in); the comment text in comment emails; bounce and complaint handling from the
+**Not built yet.** Digests (one email per notification today); the comment text in comment emails; bounce and complaint handling from the
 mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications.

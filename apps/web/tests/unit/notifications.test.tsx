@@ -106,3 +106,31 @@ describe("notification settings", () => {
     expect(screen.getByRole("switch", { name: "Status changes" })).toBeEnabled();
   });
 });
+
+describe("unsubscribe link", () => {
+  it("asks before turning anything off, then confirms what was turned off", async () => {
+    const { UnsubscribePage } = await import("@/modules/notifications");
+    const api = fakeApi({
+      "GET /api/v1/notifications/unsubscribe": { kind: "commented", kind_label: "comments" },
+      "POST /api/v1/notifications/unsubscribe": () => ({ status: 204 }),
+    });
+    renderAt(<UnsubscribePage />, "/unsubscribe", "/unsubscribe?token=abc.def");
+
+    const stop = await screen.findByRole("button", { name: "Stop emails about comments" });
+    expect(api.sent("POST", "/api/v1/notifications/unsubscribe")).toHaveLength(0);
+    expect(api.calls[0]!.headers.Authorization).toBeUndefined();
+    await userEvent.click(stop);
+    expect(await screen.findByText("You're unsubscribed")).toBeInTheDocument();
+    const sent = api.sent("POST", "/api/v1/notifications/unsubscribe")[0]!;
+    expect(sent.body).toEqual({});
+    expect(sent.query.get("token")).toBe("abc.def");
+    expect(screen.getByText("You won't get emails about comments any more.")).toBeInTheDocument();
+  });
+
+  it("explains a link that no longer works", async () => {
+    fakeApi({ "GET /api/v1/notifications/unsubscribe": () => ({ status: 404, body: { code: "not_found" } }) });
+    const { UnsubscribePage } = await import("@/modules/notifications");
+    renderAt(<UnsubscribePage />, "/unsubscribe", "/unsubscribe?token=old");
+    expect(await screen.findByText("This unsubscribe link doesn't work")).toBeInTheDocument();
+  });
+});
