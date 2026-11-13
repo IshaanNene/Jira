@@ -2,36 +2,15 @@
 // only the marks carry series colour.
 import type { EChartsCoreOption } from "echarts/core";
 
+import type { ChartTheme } from "@/components/charts/Chart";
+import { bar, categoryAxis, chrome as sharedChrome, valueAxis } from "@/components/charts/options";
 import type { VelocityReport } from "@/services/api";
 
-import type { ChartTheme } from "./components/Chart";
 import { formatPoints, type BurndownSeries, type BurndownUnit } from "./model";
 
 const UNIT_LABEL: Record<BurndownUnit, string> = { points: "Story points", issues: "Issues" };
 
-function chrome(theme: ChartTheme) {
-  return {
-    textStyle: { fontFamily: "inherit", color: theme.muted },
-    grid: { left: 8, right: 24, top: 40, bottom: 8, containLabel: true },
-    // Right-aligned so it never collides with the y-axis name at the top left.
-    legend: { top: 0, right: 0, icon: "roundRect", itemWidth: 12, itemHeight: 12, textStyle: { color: theme.ink } },
-    tooltip: {
-      backgroundColor: theme.surface,
-      borderColor: theme.line,
-      textStyle: { color: theme.ink, fontSize: 12 },
-      valueFormatter: (value: unknown) => (typeof value === "number" ? formatPoints(value) : String(value ?? "")),
-    },
-  };
-}
-
-const valueAxis = (theme: ChartTheme, name: string) => ({
-  type: "value",
-  name,
-  nameTextStyle: { color: theme.muted, align: "left" },
-  minInterval: 1,
-  axisLabel: { color: theme.muted },
-  splitLine: { lineStyle: { color: theme.line } },
-});
+const chrome = (theme: ChartTheme) => sharedChrome(theme, formatPoints);
 
 export function burndownOption(series: BurndownSeries, unit: BurndownUnit, theme: ChartTheme): EChartsCoreOption {
   const base = chrome(theme);
@@ -73,25 +52,10 @@ export function burndownOption(series: BurndownSeries, unit: BurndownUnit, theme
 
 export function velocityOption(sprints: VelocityReport["sprints"], unit: BurndownUnit, theme: ChartTheme): EChartsCoreOption {
   const base = chrome(theme);
-  const bar = (name: string, color: string, data: number[]) => ({
-    name,
-    type: "bar",
-    data,
-    color,
-    barMaxWidth: 28,
-    barGap: "10%",
-    itemStyle: { borderRadius: [4, 4, 0, 0] },
-  });
   return {
     ...base,
     tooltip: { ...base.tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
-    xAxis: {
-      type: "category",
-      data: sprints.map((s) => s.name),
-      axisLine: { lineStyle: { color: theme.line } },
-      axisTick: { show: false },
-      axisLabel: { color: theme.muted, hideOverlap: true },
-    },
+    xAxis: categoryAxis(theme, sprints.map((s) => s.name)),
     yAxis: valueAxis(theme, UNIT_LABEL[unit]),
     series: [
       bar("Committed", theme.series[0], sprints.map((s) => (unit === "points" ? s.committed_points : s.committed_issues))),

@@ -1,4 +1,4 @@
-import { Bell, FolderKanban, GitBranch, Home, ScrollText, Settings, ShieldCheck, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Bell, FolderKanban, LayoutDashboard, GitBranch, Home, ScrollText, Settings, ShieldCheck, SlidersHorizontal, UserRound, Users, type LucideIcon } from "lucide-react";
 
 import type { OrgPermission } from "@/modules/organizations";
 
@@ -21,6 +21,7 @@ export interface NavItem {
 export const MAIN_NAV: NavItem[] = [
   { to: "/", label: "Your work", icon: Home, shortcut: "h", end: true },
   { to: "/projects", label: "Projects", icon: FolderKanban, shortcut: "p" },
+  { to: "/dashboards", label: "Dashboards", icon: LayoutDashboard, shortcut: "d" },
   { to: "/people", label: "People", icon: Users, requires: "viewMembers", shortcut: "m" },
 ];
 

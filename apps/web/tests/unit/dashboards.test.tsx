@@ -1,0 +1,166 @@
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { ChartTheme } from "@/components/charts/Chart";
+import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
+import { chartOption } from "@/modules/dashboards/charts";
+import { describeQuery, groupLabel, tableOf, type Names } from "@/modules/dashboards/model";
+import type { Dashboard, WidgetData } from "@/services/api";
+
+import { fakeApi, MEMBERS, project, renderAt, signIn, USER_ID, type Call } from "./harness";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const PAY = project();
+const OTHER = "00000000-0000-7000-8000-000000000009";
+const names: Names = { project: (id) => (id === PAY.id ? "Payments" : "Unknown project"), user: (id) => (id === USER_ID ? "Ada Lovelace" : "Former member") };
+const theme: ChartTheme = { series: ["#0C66E4", "#E56910"], reference: "#8590A2", ink: "#172B4D", muted: "#44546F", line: "#DCDFE4", surface: "#FFFFFF" };
+
+const BREAKDOWN: WidgetData = {
+  kind: "breakdown",
+  group_by: "assignee",
+  groups: [
+    { key: USER_ID, count: 3 },
+    { key: "", count: 1 },
+  ],
+  total: 4,
+};
+
+describe("dashboard model", () => {
+  it("names groups, scopes and table rows in plain words", () => {
+    expect(groupLabel("assignee", "", names)).toBe("Unassigned");
+    expect(groupLabel("status_category", "in_progress", names)).toBe("In progress");
+    expect(groupLabel("project", PAY.id, names)).toBe("Payments");
+    expect(groupLabel("priority", "", names)).toBe("None");
+    expect(describeQuery({ kind: "created_vs_resolved", projects: [], days: 30 }, names.project)).toBe("All projects · last 30 days");
+    expect(describeQuery({ kind: "velocity", project: PAY.id, sprints: 5 }, names.project)).toBe("Payments · last 5 sprints");
+    expect(describeQuery({ kind: "breakdown", projects: ["a", "b", "c"], group_by: "type" }, names.project)).toBe("3 projects · open issues");
+
+    const table = tableOf(BREAKDOWN, names);
+    expect(table.columns.map((c) => c.label)).toEqual(["Assignee", "Issues", "Share"]);
+    expect(table.rows.map((r) => r.cells)).toEqual([
+      ["Ada Lovelace", "3", "75%"],
+      ["Unassigned", "1", "25%"],
+    ]);
+    // A week with nothing finished has no cycle time rather than a zero one.
+    const cycle = tableOf({ kind: "cycle_time", weeks: [{ week: "2026-11-02", issues: 0, median_days: 0, p85_days: 0 }] }, names);
+    expect(cycle.rows[0]!.cells.slice(1)).toEqual(["0", "–", "–"]);
+  });
+
+  it("draws one axis, a legend only for two series, and text in ink", () => {
+    const breakdown = chartOption(BREAKDOWN, theme, names) as Record<string, any>;
+    expect(breakdown.legend.show).toBe(false);
+    expect(breakdown.yAxis.data).toEqual(["Ada Lovelace", "Unassigned"]);
+    expect(breakdown.series).toHaveLength(1);
+    expect(breakdown.series[0].label.color).toBe(theme.ink);
+
+    const days: WidgetData = { kind: "created_vs_resolved", days: [{ date: "2026-11-01", created: 2, resolved: 1 }] };
+    const lines = chartOption(days, theme, names) as Record<string, any>;
+    expect(Array.isArray(lines.yAxis)).toBe(false);
+    expect(lines.legend.show).not.toBe(false);
+    expect(lines.series.map((s: { name: string; color: string }) => [s.name, s.color])).toEqual([
+      ["Created", theme.series[0]],
+      ["Resolved", theme.series[1]],
+    ]);
+    expect(lines.series[0].lineStyle.width).toBe(2);
+    expect(lines.series[0].symbolSize).toBeGreaterThanOrEqual(8);
+  });
+});
+
+function dashboard(overrides: Partial<Dashboard> = {}): Dashboard {
+  return {
+    id: "d1",
+    name: "Team health",
+    description: "How the team is doing",
+    owner_id: USER_ID,
+    shared: false,
+    editable: true,
+    updated_at: "2026-11-01T00:00:00Z",
+    widgets: [{ id: "w1", title: "Issues by assignee", size: "half", query: { kind: "breakdown", projects: [PAY.id], group_by: "assignee", include_done: false } }],
+    ...overrides,
+  };
+}
+
+const baseRoutes = {
+  "GET /api/v1/organizations/current/members": MEMBERS,
+  "GET /api/v1/projects": { items: [PAY] },
+  "POST /api/v1/analytics/query": BREAKDOWN,
+};
+
+describe("dashboards", () => {
+  it("lists dashboards with their owner and sharing", async () => {
+    signIn("member");
+    fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards": {
+        items: [
+          { id: "d1", name: "Team health", description: "", owner_id: USER_ID, shared: false, editable: true, updated_at: "2026-11-01T00:00:00Z", widget_count: 2 },
+          { id: "d2", name: "Release readiness", description: "", owner_id: OTHER, shared: true, editable: false, updated_at: "2026-11-01T00:00:00Z", widget_count: 4 },
+        ],
+      },
+    });
+    renderAt(<DashboardsPage />, "/dashboards", "/dashboards");
+    const row = (await screen.findByRole("link", { name: "Release readiness" })).closest("tr")!;
+    expect(within(row).getByText("Shared")).toBeInTheDocument();
+    expect(within(row).getByText("4")).toBeInTheDocument();
+    expect(within(screen.getByRole("link", { name: "Team health" }).closest("tr")!).getByText("You")).toBeInTheDocument();
+  });
+
+  it("shows each chart with its table, and lets the owner share it", async () => {
+    signIn("member");
+    const api = fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards/d1": dashboard(),
+      "PATCH /api/v1/dashboards/d1": (call: Call) => ({ body: dashboard({ shared: (call.body as { shared: boolean }).shared }) }),
+    });
+    const user = userEvent.setup();
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+
+    expect(await screen.findByRole("heading", { name: "Issues by assignee" })).toBeInTheDocument();
+    expect(await screen.findByText("Payments · open issues")).toBeInTheDocument();
+    await waitFor(() => expect(api.sent("POST", "/api/v1/analytics/query")).toHaveLength(1));
+    expect(api.sent("POST", "/api/v1/analytics/query")[0]!.body).toEqual({ kind: "breakdown", projects: [PAY.id], group_by: "assignee", include_done: false });
+
+    await user.click(await screen.findByRole("button", { name: "Table" }));
+    const table = screen.getByRole("table", { name: "Issues by assignee" });
+    expect(within(table).getByRole("cell", { name: "Ada Lovelace" })).toBeInTheDocument();
+    expect(within(table).getByRole("cell", { name: "Unassigned" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Share" }));
+    await waitFor(() => expect(api.sent("PATCH", "/api/v1/dashboards/d1")[0]?.body).toEqual({ shared: true }));
+    expect(await screen.findByRole("button", { name: "Stop sharing" })).toBeInTheDocument();
+  });
+
+  it("is read-only for people who may only view it", async () => {
+    signIn("member");
+    fakeApi({ ...baseRoutes, "GET /api/v1/dashboards/d1": dashboard({ owner_id: OTHER, shared: true, editable: false }) });
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+    expect(await screen.findByRole("heading", { name: "Issues by assignee" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add chart" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Actions for/ })).not.toBeInTheDocument();
+  });
+
+  it("adds a chart after previewing it", async () => {
+    signIn("member");
+    const api = fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards/d1": dashboard({ widgets: [] }),
+      "POST /api/v1/analytics/query": { kind: "created_vs_resolved", days: [{ date: "2026-11-01", created: 2, resolved: 1 }] },
+      "POST /api/v1/dashboards/d1/widgets": { status: 201, body: { id: "w2", title: "Created vs resolved", size: "half", query: { kind: "created_vs_resolved", projects: [], days: 30 } } },
+    });
+    const user = userEvent.setup();
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+
+    await user.click((await screen.findAllByRole("button", { name: /Add chart/ }))[0]!);
+    const dialog = await screen.findByRole("dialog");
+    // The preview runs the same query the chart will.
+    await waitFor(() => expect(api.sent("POST", "/api/v1/analytics/query")[0]?.body).toEqual({ kind: "created_vs_resolved", projects: [], days: 30 }));
+    expect(within(dialog).getByRole("textbox", { name: "Title" })).toHaveValue("Created vs resolved");
+    await user.click(within(dialog).getByRole("button", { name: "Add chart" }));
+    await waitFor(() =>
+      expect(api.sent("POST", "/api/v1/dashboards/d1/widgets")[0]?.body).toEqual({ title: "Created vs resolved", size: "half", query: { kind: "created_vs_resolved", projects: [], days: 30 } }),
+    );
+  });
+});

@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-13 (Phase 6: issue query language, audit log, two-step verification).
+Last updated: 2026-11-13 (Phase 7: ClickHouse pipeline and dashboards; Phase 6: issue query language, audit log, two-step verification).
 
 ## Phase status
 
@@ -18,7 +18,7 @@ Last updated: 2026-11-13 (Phase 6: issue query language, audit log, two-step ver
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
 | 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language, audit log and authenticator-app two-step verification done; the rest not started) |
-| 7 | ClickHouse pipeline, dashboards | ⬜ |
+| 7 | ClickHouse pipeline, dashboards | ✅ (four chart kinds; gaps listed below) |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
 
 Deviations from the brief's phase order, and why, are in [ARCHITECTURE.md](ARCHITECTURE.md) §7.
@@ -27,8 +27,8 @@ Against the brief's 45 final deliverables: roughly the foundations of items 1–
 15–16 (password auth and org-level RBAC only), 26–27, 34 (instrumentation, no collector stack), 36–37, 41–43, 45
 exist, plus items 12 (attachment storage), 17–18 (issue and project management), 20 (workflow designer and
 engine), plus the agile item (boards, backlog, sprints and sprint reports), and the event pipeline, realtime updates,
-in-app and email notifications and full-text issue search.
-Everything else is not started. Four of the fifteen logical services have no code.
+in-app and email notifications, full-text issue search, and dashboards over a ClickHouse pipeline.
+Everything else is not started. Three of the fifteen logical services have no code.
 
 ## Implemented and verified
 
@@ -70,11 +70,13 @@ Everything else is not started. Four of the fifteen logical services have no cod
 | Web: audit log | Settings → Audit log for admins and owners: entries as sentences ("gave Maya Chen Viewer access to PAY"), expandable details, activity / person / date filters kept in the URL, older entries on demand, CSV export, "Check integrity" banner | 4 web tests; checked in a real browser (17 entries intact) |
 | Two-step verification (TOTP) | Authenticator-app codes (RFC 6238: SHA-1, 6 digits, 30 s, one step of drift) and ten single-use recovery codes; set-up and changes need the password again; turning it on or off ends the account's other sessions; after a correct password, sign-in returns `202` with a single-use 5-minute challenge instead of tokens; 5 wrong codes end the challenge and every wrong code counts towards the account lockout; a used time step is never accepted again; secrets sealed with AES-256-GCM bound to the account id; recovery codes stored as SHA-256; QR code rendered server-side as SVG | 5 unit tests (RFC 6238 and RFC 4648 vectors, replay, drift, recovery code typing) + 1 crypto test + 1 integration test (set-up, sign-in, replay, recovery codes, challenge exhaustion, lockout, new codes, turning off) |
 | Web: two-step verification | Settings → Security (was Sessions): set up with a QR code or typed key, recovery codes to copy or download, new codes, turn off; sign-in asks for the app code or a recovery code after the password and goes back to the password when the attempt expires | 4 web tests; set up, signed in with a code and turned off with a recovery code in a real browser |
+| analytics-service | Kafka consumer (`analytics-service` group on the issue, agile and project topics) turns events into ClickHouse facts: `issue_events` (ReplacingMergeTree keyed by event id, so redelivery and replay are idempotent) and `issue_state` (current issue state fetched with `GetDocuments`, versioned by issue version; deletions win); `issue.transitioned` now carries status categories. Four chart kinds compiled from a closed enum into fixed SQL with typed parameters: created vs resolved per UTC day, weekly cycle time (median and 85th percentile, first start to resolution), open-issue breakdown by status category, status, type, priority, assignee or project, and sprint velocity. Every query runs as a read-only ClickHouse user under a row policy on `SQL_tenant_id` (sent from the verified token) and is limited to the projects the caller can browse. Dashboards and widgets in PostgreSQL with forced RLS: private until shared, edited by the owner (or an admin when shared), only the owner shares; 200 dashboards per owner, 30 charts per dashboard | 2 ClickHouse + 3 widget unit tests + 2 integration tests against real ClickHouse and PostgreSQL (tenant and project isolation, replay de-duplication, cycle time, issue and project deletion, velocity order, 422 on bad options, the reader refused without the tenant setting, across tenants and for writes; dashboard privacy, sharing and edit rights); live: the dev consumer backfilled the demo workspace from Kafka |
+| Web: dashboards | Dashboards in the top navigation (`g d`): list with owner, sharing and chart count; create, rename, share / stop sharing, delete with confirmation; charts in a half/full-width grid with edit, resize, reorder and remove for editors and read-only for viewers; add/edit dialog with a live preview; every chart has a table view, hover tooltips, one value axis, legends for two series and values in ink colours; chart chrome shared with the sprint reports | 6 web tests; driven in a real browser against the demo workspace in both themes (counts checked against ClickHouse) |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
 | Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **199 Rust tests, 88 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **206 Rust tests, 94 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -163,6 +165,15 @@ so that a new migration file is always embedded in the binary.
 - Policy snapshots without Redis are trusted for up to 5 seconds, so a revocation can lag by that long when Redis is down.
 - The web app's organization-role checks are a hand-written mirror of the server table (display only).
 
+## Incomplete within Phase 7 scope
+
+| Item | State |
+|---|---|
+| Chart kinds | Four built. Not built: cumulative flow, control chart, time in status, burnup, recently-created-by-type and other gadgets; filtering charts by MQL; per-dashboard date pickers |
+| Accuracy | Created vs resolved and breakdowns use each issue's current state, so a reopened issue loses its earlier resolution date; days and weeks are UTC; cycle time starts at the first move into an in-progress status recorded since analytics was deployed (older transitions without categories are filled from the current state only when the issue is still in that status) |
+| Dashboards | No `If-Match` concurrency control (last write wins); no sharing with specific people, groups or projects; no copying a dashboard; no auto-refresh beyond refetch on visit |
+| Pipeline | Backfill needs the topics' retention or a consumer offset reset (no rebuild-from-source command like search's `reindex`); no materialized views or rollups yet (queries scan the facts, fine at demo scale, untested at volume); ClickHouse users are created by the dev init script, so production needs them provisioned the same way |
+
 ## Incomplete within Phase 6 scope
 
 | Item | State |
@@ -181,5 +192,7 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
+1. Phase 8: Kubernetes, Helm, Terraform, CI/CD, the observability stack, load and failure testing.
+2. Phase 7, remaining: more chart kinds (cumulative flow first), a rebuild command for the analytics store, `If-Match` on dashboards.
+3. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.

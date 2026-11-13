@@ -25,6 +25,10 @@ Rust types live in `crates/event-contracts`; payload structs are versioned (`Iss
 ignore unknown fields and must reject an envelope whose `tenant_id` is missing or whose payload fails validation
 (→ DLQ, never a crash loop).
 
+Payloads grow only by optional fields. Example: `issue.transitioned` gained `from_category` and `to_category`
+(Phase 7, for cycle time); events written before carry neither, and analytics fills the target category from the
+issue's current state when it can.
+
 ## 2. Topics
 
 One topic per aggregate type, so that all events of one aggregate are totally ordered.

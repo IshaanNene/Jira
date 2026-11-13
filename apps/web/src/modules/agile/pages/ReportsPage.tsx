@@ -2,6 +2,7 @@ import { BarChart3 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
+import { Chart, type ChartTheme } from "@/components/charts/Chart";
 import { Button, Card, CardHeader, EmptyState, ErrorState, Select, Skeleton } from "@/components/ui";
 import { IssueTypeIcon } from "@/modules/issues";
 import type { Board, Sprint, SprintReport } from "@/services/api";
@@ -10,7 +11,6 @@ import { formatDate } from "@/utils/format";
 import { useSprintReport, useSprints, useVelocity } from "../api";
 import { burndownOption, velocityOption } from "../charts";
 import { AgileFrame } from "../components/AgileFrame";
-import { Chart, type ChartTheme } from "../components/Chart";
 import { burndownSeries, formatPoints, type BurndownUnit } from "../model";
 
 const UNITS: { value: BurndownUnit; label: string }[] = [

@@ -707,6 +707,8 @@ pub async fn update(
                 project_id,
                 from_status: current.status.clone(),
                 to_status: next.status.clone(),
+                from_category: Some(current.status_category.clone()),
+                to_category: Some(next.status_category.clone()),
             },
         )
         .await?;

@@ -94,7 +94,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | Realtime ✅ | `GET /rt/stream?channel=project:{id}\|user:{id}\|org` (Server-Sent Events: `ready`, `change`, `resync`, `expired`, `denied`; resume with `Last-Event-ID`) |
 | Automation | `/automation/rules`, `/automation/rules/{id}/executions` |
 | Integrations | `/integrations`, `/webhooks`, `/webhooks/{id}/deliveries`, `/hooks/{provider}` (inbound) |
-| Analytics | `/dashboards`, `/dashboards/{id}/widgets`, `/reports/{kind}` |
+| Analytics ✅ | `/dashboards` (GET, POST), `/dashboards/{id}` (GET, PATCH name / description / shared / `widget_order`, DELETE), `/dashboards/{id}/widgets` (POST), `/dashboards/{id}/widgets/{widget_id}` (PATCH, DELETE), `POST /analytics/query` (a widget query → its numbers; 503 when ClickHouse is down) |
 | Jobs | `/imports`, `/exports`, `/jobs/{id}` |
 
 ## 3. Internal gRPC

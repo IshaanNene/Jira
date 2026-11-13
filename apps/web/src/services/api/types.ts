@@ -9,6 +9,7 @@ import type { components as WorkflowComponents } from "./generated/workflow";
 
 import type { components as IssueComponents } from "./generated/issue";
 import type { components as ProjectComponents } from "./generated/project";
+import type { components as AnalyticsComponents } from "./generated/analytics";
 
 type Identity = IdentityComponents["schemas"];
 type User = UserComponents["schemas"];
@@ -108,6 +109,20 @@ export type SearchHit = SearchApi["SearchHit"];
 export type SearchResults = SearchApi["SearchResults"];
 export type TextPart = SearchApi["TextPart"];
 /** A rich-text document in the editor's JSON format. */
+type AnalyticsApi = AnalyticsComponents["schemas"];
+export type DashboardSummary = AnalyticsApi["DashboardSummary"];
+export type DashboardList = AnalyticsApi["DashboardList"];
+export type Dashboard = AnalyticsApi["Dashboard"];
+export type CreateDashboard = AnalyticsApi["CreateDashboard"];
+export type UpdateDashboard = AnalyticsApi["UpdateDashboard"];
+export type Widget = AnalyticsApi["Widget"];
+export type CreateWidget = AnalyticsApi["CreateWidget"];
+export type UpdateWidget = AnalyticsApi["UpdateWidget"];
+export type WidgetQuery = AnalyticsApi["WidgetQuery"];
+export type WidgetData = AnalyticsApi["WidgetData"];
+export type WidgetSize = AnalyticsApi["WidgetSize"];
+export type GroupBy = AnalyticsApi["GroupBy"];
+
 export type RichDoc = Record<string, unknown>;
 
 export type OrgRole = "owner" | "admin" | "member" | "guest";

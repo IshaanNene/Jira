@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
+import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
 import { LoginPage, RegisterPage } from "@/modules/auth";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
@@ -59,6 +60,8 @@ export const router = createBrowserRouter([
                   { path: "/people", element: <PeoplePage /> },
                   { path: "/search", element: <SearchPage /> },
                   { path: "/projects", element: <ProjectsPage /> },
+                  { path: "/dashboards", element: <DashboardsPage /> },
+                  { path: "/dashboards/:dashboardId", element: <DashboardPage /> },
                   {
                     path: "/projects/:projectKey",
                     element: (

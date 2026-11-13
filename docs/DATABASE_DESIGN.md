@@ -165,6 +165,22 @@ Cross-database references (by id, no FK): `MEMBERSHIP.user_id → ACCOUNT`, `ORG
 Custom-field values live in `issues.custom_fields` (`{ "<field_id>": value }`), validated against the field
 definition in the service. Rationale and alternatives (EAV, table-per-field) in ADR-0005.
 
+### analytics_db (Phase 7)
+| Table | Key columns |
+|---|---|
+| `dashboards` | `tenant_id`, `id`, `name` (1–80), `description` (≤ 500), `owner_id`, `shared`, `created_at`, `updated_at`; forced RLS |
+| `dashboard_widgets` | `tenant_id`, `id`, `dashboard_id` (cascade), `title`, `query jsonb` (validated widget query), `size` (`half`/`full`), `position`; forced RLS |
+
+### ClickHouse `analytics` (Phase 7, derived)
+| Table | Engine and key |
+|---|---|
+| `issue_events` | `ReplacingMergeTree(ingested_at)`, partitioned by month, `ORDER BY (tenant_id, event_type, event_id)`; event type, time, project, issue, sprint, actor, from/to status and category, sprint name and counts |
+| `issue_state` | `ReplacingMergeTree(version, is_deleted)`, `ORDER BY (tenant_id, issue_id)`; key, type, status, category, priority, assignee, created / resolved / updated |
+
+Both tables carry a row policy for the reader user: `tenant_id = toUUID(getSetting('SQL_tenant_id'))`. Users:
+`analytics_owner` (migrations), `analytics_writer` (ingester: INSERT, SELECT), `analytics_reader` (API: SELECT,
+`readonly = 2`, 10 s and 100 000-row limits).
+
 Remaining service schemas are specified in the phase that builds them and appended here.
 
 ## 5. Indexing and growth

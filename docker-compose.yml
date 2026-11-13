@@ -1,6 +1,6 @@
 # Local development dependencies. Services and the web app run on the host (`make dev`).
 # Host ports are deliberately non-default so they never collide with locally installed
-# PostgreSQL/Redis. Later phases add Kafka, OpenSearch, ClickHouse and MinIO under profiles.
+# PostgreSQL/Redis.
 name: platform
 
 services:
@@ -111,6 +111,27 @@ services:
       timeout: 5s
       retries: 40
 
+  # Analytics facts (derived from events; rebuildable). Users are created by the init script:
+  # dashboards read through analytics_reader, whose rows are filtered to one tenant per query.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics_owner
+      CLICKHOUSE_PASSWORD: analytics_owner
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["127.0.0.1:58123:8123"]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./infrastructure/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
   # Catches outgoing email locally: nothing leaves the machine. Inbox at http://localhost:58025
   mailpit:
     image: axllent/mailpit:v1.21
@@ -145,3 +166,4 @@ volumes:
   object-data:
   kafka-data:
   opensearch-data:
+  clickhouse-data:

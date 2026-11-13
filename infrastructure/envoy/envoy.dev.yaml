@@ -132,6 +132,10 @@ static_resources:
                           route: { cluster: notification, timeout: 15s }
                         - match: { prefix: /api/v1/search }
                           route: { cluster: search, timeout: 15s }
+                        - match: { prefix: /api/v1/dashboards }
+                          route: { cluster: analytics, timeout: 15s }
+                        - match: { prefix: /api/v1/analytics }
+                          route: { cluster: analytics, timeout: 15s }
                         # API contracts, for docs tooling and `make gen-api`.
                         - match: { path: /api/docs/identity/openapi.json }
                           route: { cluster: identity, prefix_rewrite: /openapi.json }
@@ -149,6 +153,8 @@ static_resources:
                           route: { cluster: notification, prefix_rewrite: /openapi.json }
                         - match: { path: /api/docs/search/openapi.json }
                           route: { cluster: search, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/analytics/openapi.json }
+                          route: { cluster: analytics, prefix_rewrite: /openapi.json }
                         - match: { prefix: / }
                           direct_response:
                             status: 404
@@ -220,3 +226,10 @@ static_resources:
       load_assignment:
         cluster_name: search
         endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8111 } } } }] }]
+    - name: analytics
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: analytics
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8113 } } } }] }]

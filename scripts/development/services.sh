@@ -13,6 +13,7 @@ SERVICES=(
   "realtime:8109:-"
   "notification:8110:-"
   "search:8111:-"
+  "analytics:8113:-"
 )
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

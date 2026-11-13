@@ -156,6 +156,11 @@ pub struct IssueTransitionedV1 {
     pub project_id: Uuid,
     pub from_status: String,
     pub to_status: String,
+    /// `todo`, `in_progress` or `done`. Absent on events written before analytics needed them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_category: Option<String>,
 }
 payload!(IssueTransitionedV1, "issue.transitioned", 1, topics::ISSUE, "issue");
 

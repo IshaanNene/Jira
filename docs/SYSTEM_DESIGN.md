@@ -142,10 +142,22 @@ each gateway instance: SUBSCRIBE rt:* -> local subscription table -> bounded per
 
 ## 7. Analytics
 
-`issue.*` / `sprint.*` events → analytics ingester → ClickHouse `issue_events` (ReplacingMergeTree keyed by
-`event_id`, so replays are idempotent) → materialized views for status durations, throughput, sprint scope.
-Dashboards query ClickHouse only. Small operational reports that must be exact and current (active sprint
-burndown) are served by agile-service from its own tables.
+`issue.*`, `sprint.*` and `project.deleted` events → analytics ingester (consumer group `analytics-service`) →
+two ClickHouse tables:
+
+- `issue_events` — one row per event (creations, transitions with status categories, sprint start/complete),
+  ReplacingMergeTree keyed by `(tenant_id, event_type, event_id)`, so redelivery and replays are idempotent.
+- `issue_state` — each issue's current state, fetched from issue-service `GetDocuments` on every issue event and
+  versioned by the issue's version (`ReplacingMergeTree(version, is_deleted)`); a deletion is written with the
+  highest possible version so a late event cannot bring the issue back.
+
+Charts are a closed set of kinds (created vs resolved, cycle time, breakdown, velocity), each compiled to fixed SQL
+with typed query parameters; nothing from the client becomes SQL text. Queries run as a read-only ClickHouse user
+whose row policy is `tenant_id = getSetting('SQL_tenant_id')`; the service sets that from the verified token on
+every query, so a missing or wrong filter in SQL still cannot read another tenant. Requested projects are
+intersected with the caller's browsable projects. Dashboards and their widget definitions live in PostgreSQL
+(`analytics_db`, forced RLS). Small operational reports that must be exact and current (active sprint burndown)
+are served by agile-service from its own tables. Materialized views and rollups are deferred until volume needs them.
 
 ## 8. Reliability
 
