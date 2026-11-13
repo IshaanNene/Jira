@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-13 (Phase 6 started: issue query language).
+Last updated: 2026-11-13 (Phase 6: issue query language, audit log).
 
 ## Phase status
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-13 (Phase 6 started: issue query language).
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
-| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language done; the rest not started) |
+| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language and audit log done; the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ⬜ |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
 
@@ -66,11 +66,13 @@ Everything else is not started. Four of the fifteen logical services have no cod
 | New internal RPCs | `issue.v1.Issues/GetAudience`, `GetDocuments` (≤ 500), `ListIssueIds` (≤ 1000); `user.v1.Membership/GetMembers` (≤ 500), `FindMembers` (≤ 100 terms) | `audiences_and_search_documents_are_served_to_other_services`, `grpc_membership_check_reflects_role_and_status` |
 | Issue query language (MQL) | Fields, operators, AND / OR / NOT, parentheses, lists, EMPTY, people by `currentUser()` / email / exact name, relative and absolute dates, text match with prefixes, ORDER BY with keys sorted by number and priorities by rank; compiled server-side inside the tenant and visibility filters; errors with a character span; size and depth limits; guests limited to `currentUser()` | 8 unit + 1 integration test against real OpenSearch (tenancy, visibility, every field kind, paging, errors, guests) |
 | Web: MQL search | Basic / MQL switch on `/search` (basic filters carried over as a query), query editor with suggestions for fields, operators, values (project keys, statuses, people from the directory, dates) and connectives; Tab completes, Enter runs; invalid queries show the message with the faulty part underlined; syntax help with runnable examples; query kept in the URL | 5 web tests; driven in a real browser against the demo workspace |
+| Audit log | user-service consumer turns admin-relevant domain events (members, invitations, projects, project access, releases, workflows, boards, sprints, deleted issues and comments) plus validated `audit.recorded` events into entries; one SHA-256 hash chain per tenant (serialized appends, de-duplicated by event id); append-only by trigger and revoked grants; forced RLS; admin/owner-only list with category, person and date filters and cursor paging, CSV export (formula-safe cells), on-demand chain verification that names the first broken entry; project-service emits `audit.recorded` for access changes | 3 unit + 1 integration test (redelivery, forged payloads rejected, filters, tenant isolation, 403 for members, export, runtime role cannot UPDATE, an owner's edit with the trigger disabled is detected); 1 project-service test asserts the access audit events; live: the dev consumer backfilled history from Kafka |
+| Web: audit log | Settings → Audit log for admins and owners: entries as sentences ("gave Maya Chen Viewer access to PAY"), expandable details, activity / person / date filters kept in the URL, older entries on demand, CSV export, "Check integrity" banner | 4 web tests; checked in a real browser (17 entries intact) |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
 | Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **188 Rust tests, 80 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **192 Rust tests, 84 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -165,7 +167,8 @@ so that a new migration file is always embedded in the binary.
 |---|---|
 | Query language | Built (see above). Not built: saved filters, filter subscriptions, sharing; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog do not accept MQL yet |
 | SSO (OIDC, SAML), SCIM, MFA / WebAuthn, API tokens | Not started |
-| Admin console, audit log | Not started |
+| Audit log | Built (see above). Not built: client IP address on entries; retention and purge (append-only for now, so entries are kept forever); workflow and board entries have no name (their events carry none); entries are listed in the order they were recorded, which can differ slightly from when they happened across topics; project access entries are written just after the permission change rather than in the same transaction, so a crash between the two loses the entry; no scheduled verifier; no audit of sign-ins (identity-service emits no events yet) |
+| Admin console | Not started (settings pages exist for members, invitations, notifications and the audit log) |
 | Automation, integrations (webhooks, Git, Slack) | Not started |
 
 ## Measured performance
@@ -175,5 +178,5 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Phase 6, remaining: audit log and admin console, MFA (TOTP, WebAuthn) and API tokens, SSO (OIDC, SAML) and
+1. Phase 6, remaining: admin console, MFA (TOTP, WebAuthn) and API tokens, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.

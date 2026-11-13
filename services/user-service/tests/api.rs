@@ -664,3 +664,142 @@ async fn grpc_membership_check_reflects_role_and_status() {
     assert_eq!(find(tenant, vec!["x".repeat(201)]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
     h.db.cleanup().await;
 }
+
+/// Feed the outbox (real events from real requests) to the audit recorder.
+async fn record_outbox(h: &Harness, recorder: &user_service::audit::Recorder) {
+    use event_bus::Handler;
+    let rows: Vec<(String, Value)> =
+        sqlx::query_as("SELECT topic, payload FROM outbox ORDER BY created_at, id").fetch_all(&h.db.owner).await.unwrap();
+    for (topic, envelope) in rows {
+        let event = event_bus::Event::parse(&topic, &serde_json::to_vec(&envelope).unwrap()).unwrap();
+        recorder.handle(&event).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn admin_actions_land_in_a_tamper_evident_audit_log() {
+    use event_bus::Handler;
+    use event_contracts::{payloads::AuditRecordedV1, topics, Actor, EventEnvelope};
+
+    let h = harness().await;
+    let (ada, bob, carol) = (User::new("ada"), User::new("bob"), User::new("carol"));
+    let (org, tenant) = h.create_org(&ada, "Acme").await;
+    let owner = h.org_token(&ada, tenant, org, "owner");
+    h.add_member(&owner, &bob, "member").await;
+    let changed = h
+        .call(
+            Method::PATCH,
+            &format!("/api/v1/organizations/current/members/{}", bob.id),
+            Some(&owner),
+            Some(json!({ "org_role": "admin" })),
+            None,
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    let (_, other_tenant) = h.create_org(&carol, "Other").await;
+
+    let recorder = user_service::audit::Recorder { db: Arc::clone(&h.router) };
+    record_outbox(&h, &recorder).await;
+    record_outbox(&h, &recorder).await; // redelivery records nothing twice
+
+    // An action reported by another service, and one that fails validation.
+    let project = Uuid::now_v7();
+    let granted = EventEnvelope::new(
+        Some(tenant),
+        project,
+        0,
+        Actor::User(ada.id),
+        AuditRecordedV1 {
+            action: "project.access_granted".into(),
+            resource_type: "project".into(),
+            resource_id: project.to_string(),
+            resource_label: "PAY".into(),
+            details: [("user_id".to_owned(), bob.id.to_string()), ("role".to_owned(), "member".to_owned())].into(),
+        },
+    );
+    let parse =
+        |e: &EventEnvelope<AuditRecordedV1>| event_bus::Event::parse(topics::AUDIT, &serde_json::to_vec(e).unwrap()).unwrap();
+    recorder.handle(&parse(&granted)).await.unwrap();
+    let mut forged = granted.clone();
+    forged.event_id = Uuid::now_v7();
+    forged.payload.action = "DROP TABLE".into();
+    assert!(matches!(recorder.handle(&parse(&forged)).await, Err(event_bus::HandlerError::Permanent(_))));
+
+    // Admins read it newest first, with names; members cannot.
+    let page = h.call(Method::GET, "/api/v1/organizations/current/audit", Some(&owner), None, None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let actions: Vec<&str> = page.body["items"].as_array().unwrap().iter().map(|i| i["action"].as_str().unwrap()).collect();
+    assert_eq!(
+        actions,
+        [
+            "project.access_granted",
+            "member.role_changed",
+            "member.joined",
+            "member.invited",
+            "member.joined",
+            "organization.created"
+        ]
+    );
+    assert_eq!(page.body["items"][0]["details"]["user_id"], bob.id.to_string());
+    assert_eq!(page.body["items"][0]["actor"], json!({ "type": "user", "id": ada.id.to_string() }));
+    assert!(page.body["people"][bob.id.to_string()].is_string(), "{}", page.body["people"]);
+    assert!(page.body["people"][ada.id.to_string()].is_string());
+
+    let members = h.call(Method::GET, "/api/v1/organizations/current/audit?category=member", Some(&owner), None, None).await;
+    assert_eq!(members.body["items"].as_array().unwrap().len(), 4);
+    let by_bob =
+        h.call(Method::GET, &format!("/api/v1/organizations/current/audit?actor={}", bob.id), Some(&owner), None, None).await;
+    assert_eq!(by_bob.body["items"].as_array().unwrap().len(), 1, "bob accepted his invitation");
+    let first = h.call(Method::GET, "/api/v1/organizations/current/audit?limit=4", Some(&owner), None, None).await;
+    let cursor = first.body["next_cursor"].as_str().unwrap();
+    let rest = h
+        .call(Method::GET, &format!("/api/v1/organizations/current/audit?limit=4&cursor={cursor}"), Some(&owner), None, None)
+        .await;
+    assert_eq!(rest.body["items"].as_array().unwrap().len(), 2);
+    assert!(rest.body["next_cursor"].is_null());
+    assert_eq!(h.call(Method::GET, "/api/v1/organizations/current/audit?category=x", Some(&owner), None, None).await.status, 422);
+    let carols = h.org_token(&carol, other_tenant, Uuid::now_v7(), "owner");
+    let other = h.call(Method::GET, "/api/v1/organizations/current/audit", Some(&carols), None, None).await;
+    assert_eq!(other.body["items"].as_array().unwrap().len(), 2, "another workspace sees only its own entries");
+    let as_member = h.org_token(&bob, tenant, org, "member");
+    assert_eq!(h.call(Method::GET, "/api/v1/organizations/current/audit", Some(&as_member), None, None).await.status, 403);
+
+    // CSV export.
+    let req = Request::builder()
+        .uri("/api/v1/organizations/current/audit/export")
+        .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/csv; charset=utf-8");
+    assert!(res.headers()[header::CONTENT_DISPOSITION].to_str().unwrap().starts_with("attachment;"));
+    let csv = String::from_utf8(axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert_eq!(csv.lines().count(), 7);
+    assert!(csv.lines().nth(1).unwrap().contains("\"project.access_granted\""));
+
+    // The chain verifies; the runtime role cannot change it; a change by the owner is caught.
+    let verify = |token: String| {
+        let h = &h;
+        async move { h.call(Method::GET, "/api/v1/organizations/current/audit/verify", Some(&token), None, None).await.body }
+    };
+    assert_eq!(verify(owner.clone()).await, json!({ "entries": 6, "intact": true, "broken_at": null, "reason": null }));
+    let mut tx = h.router.begin(tenant).await.unwrap();
+    let refused = sqlx::query("UPDATE audit_log SET resource_label = 'x'").execute(tx.conn()).await;
+    assert!(refused.is_err(), "the runtime role cannot rewrite history");
+    drop(tx);
+    let mut owner_tx = h.db.owner.begin().await.unwrap();
+    for sql in [
+        format!("SELECT set_config('app.tenant_id', '{tenant}', true)"),
+        "ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only".to_owned(),
+        "UPDATE audit_log SET details = '{\"role\": \"owner\"}' WHERE seq = 5".to_owned(),
+        "ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only".to_owned(),
+    ] {
+        sqlx::query(&sql).execute(&mut *owner_tx).await.unwrap();
+    }
+    owner_tx.commit().await.unwrap();
+    let broken = verify(owner).await;
+    assert_eq!(broken["intact"], false);
+    assert_eq!(broken["broken_at"], 5);
+    assert_eq!(broken["entries"], 4);
+    h.db.cleanup().await;
+}

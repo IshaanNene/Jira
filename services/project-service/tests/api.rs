@@ -279,6 +279,21 @@ async fn private_projects_are_invisible_without_access() {
             .status,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+
+    // Access changes are recorded for the audit log, with who made them; refused ones are not.
+    let audited: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT payload->'payload'->>'action', payload FROM outbox WHERE event_type = 'audit.recorded' ORDER BY created_at",
+    )
+    .fetch_all(&h.db.owner)
+    .await
+    .unwrap();
+    let actions: Vec<&str> = audited.iter().map(|(a, _)| a.as_str()).collect();
+    assert_eq!(actions, ["project.access_granted", "project.default_access_changed"]);
+    let granted = &audited[0].1;
+    assert_eq!(granted["payload"]["resource_label"], "SEC");
+    assert_eq!(granted["payload"]["details"], json!({ "user_id": bob_id.to_string(), "role": "viewer" }));
+    assert_eq!(granted["actor"]["type"], "user");
+    assert_eq!(audited[1].1["payload"]["details"], json!({ "default_role": "none" }));
     h.db.cleanup().await;
 }
 

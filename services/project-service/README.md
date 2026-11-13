@@ -11,7 +11,8 @@ Guests cannot create projects. A project the caller has no role on answers `404`
 `If-Match`. Deleting needs an organization admin and an archived project.
 
 **Database.** Owns `project_db`: `projects`, `components`, `versions` (forced RLS), `outbox`, `inbox`. Emits
-`project.created`, `project.updated`, `project.deleted`, `version.released`.
+`project.created`, `project.updated`, `project.deleted`, `version.released`, and `audit.recorded` for access
+changes (`project.access_granted`, `project.access_removed`, `project.default_access_changed`).
 
 **Not built yet.** Templates, categories, avatars, milestones/roadmaps, notification and issue-type schemes,
 project dashboards, activity feed, retention purge of soft-deleted projects.

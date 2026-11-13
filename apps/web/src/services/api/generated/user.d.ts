@@ -68,6 +68,54 @@ export interface paths {
         patch: operations["update_current"];
         trace?: never;
     };
+    "/api/v1/organizations/current/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/current/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/current/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["verify"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/current/invitations": {
         parameters: {
             query?: never;
@@ -156,6 +204,51 @@ export interface components {
             /** Format: uuid */
             organization_id: string;
             organization_name: string;
+        };
+        AuditActor: {
+            id: string;
+            /** @description user | system | automation */
+            type: string;
+        };
+        AuditEntryDto: {
+            /** @description e.g. `member.role_changed`, `project.access_granted` */
+            action: string;
+            actor: components["schemas"]["AuditActor"];
+            details: {
+                [key: string]: string;
+            };
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            occurred_at: string;
+            request_id?: string | null;
+            resource_id: string;
+            resource_label: string;
+            resource_type: string;
+            /** Format: int64 */
+            seq: number;
+        };
+        AuditPage: {
+            items: components["schemas"]["AuditEntryDto"][];
+            next_cursor?: string | null;
+            /** @description Display names of the people the entries mention (actors, members, grantees). */
+            people: {
+                [key: string]: string;
+            };
+        };
+        AuditVerification: {
+            /**
+             * Format: int64
+             * @description Sequence number of the first entry that does not fit the chain.
+             */
+            broken_at?: number | null;
+            /**
+             * Format: int64
+             * @description Entries checked and found intact, from the first.
+             */
+            entries: number;
+            intact: boolean;
+            reason?: string | null;
         };
         CreateInvitationRequest: {
             email: string;
@@ -434,6 +527,116 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                /** @description organization | member | project | version | workflow | board | sprint | issue | comment */
+                category?: string | null;
+                /** @description Only actions by this person (user id). */
+                actor?: string | null;
+                /** @description First day, `YYYY-MM-DD` (UTC). */
+                from?: string | null;
+                /** @description Last day, inclusive. */
+                to?: string | null;
+                limit?: number | null;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export: {
+        parameters: {
+            query?: {
+                /** @description organization | member | project | version | workflow | board | sprint | issue | comment */
+                category?: string | null;
+                /** @description Only actions by this person (user id). */
+                actor?: string | null;
+                /** @description First day, `YYYY-MM-DD` (UTC). */
+                from?: string | null;
+                /** @description Last day, inclusive. */
+                to?: string | null;
+                limit?: number | null;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV of the matching entries, newest first (at most 50 000) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditVerification"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

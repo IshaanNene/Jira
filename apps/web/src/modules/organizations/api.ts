@@ -2,8 +2,11 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 
 import {
   api,
+  download,
   requestWithMeta,
   type AcceptInvitationResponse,
+  type AuditPage,
+  type AuditVerification,
   type Invitation,
   type InvitationList,
   type InvitationPreview,
@@ -28,7 +31,45 @@ export const orgKeys = {
   allMembers: (orgId: string | undefined) => ["org", orgId, "members"] as const,
   invitations: (orgId: string | undefined) => ["org", orgId, "invitations"] as const,
   invitationPreview: (token: string) => ["invitation-preview", token] as const,
+  audit: (orgId: string | undefined, filters: AuditFilters) => ["org", orgId, "audit", filters] as const,
 };
+
+export interface AuditFilters {
+  category?: string;
+  actor?: string;
+  from?: string;
+  to?: string;
+}
+
+const AUDIT_PATH = `${BASE}/organizations/current/audit`;
+
+function auditQuery(filters: AuditFilters): Record<string, string> {
+  return Object.fromEntries(Object.entries(filters).filter(([, v]) => Boolean(v))) as Record<string, string>;
+}
+
+/** The workspace audit log, newest first, a page at a time (admins and owners). */
+export function useAuditLog(filters: AuditFilters) {
+  const orgId = useOrgId();
+  return useInfiniteQuery({
+    queryKey: orgKeys.audit(orgId, filters),
+    queryFn: ({ pageParam, signal }) =>
+      api.get<AuditPage>(AUDIT_PATH, { query: { ...auditQuery(filters), limit: 50, cursor: pageParam }, signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: Boolean(orgId),
+  });
+}
+
+/** Re-check the whole hash chain on the server. */
+export function useVerifyAuditLog() {
+  return useMutation({ mutationFn: () => api.get<AuditVerification>(`${AUDIT_PATH}/verify`) });
+}
+
+/** The matching entries as CSV, fetched with the session's token. */
+export function exportAuditLog(filters: AuditFilters): Promise<Blob> {
+  const query = new URLSearchParams(auditQuery(filters)).toString();
+  return download(`${AUDIT_PATH}/export${query ? `?${query}` : ""}`);
+}
 
 function useOrgId(): string | undefined {
   return useSession((s) => s.organization?.id);

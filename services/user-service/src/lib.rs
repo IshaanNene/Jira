@@ -1,5 +1,6 @@
 //! User & organization service: profiles, organizations, memberships and invitations.
 
+pub mod audit;
 pub mod domain;
 pub mod grpc;
 pub mod http;
@@ -100,6 +101,19 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
     let placement = RegistryPlacement::new(&config.tenant_service_grpc_url, &config.internal_secret, SERVICE_NAME)?;
     let db = Arc::new(DbRouter::new(pools, Arc::new(placement)));
     event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
+    match event_bus::KafkaSettings::from_env(SERVICE_NAME) {
+        Some(settings) => {
+            use event_contracts::topics;
+            let handler = Arc::new(audit::Recorder { db: Arc::clone(&db) });
+            let topics = [topics::ORGANIZATION, topics::PROJECT, topics::WORKFLOW, topics::AGILE, topics::ISSUE, topics::AUDIT];
+            tokio::spawn(async move {
+                if let Err(error) = event_bus::run_consumer(&settings, audit::CONSUMER, &topics, handler).await {
+                    tracing::error!(%error, "audit recorder stopped");
+                }
+            });
+        }
+        None => tracing::warn!("KAFKA_BROKERS is not set: the audit log will not be recorded"),
+    }
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;
     let verifier = Arc::new(TokenVerifier::remote(config.token_issuer.clone(), config.jwks_url.clone())?.with_revocations(redis));
     let state = AppState {

@@ -13,7 +13,7 @@ use axum::{
 use error_handling::{require_if_match, ApiError, ApiResult};
 use event_contracts::{
     outbox,
-    payloads::{ProjectCreatedV1, ProjectDeletedV1, ProjectUpdatedV1, VersionReleasedV1},
+    payloads::{AuditRecordedV1, ProjectCreatedV1, ProjectDeletedV1, ProjectUpdatedV1, VersionReleasedV1},
     Actor, EventEnvelope,
 };
 use serde::{Deserialize, Serialize};
@@ -267,6 +267,35 @@ async fn emit_updated(tx: &mut TenantTx, ctx: &OrgContext, p: &Project) -> ApiRe
             p.version,
             Actor::User(ctx.user_id),
             ProjectUpdatedV1 { project_id: p.id, key: p.key.clone(), name: p.name.clone(), status: p.status.clone() },
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Record an access change for the audit log. The permission service applies the change
+/// but does not know who asked, so the record is written here, after it succeeded.
+async fn audit_access(
+    tx: &mut TenantTx,
+    ctx: &OrgContext,
+    project: &Project,
+    action: &str,
+    details: &[(&str, String)],
+) -> ApiResult<()> {
+    outbox::enqueue(
+        tx.conn(),
+        &EventEnvelope::new(
+            Some(ctx.tenant_id),
+            project.id,
+            0,
+            Actor::User(ctx.user_id),
+            AuditRecordedV1 {
+                action: action.to_owned(),
+                resource_type: "project".to_owned(),
+                resource_id: project.id.to_string(),
+                resource_label: project.key.clone(),
+                details: details.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(),
+            },
         ),
     )
     .await?;
@@ -707,6 +736,16 @@ pub async fn set_member(
     }
     state.access.set_role(ctx.tenant_id, project.id, user_id, role).await?;
     state.policy.forget(ctx.tenant_id, user_id);
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    audit_access(
+        &mut tx,
+        &ctx,
+        &project,
+        "project.access_granted",
+        &[("user_id", user_id.to_string()), ("role", role.as_str().to_owned())],
+    )
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -721,6 +760,9 @@ pub async fn remove_member(
     tx.commit().await?;
     state.access.remove_role(ctx.tenant_id, project.id, user_id).await?;
     state.policy.forget(ctx.tenant_id, user_id);
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    audit_access(&mut tx, &ctx, &project, "project.access_removed", &[("user_id", user_id.to_string())]).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -740,6 +782,8 @@ pub async fn set_access(
     state.access.set_default_role(ctx.tenant_id, project.id, default_role).await?;
     let updated = store::set_default_role(tx.conn(), ctx.tenant_id, project.id, default_role.map(ProjectRole::as_str)).await?;
     emit_updated(&mut tx, &ctx, &updated).await?;
+    let everyone = default_role.map_or("none", ProjectRole::as_str).to_owned();
+    audit_access(&mut tx, &ctx, &updated, "project.default_access_changed", &[("default_role", everyone)]).await?;
     tx.commit().await?;
     state.policy.forget_tenant(ctx.tenant_id);
     Ok(Json(ProjectDto::new(updated, role)))

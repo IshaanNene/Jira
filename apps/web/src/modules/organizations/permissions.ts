@@ -4,7 +4,7 @@ import type { OrgRole } from "@/services/api";
  * Client-side mirror of `auth_middleware::authz` — used only to decide what to *show*.
  * The server enforces every one of these rules again; hiding a control is not security.
  */
-export type OrgPermission = "viewMembers" | "inviteMembers" | "manageMembers" | "manageOrganization" | "manageOwnership";
+export type OrgPermission = "viewMembers" | "inviteMembers" | "manageMembers" | "manageOrganization" | "viewAuditLog" | "manageOwnership";
 
 const RANK: Record<OrgRole, number> = { guest: 0, member: 1, admin: 2, owner: 3 };
 
@@ -13,6 +13,7 @@ const MINIMUM: Record<OrgPermission, OrgRole> = {
   inviteMembers: "admin",
   manageMembers: "admin",
   manageOrganization: "admin",
+  viewAuditLog: "admin",
   manageOwnership: "owner",
 };
 

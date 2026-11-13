@@ -100,10 +100,18 @@ service could impersonate another; per-workload identity (SPIFFE/SPIRE) is the p
 
 ## 7. Audit
 
-Security-relevant actions emit `audit.recorded` (actor, action, resource, tenant, request id, metadata, IP).
-The audit store is append-only (no UPDATE/DELETE grants) and tamper-evident: each row stores
-`hash = SHA-256(prev_hash || canonical_row)` per tenant chain; a verifier job and an export endpoint exist in
-Phase 6. Retention is configurable per organization within plan limits.
+Admin-relevant actions are recorded from domain events and `audit.recorded` (actor, action, resource, tenant,
+request id, details) by a consumer in user-service (ADR-0009).
+
+- **Append-only.** A trigger refuses UPDATE, DELETE and TRUNCATE on `audit_log` for every role, and the migration
+  revokes those grants from every role but the owner. Forced row-level security scopes reads to the tenant.
+- **Tamper-evident.** Each tenant has one chain: `hash = SHA-256(prev_hash || canonical JSON of the row)`, starting
+  from 32 zero bytes. Appends take a per-tenant advisory lock, so sequence numbers have no gaps.
+  `GET /organizations/current/audit/verify` recomputes the chain and reports the first entry that is missing,
+  out of order or altered (tested by editing a row as the owner with the trigger disabled).
+- **Export.** CSV for admins and owners only, `Cache-Control: no-store`; every cell is quoted and a leading
+  `= + - @` tab or carriage return is prefixed with `'` so a spreadsheet never evaluates it.
+- **Not yet.** Client IP address, per-organization retention, a scheduled verifier, sign-in events.
 
 ## 8. Supply chain
 

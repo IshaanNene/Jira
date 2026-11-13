@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod dto;
 pub mod invitations;
 pub mod members;
@@ -35,7 +36,10 @@ use crate::AppState;
         invitations::create,
         invitations::revoke,
         invitations::preview,
-        invitations::accept
+        invitations::accept,
+        audit::list,
+        audit::export,
+        audit::verify
     ),
     components(schemas(
         dto::ProfileDto,
@@ -51,7 +55,11 @@ use crate::AppState;
         dto::InvitationDto,
         dto::InvitationList,
         dto::InvitationPreview,
-        dto::AcceptInvitationResponse
+        dto::AcceptInvitationResponse,
+        audit::AuditPage,
+        audit::AuditEntryDto,
+        audit::AuditActor,
+        audit::AuditVerification
     ))
 )]
 pub struct ApiDoc;
@@ -66,14 +74,17 @@ pub fn router(state: AppState) -> Router {
         .route("/organizations/current/invitations", get(invitations::list).post(invitations::create))
         .route("/organizations/current/invitations/{id}", delete(invitations::revoke))
         .route("/invitations/{token}", get(invitations::preview))
-        .route("/invitations/{token}/accept", post(invitations::accept));
+        .route("/invitations/{token}/accept", post(invitations::accept))
+        .route("/organizations/current/audit", get(audit::list))
+        .route("/organizations/current/audit/export", get(audit::export))
+        .route("/organizations/current/audit/verify", get(audit::verify));
 
     let origins: Vec<_> = state.settings.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PATCH])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::IF_MATCH])
-        .expose_headers([header::ETAG]);
+        .expose_headers([header::ETAG, header::CONTENT_DISPOSITION]);
 
     Router::new()
         .nest("/api/v1", api)

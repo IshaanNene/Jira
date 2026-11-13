@@ -3908,6 +3908,7 @@ dependencies = [
  "error-handling",
  "event-bus",
  "event-contracts",
+ "hex",
  "http",
  "observability",
  "platform-common",

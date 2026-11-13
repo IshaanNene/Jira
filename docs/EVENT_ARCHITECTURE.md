@@ -41,7 +41,7 @@ One topic per aggregate type, so that all events of one aggregate are totally or
 | `platform.permission.v1` | `permission.updated` | `tenant_id` | permission |
 | `platform.automation.v1` | `automation.triggered`, `automation.executed`, `automation.failed` | `tenant_id:rule_id` | automation |
 | `platform.notification.v1` | `notification.requested`, `notification.delivered` | `tenant_id:user_id` | any / notification |
-| `platform.audit.v1` | `audit.recorded` | `tenant_id` | all |
+| `platform.audit.v1` | `audit.recorded` (only where no domain event says enough; today project access changes) | `tenant_id` | project |
 | `<topic>.dlq` | failed envelopes + error metadata headers | same | consumers |
 
 Keying by `tenant:aggregate` preserves per-aggregate order and spreads tenants across partitions. Comments ride

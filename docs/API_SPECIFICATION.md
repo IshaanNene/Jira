@@ -72,7 +72,10 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET / POST / PATCH / DELETE | `/teams`, `/teams/{id}`, `/teams/{id}/members` | teams & departments | ⬜ |
 | GET / PATCH | `/users/me` | own profile | ✅ |
 | GET | `/users/{id}`, `/users?query=` | directory search | ⬜ |
-| … | `/scim/v2/*`, `/groups`, `/audit-log`, `/domains` | Phase 6 | ⬜ |
+| GET | `/organizations/current/audit` | audit log, newest first (`category`, `actor`, `from`, `to`, `limit`, `cursor`); admins and owners | ✅ |
+| GET | `/organizations/current/audit/export` | same filters as CSV (≤ 50 000 rows) | ✅ |
+| GET | `/organizations/current/audit/verify` | recompute the hash chain; first broken entry and why | ✅ |
+| … | `/scim/v2/*`, `/groups`, `/domains` | Phase 6 | ⬜ |
 
 ### Later phases (paths fixed now so the frontend router and gateway routes are stable)
 | Area | Paths |

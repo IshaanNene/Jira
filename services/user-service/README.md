@@ -5,7 +5,8 @@ organization-creation saga (provision tenant → write organization + owner memb
 on failure).
 
 **API.** REST under `/api/v1` — contract at `/openapi.json`: `users/me`, `organizations`,
-`organizations/current`, `.../members`, `.../invitations`, `invitations/{token}` (+`/accept`).
+`organizations/current`, `.../members`, `.../invitations`, `.../audit` (+`/export`, `/verify`; admins and owners),
+`invitations/{token}` (+`/accept`).
 Internal gRPC `Membership`: `CheckMembership` for identity-service, `GetMembers` (people by id: role, status,
 name, email) for notification-service, and `FindMembers` (members whose email or display name equals a term,
 ignoring case; no partial matches) for search-service's query language.
@@ -22,7 +23,12 @@ single-use, expire after 7 days and can only be accepted by the invited address.
 **Database.** Owns `user_db`. Emits `organization.created`, `organization.updated`, `user.invited`,
 `membership.changed`.
 
-**Not built yet.** Teams, departments, groups, avatars, org domains, SCIM, audit log, invitation
+**Audit log.** The `user-service.audit` consumer (started when `KAFKA_BROKERS` is set) reads the organization,
+project, workflow, agile, issue and audit topics and appends admin-relevant events to `audit_log`: one SHA-256
+hash chain per tenant, append-only by trigger and revoked grants, de-duplicated by event id. See
+[SECURITY_DESIGN.md](../../docs/SECURITY_DESIGN.md) §7.
+
+**Not built yet.** Teams, departments, groups, avatars, org domains, SCIM, audit retention, invitation
 email (the link is returned once to the inviter until the notification service exists).
 
 | Variable | Required | Default | Purpose |

@@ -276,6 +276,23 @@ pub struct NotificationCreatedV1 {
 }
 payload!(NotificationCreatedV1, "notification.created", 1, topics::NOTIFICATION, "notification");
 
+/// An administrative action that no domain event describes well enough for the audit
+/// log (for example a change of someone's project role, where the permission service
+/// does not know who asked). The aggregate id is the resource's id when it has one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditRecordedV1 {
+    /// Dotted verb, e.g. `project.access_granted`.
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    /// What a person would call the resource (a project key, a name); may be empty.
+    pub resource_label: String,
+    /// Short string facts about the change. No secrets, no free-form user content.
+    #[serde(default)]
+    pub details: std::collections::BTreeMap<String, String>,
+}
+payload!(AuditRecordedV1, "audit.recorded", 1, topics::AUDIT, "audit");
+
 #[cfg(test)]
 mod tests {
     use super::*;
