@@ -1,0 +1,26 @@
+[package]
+name = "event-bus"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+platform-common.workspace = true
+error-handling.workspace = true
+event-contracts.workspace = true
+rdkafka.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+test-utilities.workspace = true

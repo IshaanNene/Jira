@@ -193,6 +193,9 @@ pub struct CommentDeletedV1 {
     pub comment_id: Uuid,
     pub issue_id: Uuid,
     pub key: String,
+    /// Added after v1 shipped; absent in older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
 }
 payload!(CommentDeletedV1, "comment.deleted", 1, topics::ISSUE, "issue");
 
@@ -262,6 +265,16 @@ pub struct IssueRankedV1 {
     pub sprint_id: Option<Uuid>,
 }
 payload!(IssueRankedV1, "issue.ranked", 1, topics::AGILE, "board");
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationCreatedV1 {
+    pub notification_id: Uuid,
+    pub recipient_id: Uuid,
+    /// assigned | commented | mentioned | status_changed
+    pub kind: String,
+    pub issue_key: String,
+}
+payload!(NotificationCreatedV1, "notification.created", 1, topics::NOTIFICATION, "notification");
 
 #[cfg(test)]
 mod tests {

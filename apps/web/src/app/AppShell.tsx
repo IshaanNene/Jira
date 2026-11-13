@@ -14,6 +14,7 @@ import {
   Tooltip,
 } from "@/components/ui";
 import { CreateIssueDialog } from "@/modules/issues";
+import { NotificationBell } from "@/modules/notifications";
 import { can } from "@/modules/organizations";
 import { CreateProjectDialog, ProjectAvatar, useProjects } from "@/modules/projects";
 import { useSession } from "@/state/session";
@@ -121,6 +122,7 @@ export function AppShell() {
             <kbd className="font-mono text-2xs">{isMac ? "⌘K" : "Ctrl K"}</kbd>
           </button>
           <div className="w-44"><WorkspaceSwitcher collapsed={false} /></div>
+          <NotificationBell />
           <Tooltip label="Settings" side="bottom">
             <Button asChild variant="ghost" size="icon"><Link to="/settings/workspace" aria-label="Settings"><Settings className="h-4 w-4" /></Link></Button>
           </Tooltip>

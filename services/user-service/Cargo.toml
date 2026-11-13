@@ -11,6 +11,7 @@ observability.workspace = true
 auth-middleware.workspace = true
 tenant-context.workspace = true
 event-contracts.workspace = true
+event-bus.workspace = true
 api-contracts.workspace = true
 tokio.workspace = true
 axum.workspace = true

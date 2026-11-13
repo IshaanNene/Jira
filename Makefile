@@ -13,8 +13,9 @@ stop: ## Stop services and the web app (containers keep running)
 	@./scripts/development/stop.sh
 
 infra: ## Start only the infrastructure containers
-	docker compose up -d --wait postgres redis object-storage gateway
+	docker compose up -d --wait postgres redis object-storage kafka opensearch gateway
 	docker compose up -d object-storage-setup
+	docker compose run --rm kafka-setup > /dev/null
 
 build: ## Build all Rust services and the web app
 	cargo build --workspace

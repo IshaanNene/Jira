@@ -1,11 +1,14 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
 import { Building2, LogOut, Moon, Plus, Search, Sun } from "lucide-react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { signOut, switchOrganization } from "@/modules/auth";
 import { can, useMyOrganizations } from "@/modules/organizations";
+import { IssueTypeIcon } from "@/modules/issues";
 import { ProjectAvatar, useProjects } from "@/modules/projects";
+import { Highlighted, hitPath, useDebounced, useQuickSearch } from "@/modules/search";
 import { useSession } from "@/state/session";
 import { useUi } from "@/state/ui";
 
@@ -27,6 +30,10 @@ export function CommandPalette() {
   const projects = useProjects();
   const openCreate = useUi((s) => s.openCreateIssue);
   const isDark = document.documentElement.classList.contains("dark");
+  const [text, setText] = useState("");
+  const q = useDebounced(text.trim(), 200);
+  const issues = useQuickSearch(q, open);
+  const hits = q.length >= 2 ? (issues.data?.items ?? []) : [];
 
   const run = (action: () => void | Promise<void>) => {
     setOpen(false);
@@ -34,7 +41,13 @@ export function CommandPalette() {
   };
 
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setText("");
+      }}
+    >
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-ink/40 data-[state=open]:animate-fade-in" />
         <DialogPrimitive.Content
@@ -45,10 +58,33 @@ export function CommandPalette() {
           <Command label="Command palette" loop>
             <div className="flex items-center gap-2 border-b border-line px-3">
               <Search className="h-4 w-4 shrink-0 text-ink-subtle" aria-hidden />
-              <Command.Input autoFocus placeholder="Search for a page or action…" className="h-11 w-full bg-transparent text-base text-ink outline-none placeholder:text-ink-subtle focus-visible:ring-0" />
+              <Command.Input autoFocus value={text} onValueChange={setText} maxLength={200} placeholder="Search issues, pages and actions…" className="h-11 w-full bg-transparent text-base text-ink outline-none placeholder:text-ink-subtle focus-visible:ring-0" />
             </div>
             <Command.List className="max-h-80 overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-8 text-center text-sm text-ink-muted">Nothing matches. Try a different word.</Command.Empty>
+              {/* With a query the issue group below always offers "Search all issues". */}
+              {q.length < 2 && <Command.Empty className="px-3 py-8 text-center text-sm text-ink-muted">Nothing matches. Try a different word.</Command.Empty>}
+              {q.length >= 2 && (
+                // Matched by the server, so cmdk's own filter must not hide them.
+                <Command.Group heading="Issues" className={groupClass} forceMount>
+                  {hits.map((hit) => (
+                    <Command.Item key={hit.id} value={`issue ${hit.key}`} forceMount onSelect={() => run(() => navigate(hitPath(hit)))} className={itemClass}>
+                      <IssueTypeIcon type={hit.type} />
+                      <span className="shrink-0 text-ink-muted">{hit.key}</span>
+                      <span className="truncate">
+                        <Highlighted parts={hit.summary_parts} fallback={hit.summary} />
+                      </span>
+                    </Command.Item>
+                  ))}
+                  <Command.Item
+                    value="search all issues"
+                    forceMount
+                    onSelect={() => run(() => navigate(`/search?q=${encodeURIComponent(q)}`))}
+                    className={itemClass}
+                  >
+                    <Search aria-hidden /> {hits.length ? "View all results" : issues.isFetching ? "Searching issues…" : "Search all issues"} for “{q}”
+                  </Command.Item>
+                </Command.Group>
+              )}
               <Command.Group heading="Go to" className={groupClass}>
                 {ALL_NAV.filter((item) => !item.requires || can(role, item.requires)).map((item) => (
                   <Command.Item key={item.to} value={`go ${item.label}`} onSelect={() => run(() => navigate(item.to))} className={itemClass}>

@@ -1,0 +1,234 @@
+//! Consumer loop: Kafka → handler, with bounded retries and a dead-letter topic.
+//!
+//! Offsets are committed only after the handler succeeded or the event was parked in
+//! `<topic>.dlq`, so nothing is skipped silently. Events are processed one at a time per
+//! consumer instance; parallelism comes from more instances in the group (one per
+//! partition at most).
+
+use std::{sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use error_handling::ApiError;
+use event_contracts::{topics, EventEnvelope};
+use rdkafka::{
+    consumer::{CommitMode, Consumer, StreamConsumer},
+    message::{BorrowedMessage, Header, Headers, OwnedHeaders},
+    producer::{FutureProducer, FutureRecord},
+    util::Timeout,
+    Message,
+};
+use serde::de::DeserializeOwned;
+use uuid::Uuid;
+
+use crate::settings::KafkaSettings;
+
+const ATTEMPTS: u32 = 3;
+
+/// A received event: the validated envelope with its payload still as JSON.
+#[derive(Debug, Clone)]
+pub struct Event {
+    pub topic: String,
+    pub envelope: EventEnvelope<serde_json::Value>,
+}
+
+impl Event {
+    pub fn event_type(&self) -> &str {
+        &self.envelope.event_type
+    }
+
+    pub fn event_id(&self) -> Uuid {
+        self.envelope.event_id
+    }
+
+    /// The tenant, which every event on a tenant topic must carry.
+    pub fn tenant_id(&self) -> Result<Uuid, HandlerError> {
+        self.envelope.tenant_id.ok_or_else(|| HandlerError::Permanent(anyhow::anyhow!("event has no tenant_id")))
+    }
+
+    /// The acting user, if a person caused the event.
+    pub fn actor_user(&self) -> Option<Uuid> {
+        match self.envelope.actor {
+            event_contracts::Actor::User(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The payload as a versioned struct. Unknown fields are ignored; a payload that does
+    /// not match its contract is a permanent failure.
+    pub fn payload<P: DeserializeOwned>(&self) -> Result<P, HandlerError> {
+        serde_json::from_value(self.envelope.payload.clone()).map_err(|e| {
+            HandlerError::Permanent(anyhow::anyhow!("{} payload does not match its contract: {e}", self.event_type()))
+        })
+    }
+
+    /// Parse and validate raw bytes from `topic`.
+    pub fn parse(topic: &str, bytes: &[u8]) -> Result<Self, anyhow::Error> {
+        let envelope: EventEnvelope<serde_json::Value> = serde_json::from_slice(bytes)?;
+        if envelope.event_type.is_empty() || envelope.aggregate_type.is_empty() {
+            anyhow::bail!("envelope without event_type or aggregate_type");
+        }
+        // Everything except identity events is about a tenant.
+        if topic != topics::IDENTITY && envelope.tenant_id.is_none() {
+            anyhow::bail!("{} event on {topic} has no tenant_id", envelope.event_type);
+        }
+        Ok(Self { topic: topic.to_owned(), envelope })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HandlerError {
+    /// Worth retrying: a dependency was down, a deadlock, a timeout.
+    #[error("transient: {0}")]
+    Transient(anyhow::Error),
+    /// Retrying cannot help: the event is invalid for this consumer.
+    #[error("permanent: {0}")]
+    Permanent(anyhow::Error),
+}
+
+impl From<ApiError> for HandlerError {
+    fn from(error: ApiError) -> Self {
+        match error {
+            ApiError::Validation(_) | ApiError::NotFound(_) | ApiError::Forbidden => Self::Permanent(anyhow::anyhow!("{error}")),
+            other => Self::Transient(anyhow::anyhow!("{other}")),
+        }
+    }
+}
+
+impl From<sqlx::Error> for HandlerError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Transient(error.into())
+    }
+}
+
+#[async_trait]
+pub trait Handler: Send + Sync + 'static {
+    /// Apply the event. Ignore event types this consumer does not care about (`Ok`).
+    async fn handle(&self, event: &Event) -> Result<(), HandlerError>;
+}
+
+/// Consume `topics` as consumer group `group` until the process stops. Connection problems
+/// are retried by the client; this never returns under normal operation.
+pub async fn run_consumer(
+    settings: &KafkaSettings,
+    group: &str,
+    topics: &[&str],
+    handler: Arc<dyn Handler>,
+) -> anyhow::Result<()> {
+    let consumer: StreamConsumer = settings
+        .base()
+        .set("group.id", group)
+        .set("enable.auto.commit", "false")
+        .set("auto.offset.reset", "earliest")
+        .set("session.timeout.ms", "10000")
+        .create()?;
+    consumer.subscribe(topics)?;
+    let dlq: FutureProducer = settings.producer().create()?;
+    tracing::info!(group, ?topics, "consumer started");
+
+    loop {
+        let message = match consumer.recv().await {
+            Ok(m) => m,
+            Err(error) => {
+                tracing::warn!(group, %error, "kafka receive failed");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let outcome = process(&message, handler.as_ref()).await;
+        if let Err((error, attempts)) = outcome {
+            park(&dlq, group, &message, &error, attempts).await;
+        }
+        if let Err(error) = consumer.commit_message(&message, CommitMode::Async) {
+            tracing::warn!(group, %error, "offset commit failed; the event may be redelivered");
+        }
+    }
+}
+
+async fn process(message: &BorrowedMessage<'_>, handler: &dyn Handler) -> Result<(), (String, u32)> {
+    let topic = message.topic();
+    let event = match message.payload().map(|bytes| Event::parse(topic, bytes)) {
+        Some(Ok(event)) => event,
+        Some(Err(error)) => return Err((format!("invalid envelope: {error}"), 0)),
+        None => return Err(("empty message".to_owned(), 0)),
+    };
+    let mut delay = Duration::from_millis(200);
+    for attempt in 1..=ATTEMPTS {
+        match handler.handle(&event).await {
+            Ok(()) => {
+                metrics::counter!("events_consumed_total", "event_type" => event.event_type().to_owned()).increment(1);
+                return Ok(());
+            }
+            Err(HandlerError::Permanent(error)) => return Err((error.to_string(), attempt)),
+            Err(HandlerError::Transient(error)) if attempt == ATTEMPTS => return Err((error.to_string(), attempt)),
+            Err(HandlerError::Transient(error)) => {
+                tracing::warn!(event_type = event.event_type(), event_id = %event.event_id(), attempt, %error, "event handling failed; retrying");
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Park a failed event in `<topic>.dlq`. Blocks (retrying) rather than lose it.
+async fn park(dlq: &FutureProducer, group: &str, message: &BorrowedMessage<'_>, error: &str, attempts: u32) {
+    let topic = topics::dead_letter(message.topic());
+    let attempts = attempts.to_string();
+    let mut headers = OwnedHeaders::new();
+    if let Some(original) = message.headers() {
+        for h in original.iter() {
+            headers = headers.insert(Header { key: h.key, value: h.value });
+        }
+    }
+    let headers = headers
+        .insert(Header { key: "x-error", value: Some(error) })
+        .insert(Header { key: "x-consumer", value: Some(group) })
+        .insert(Header { key: "x-attempts", value: Some(attempts.as_str()) })
+        .insert(Header { key: "x-original-topic", value: Some(message.topic()) });
+    let mut wait = Duration::from_secs(1);
+    loop {
+        let mut record = FutureRecord::to(&topic).headers(headers.clone());
+        if let Some(key) = message.key() {
+            record = record.key(key);
+        }
+        if let Some(payload) = message.payload() {
+            record = record.payload(payload);
+        }
+        match dlq.send(record, Timeout::After(Duration::from_secs(30))).await {
+            Ok(_) => {
+                metrics::counter!("events_dead_lettered_total", "consumer" => group.to_owned()).increment(1);
+                tracing::error!(consumer = group, dlq = %topic, %error, "event moved to the dead-letter topic");
+                return;
+            }
+            Err((send_error, _)) => {
+                tracing::error!(%send_error, "could not park event in the dead-letter topic; retrying");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelopes_without_a_tenant_are_rejected_on_tenant_topics() {
+        let raw = |tenant: &str| {
+            format!(
+                r#"{{"event_id":"0195c1e2-0000-7000-8000-000000000001","event_type":"issue.created","schema_version":1,
+                "tenant_id":{tenant},"aggregate_type":"issue","aggregate_id":"0195c1e2-0000-7000-8000-000000000003",
+                "aggregate_version":1,"occurred_at":"2026-11-11T09:00:00Z","correlation_id":null,"causation_id":null,
+                "actor":{{"type":"user","id":"0195c1e2-0000-7000-8000-000000000004"}},"payload":{{"x":1}},"extra":true}}"#
+            )
+        };
+        assert!(Event::parse(topics::ISSUE, raw("null").as_bytes()).is_err());
+        let event = Event::parse(topics::ISSUE, raw("\"0195c1e2-0000-7000-8000-000000000002\"").as_bytes()).unwrap();
+        assert_eq!(event.actor_user().unwrap().to_string(), "0195c1e2-0000-7000-8000-000000000004");
+        assert!(event.tenant_id().is_ok());
+        assert!(Event::parse(topics::ISSUE, b"not json").is_err());
+        // An identity event needs no tenant.
+        assert!(Event::parse(topics::IDENTITY, raw("null").as_bytes()).is_ok());
+    }
+}

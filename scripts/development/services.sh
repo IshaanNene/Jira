@@ -10,6 +10,9 @@ SERVICES=(
   "workflow:8106:9106"
   "issue:8105:9105"
   "agile:8107:-"
+  "realtime:8109:-"
+  "notification:8110:-"
+  "search:8111:-"
 )
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

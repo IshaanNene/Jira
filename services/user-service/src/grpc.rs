@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest, CheckMembershipResponse};
+use api_contracts::user::v1::{
+    membership_server::Membership, CheckMembershipRequest, CheckMembershipResponse, GetMembersRequest, Member, Members,
+};
 use error_handling::ApiError;
 use tenant_context::DbRouter;
 use tonic::{Request, Response, Status};
@@ -44,5 +46,28 @@ impl Membership for MembershipService {
             }),
             None => not_member(),
         })
+    }
+
+    async fn get_members(&self, request: Request<GetMembersRequest>) -> Result<Response<Members>, Status> {
+        let req = request.into_inner();
+        let tenant_id = parse_id("tenant_id", &req.tenant_id)?;
+        if req.user_ids.len() > 500 {
+            return Err(Status::from(ApiError::invalid("user_ids", "too_many", "At most 500 people per call.")));
+        }
+        let ids = req.user_ids.iter().map(|v| parse_id("user_ids", v)).collect::<Result<Vec<_>, _>>()?;
+        let mut tx = self.db.begin(tenant_id).await?;
+        let rows = store::members_by_id(tx.conn(), tenant_id, &ids).await?;
+        tx.commit().await?;
+        Ok(Response::new(Members {
+            members: rows
+                .into_iter()
+                .map(|(user_id, org_role, status, display_name)| Member {
+                    user_id: user_id.to_string(),
+                    org_role,
+                    status,
+                    display_name,
+                })
+                .collect(),
+        }))
     }
 }

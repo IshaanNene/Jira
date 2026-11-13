@@ -1,6 +1,8 @@
 // Types generated from each service's OpenAPI document (`pnpm gen:api`).
 // Never hand-edit the generated files; change the Rust DTO and regenerate.
 import type { components as AgileComponents } from "./generated/agile";
+import type { components as NotificationComponents } from "./generated/notification";
+import type { components as SearchComponents } from "./generated/search";
 import type { components as IdentityComponents } from "./generated/identity";
 import type { components as UserComponents } from "./generated/user";
 import type { components as WorkflowComponents } from "./generated/workflow";
@@ -86,6 +88,16 @@ export type SprintList = AgileApi["SprintList"];
 export type SprintReport = AgileApi["SprintReport"];
 export type BurndownSample = AgileApi["BurndownSample"];
 export type VelocityReport = AgileApi["VelocityReport"];
+
+type NotificationApi = NotificationComponents["schemas"];
+export type AppNotification = NotificationApi["NotificationDto"];
+export type NotificationList = NotificationApi["NotificationList"];
+export type UnreadCount = NotificationApi["UnreadCount"];
+
+type SearchApi = SearchComponents["schemas"];
+export type SearchHit = SearchApi["SearchHit"];
+export type SearchResults = SearchApi["SearchResults"];
+export type TextPart = SearchApi["TextPart"];
 /** A rich-text document in the editor's JSON format. */
 export type RichDoc = Record<string, unknown>;
 

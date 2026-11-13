@@ -133,9 +133,12 @@ impl TokenVerifier {
         Ok(claims)
     }
 
+    /// Whether a session has been revoked. Long-lived connections (realtime) call this
+    /// again while they are open.
+    ///
     /// Redis being unreachable must not take the whole API down: the check fails open and
     /// the token's short lifetime bounds the exposure (see SECURITY_DESIGN.md §2).
-    async fn is_revoked(&self, sid: Uuid) -> bool {
+    pub async fn is_revoked(&self, sid: Uuid) -> bool {
         let Some(mut conn) = self.revocations.as_ref().and_then(RedisHandle::get) else {
             return false;
         };

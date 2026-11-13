@@ -32,6 +32,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
 
     let pools = pools_from_env(&PoolSettings::from_env()?)?;
     let db = Arc::new(DbRouter::new(pools, Arc::new(RegistryPlacement::new(&registry, &secret, SERVICE_NAME)?)));
+    event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
 
     let health_db = Arc::clone(&db);

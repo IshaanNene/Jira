@@ -1166,6 +1166,96 @@ async fn cards_are_served_to_other_services_per_project() {
     h.db.cleanup().await;
 }
 
+#[tokio::test]
+async fn audiences_and_search_documents_are_served_to_other_services() {
+    use api_contracts::issue::v1::{issues_server::Issues, GetAudienceRequest, GetDocumentsRequest, ListIssueIdsRequest};
+    use issue_service::grpc::IssuesService;
+
+    let h = harness().await;
+    let pay = h.project("PAY");
+    let (alice, member) = h.user(&[(pay, ProjectRole::Member)]);
+    let (bob, bob_token) = h.user(&[(pay, ProjectRole::Member)]);
+    let key = h.task(&member, "PAY", "Refunds fail").await;
+    let path = format!("/api/v1/issues/{key}");
+    let edit = h
+        .call(
+            Method::PATCH,
+            &path,
+            &member,
+            Some(json!({ "description": text_doc("Seen at checkout"), "assignee_id": bob, "labels": ["billing"] })),
+            Some(1),
+        )
+        .await;
+    assert_eq!(edit.status, StatusCode::OK, "{}", edit.body);
+    h.call(Method::PUT, &format!("{path}/watch"), &bob_token, None, None).await;
+    for text in ["First note", "Second note"] {
+        let c = h.call(Method::POST, &format!("{path}/comments"), &member, Some(json!({ "body": text_doc(text) })), None).await;
+        assert_eq!(c.status, StatusCode::CREATED, "{}", c.body);
+    }
+    let second = h.task(&member, "PAY", "Second issue").await;
+    let mut ids = Vec::new();
+    for k in [&key, &second] {
+        ids.push(
+            h.call(Method::GET, &format!("/api/v1/issues/{k}"), &member, None, None).await.body["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let (first_id, second_id) = (ids[0].clone(), ids[1].clone());
+
+    let service = IssuesService { db: Arc::clone(&h.router) };
+    let tenant = h.tenant.to_string();
+
+    let audience = service
+        .get_audience(tonic::Request::new(GetAudienceRequest { tenant_id: tenant.clone(), issue_id: first_id.clone() }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(audience.found);
+    assert_eq!(
+        (audience.key.as_str(), audience.reporter_id, audience.assignee_id),
+        (key.as_str(), alice.to_string(), bob.to_string())
+    );
+    assert!(audience.watcher_ids.contains(&bob.to_string()) && audience.watcher_ids.contains(&alice.to_string()));
+    let missing = service
+        .get_audience(tonic::Request::new(GetAudienceRequest {
+            tenant_id: Uuid::now_v7().to_string(),
+            issue_id: first_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!missing.found, "another tenant cannot see it");
+
+    let gone = Uuid::now_v7().to_string();
+    let docs = service
+        .get_documents(tonic::Request::new(GetDocumentsRequest {
+            tenant_id: tenant.clone(),
+            issue_ids: vec![first_id.clone(), gone.clone()],
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(docs.missing_ids, [gone]);
+    let d = &docs.documents[0];
+    assert_eq!((d.key.as_str(), d.project_key.as_str(), d.description_text.trim()), (key.as_str(), "PAY", "Seen at checkout"));
+    assert!(d.comments_text.find("First note").unwrap() < d.comments_text.find("Second note").unwrap(), "newest last");
+    assert_eq!((d.labels.clone(), d.assignee_id.clone()), (vec!["billing".to_owned()], bob.to_string()));
+    let too_many = GetDocumentsRequest { tenant_id: tenant.clone(), issue_ids: vec![first_id.clone(); 501] };
+    assert_eq!(service.get_documents(tonic::Request::new(too_many)).await.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    let page = |after: &str, limit: u32| {
+        let req = ListIssueIdsRequest { tenant_id: tenant.clone(), after_id: after.to_owned(), limit };
+        let service = &service;
+        async move { service.list_issue_ids(tonic::Request::new(req)).await.unwrap().into_inner().ids }
+    };
+    assert_eq!(page("", 1000).await, [first_id.clone(), second_id.clone()]);
+    assert_eq!(page("", 1).await, std::slice::from_ref(&first_id));
+    assert_eq!(page(&first_id, 10).await, [second_id]);
+    h.db.cleanup().await;
+}
+
 /// Migration 0003 tried to backfill status categories while row-level security was
 /// forced, so it changed nothing; 0004 must repair rows written before either ran.
 #[tokio::test]

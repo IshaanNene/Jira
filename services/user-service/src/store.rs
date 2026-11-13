@@ -437,3 +437,19 @@ pub async fn invitation_location(pool: &PgPool, token_hash: &[u8]) -> ApiResult<
         .fetch_optional(pool)
         .await?)
 }
+
+/// (user id, org role, status, display name) of those of `ids` who are members.
+pub async fn members_by_id(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> ApiResult<Vec<(Uuid, String, String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT m.user_id, m.org_role, m.status, COALESCE(p.display_name, '') FROM memberships m \
+         LEFT JOIN user_profiles p ON p.user_id = m.user_id WHERE m.tenant_id = $1 AND m.user_id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .fetch_all(conn)
+    .await?)
+}

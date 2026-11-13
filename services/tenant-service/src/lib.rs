@@ -62,6 +62,7 @@ pub async fn run(config: Config, telemetry: observability::Telemetry) -> anyhow:
         tracing::warn!(error = %err, "could not ensure default cluster at startup");
     }
 
+    event_bus::spawn_relay(SERVICE_NAME, vec![pool.clone()])?;
     let (http, telemetry) = http_router(pool.clone(), telemetry);
     let registry = grpc::RegistryService { pool, default_region: config.default_region.clone() };
     let auth = ServiceServerAuth::new(&config.internal_secret, SERVICE_NAME)?;

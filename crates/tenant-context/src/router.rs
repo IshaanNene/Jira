@@ -67,6 +67,11 @@ impl DbRouter {
             .ok_or_else(|| ApiError::internal(anyhow::anyhow!("default database destination is not configured")))
     }
 
+    /// Every configured database, for work that spans tenants (the outbox relay).
+    pub fn pools(&self) -> Vec<PgPool> {
+        self.pools.values().cloned().collect()
+    }
+
     /// Drop a cached placement (called when `tenant.placement_changed` is observed).
     pub fn invalidate(&self, tenant_id: Uuid) {
         if let Ok(mut cache) = self.cache.write() {

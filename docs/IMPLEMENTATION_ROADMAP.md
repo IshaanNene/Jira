@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-12 (end of Phase 4).
+Last updated: 2026-11-13 (end of Phase 5).
 
 ## Phase status
 
@@ -16,7 +16,7 @@ Last updated: 2026-11-12 (end of Phase 4).
 | 2 | Project + issue engine, **permission-service core** (moved up from Phase 6) | ✅ (smaller gaps listed below) |
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
-| 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ⬜ |
+| 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | 🚧 everything except email delivery (gaps listed below) |
 | 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | ⬜ |
 | 7 | ClickHouse pipeline, dashboards | ⬜ |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
@@ -26,8 +26,9 @@ Deviations from the brief's phase order, and why, are in [ARCHITECTURE.md](ARCHI
 Against the brief's 45 final deliverables: roughly the foundations of items 1–6, 8, 9 (revocation list only),
 15–16 (password auth and org-level RBAC only), 26–27, 34 (instrumentation, no collector stack), 36–37, 41–43, 45
 exist, plus items 12 (attachment storage), 17–18 (issue and project management), 20 (workflow designer and
-engine), plus the agile item (boards, backlog, sprints and sprint reports).
-Everything else is not started. Seven of the fifteen logical services have no code.
+engine), plus the agile item (boards, backlog, sprints and sprint reports), and the event pipeline, realtime updates,
+in-app notifications and full-text issue search.
+Everything else is not started. Four of the fifteen logical services have no code.
 
 ## Implemented and verified
 
@@ -56,9 +57,28 @@ Everything else is not started. Seven of the fifteen logical services have no co
 | Gateway | Envoy: routing, request ids, rate limits, edge EdDSA JWT validation, identity headers stripped | manual curl checks (401 without/with bad token, 200 with valid) |
 | Web: projects & issues | Top navigation with Projects menu and Create; Your work; project list, create, settings (details, access, components, releases); issue list with URL filters; issue view with inline editing, conflict handling, description editor, child issues, links, comments, history, watch; `c` shortcut | driven in a real browser: create project → create issue → change status → comment → history |
 | Web app | Design system (light/dark), login, register, onboarding / workspace chooser, app shell (sidebar, workspace switcher, breadcrumbs, command palette, shortcuts), home, people + invitations, invitation acceptance, workspace settings with conflict handling, profile, sessions | 17 unit tests; register → create workspace → invite driven in a real browser against the running stack |
+| Event pipeline | Transactional outbox → Kafka relay in every service (advisory-locked, one relay per database, ordered per aggregate, failures hold back later events of the same key), consumers with manual commits, bounded retry and a dead-letter topic, tenant required on every envelope, inbox de-duplication, retention sweep | 2 integration tests against real Kafka + PostgreSQL; live: every service's outbox drained to 0, including events held since Phase 1 |
+| realtime-service | SSE change hints per project, per person and per workspace; Redis Streams buffer with cursor resume and `resync` when a gap is detected; access and session revocation re-checked every 60 s; token expiry ends the stream; connection cap | 4 integration tests against real Redis; live: an edit by another user appeared on an open backlog within 2 s |
+| notification-service | Notifications for assignment, mention, comment and status change to reporter, assignee and watchers, only for active members who can still browse the project; never to the actor; idempotent on redelivery; list / unread count / mark read / mark all; hidden when access is lost | 3 unit + 2 integration tests incl. cross-tenant and cross-user isolation |
+| search-service | OpenSearch index fed from issue and project events (fresh document per event, external versioning, deletes), tenant-filtered and routed, limited to visible projects; key, prefix and typo-tolerant matching over summary, description, comments and labels; structured highlights (no HTML); cursor paging; `reindex <tenant>` that also drops vanished issues | 3 unit + 2 integration tests against real OpenSearch; live: reindexed the demo workspace, an edit was searchable within 3 s through Kafka |
+| New internal RPCs | `issue.v1.Issues/GetAudience`, `GetDocuments` (≤ 500), `ListIssueIds` (≤ 1000); `user.v1.Membership/GetMembers` (≤ 500) | `audiences_and_search_documents_are_served_to_other_services`, `grpc_membership_check_reflects_role_and_status` |
+| Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
+| Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 6 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **146 Rust tests, 59 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **170 Rust tests, 72 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+
+## Incomplete within Phase 5 scope
+
+| Item | State |
+|---|---|
+| Email | Not built: no SMTP delivery, digests or Mailpit container. Notifications are in-app only |
+| Notification preferences | None; everyone gets every kind. No notifications for sprint, project or workflow events |
+| Agile consumer | Board placements and scope-log rows of deleted issues are still not cleaned up (they are ignored); boards still read cards from issue-service on each load |
+| Search | No query language (Phase 6), no custom fields, components or versions in the index, no search for projects or people; `reindex` takes one tenant id; no index alias for mapping changes; the shared `search_db` database is unused |
+| Realtime | No presence, no WebSocket transport, no per-tenant connection quotas; fan-out has not been load tested |
+| Event pipeline | No DLQ replay tool or consumer-lag dashboards; delivery is at least once (consumers are idempotent), not exactly once |
+| Search highlight of status names | Search results show the status key in title case (e.g. "In review"), not the workflow's display name, which the index does not carry |
 
 ## Incomplete within Phase 4 scope
 
@@ -66,9 +86,9 @@ Totals: **146 Rust tests, 59 web tests, all passing**; `cargo clippy -D warnings
 |---|---|
 | Epics and subtasks on boards | Not shown (as in many Jira configurations, but not configurable here); no epic panel in the backlog |
 | Swimlanes, quick filters, card layout settings | Not built; the board has text search and "Only my issues" |
-| Issue data on boards | Fetched from issue-service on every board load (capped at 2000 cards, shown as truncated) instead of an event-fed local copy, which needs the Kafka relay (Phase 5) |
+| Issue data on boards | Fetched from issue-service on every board load (capped at 2000 cards, shown as truncated) instead of an event-fed local copy; the relay now exists but the consumer does not |
 | Ranks | No rebalancing job; ranks grow longer when many moves land in the same gap. Ranking is per project, so two boards of one project share an order |
-| Deleted issues | Their placements and scope-log rows are left behind until issue events are consumed (Phase 5); they are ignored because the cards no longer exist |
+| Deleted issues | Their placements and scope-log rows are left behind (no agile consumer yet); they are ignored because the cards no longer exist |
 | Reports | Burndown uses each issue's current estimate, not the estimate at the time; no cumulative flow, control chart, sprint retrospective or epic/version reports. The guideline starts from scope at start even when part of it was already done |
 | Board drag in automated browsers | dnd-kit drops were verified with a scripted pointer sequence; there are no Playwright tests |
 | Multi-select drag | The API moves several issues at once; the UI drags one at a time |
@@ -142,4 +162,7 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Phase 5: outbox relay to Kafka, event consumers (agile placements, search indexing), realtime gateway so boards update for everyone, notifications and email delivery.
+1. Close the Phase 5 gaps that matter most: email delivery (Mailpit locally, SMTP in production) with per-person
+   preferences, and an agile consumer that drops placements of deleted issues.
+2. Phase 6: SSO / SCIM / MFA, admin console, audit log, the issue query language on top of search-service,
+   declarative automation, integrations.

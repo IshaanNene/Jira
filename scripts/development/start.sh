@@ -11,8 +11,9 @@ mkdir -p "$RUN_DIR/logs" "$RUN_DIR/pids"
 
 echo "==> starting infrastructure"
 # object-storage-setup is a one-shot job, so it is started separately from the --wait set.
-docker compose up -d --wait postgres redis object-storage gateway
+docker compose up -d --wait postgres redis object-storage kafka opensearch gateway
 docker compose up -d object-storage-setup
+docker compose run --rm kafka-setup > /dev/null
 
 echo "==> building services"
 cargo build --workspace --bins

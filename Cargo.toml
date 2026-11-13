@@ -19,6 +19,7 @@ tenant-context = { path = "crates/tenant-context" }
 event-contracts = { path = "crates/event-contracts" }
 api-contracts = { path = "crates/api-contracts" }
 test-utilities = { path = "crates/test-utilities" }
+event-bus = { path = "crates/event-bus" }
 
 # runtime / web
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }
@@ -35,6 +36,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # data
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "migrate", "macros"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# librdkafka built from source (needs cmake); TLS/SASL support is added with the production
+# deployment (Phase 8).
+rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
 
 object_store = { version = "0.11", features = ["aws"] }
 infer = "0.16"

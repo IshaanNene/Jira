@@ -128,6 +128,7 @@ pub fn app(state: AppState, telemetry: &Telemetry) -> Router {
 
 pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let pool = connect_pool(&config.database_url, &PoolSettings::from_env()?)?;
+    event_bus::spawn_relay(SERVICE_NAME, vec![pool.clone()])?;
     let sealer = crypto::KeySealer::from_base64(&config.key_encryption_key)?;
     let membership = Arc::new(GrpcMembership::new(&config.user_service_grpc_url, &config.internal_secret)?);
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;

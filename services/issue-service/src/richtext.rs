@@ -97,6 +97,37 @@ fn safe_href(href: &str) -> bool {
         && (lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:"))
 }
 
+/// The visible text of a document, blocks separated by newlines (for search). Mentions
+/// contribute their label; anything else without text contributes nothing.
+pub fn plain_text(doc: &Value) -> String {
+    fn walk(value: &Value, out: &mut String) {
+        if let Some(text) = value.get("text").and_then(Value::as_str) {
+            out.push_str(text);
+        }
+        if value.get("type").and_then(Value::as_str) == Some("mention") {
+            if let Some(label) = value.pointer("/attrs/label").and_then(Value::as_str) {
+                out.push('@');
+                out.push_str(label);
+            }
+        }
+        if let Some(children) = value.get("content").and_then(Value::as_array) {
+            for child in children {
+                walk(child, out);
+            }
+            let block = matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("paragraph" | "heading" | "listItem" | "codeBlock" | "blockquote")
+            );
+            if block && !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(doc, &mut out);
+    out.trim().to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -160,5 +191,15 @@ mod tests {
             deep = json!({ "type": "blockquote", "content": [deep] });
         }
         assert!(validate("d", &doc(deep)).is_err());
+    }
+
+    #[test]
+    fn plain_text_keeps_words_and_block_breaks() {
+        let doc = serde_json::json!({"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"Card "},{"type":"text","text":"declined","marks":[{"type":"bold"}]}]},
+            {"type":"paragraph","content":[{"type":"mention","attrs":{"id":"x","label":"Maya"}},{"type":"text","text":" please look"}]}
+        ]});
+        assert_eq!(super::plain_text(&doc), "Card declined\n@Maya please look");
+        assert_eq!(super::plain_text(&serde_json::json!({"type":"doc"})), "");
     }
 }

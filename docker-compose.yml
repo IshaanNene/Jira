@@ -53,6 +53,64 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 's3.bucket.create -name attachments' | weed shell -master=object-storage:9333"]
     restart: "no"
 
+  # Event bus (single KRaft node). Services reach it on the host at 127.0.0.1:59092;
+  # containers use kafka:9092. Topics are created explicitly by kafka-setup.
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://127.0.0.1:59092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    ports: ["127.0.0.1:59092:19092"]
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # One-shot: create every topic and its dead-letter topic (idempotent).
+  kafka-setup:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    volumes:
+      - ./infrastructure/kafka/create-topics.sh:/create-topics.sh:ro
+    entrypoint: ["/bin/bash", "/create-topics.sh", "kafka:9092"]
+    restart: "no"
+
+  # Full-text search. Security plugin off for local development only; production uses a
+  # managed cluster with TLS and fine-grained access control.
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      bootstrap.memory_lock: "false"
+    ports: ["127.0.0.1:59200:9200"]
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
   gateway:
     image: envoyproxy/envoy:v1.33-latest
     command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
@@ -71,3 +129,5 @@ services:
 volumes:
   postgres-data:
   object-data:
+  kafka-data:
+  opensearch-data:

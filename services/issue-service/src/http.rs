@@ -874,8 +874,14 @@ pub async fn delete_comment(
         return Err(ApiError::Forbidden);
     }
     store::delete_comment(tx.conn(), ctx.tenant_id, id).await?;
-    emit(&mut tx, &ctx, issue.id, issue.version, CommentDeletedV1 { comment_id: id, issue_id: issue.id, key: issue.key() })
-        .await?;
+    emit(
+        &mut tx,
+        &ctx,
+        issue.id,
+        issue.version,
+        CommentDeletedV1 { comment_id: id, issue_id: issue.id, key: issue.key(), project_id: Some(issue.project_id) },
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -22,7 +22,7 @@ pub use extract::{AuthContext, OrgContext};
 pub use keys::{generate_ed25519, Jwk, JwkSet, TokenSigner};
 pub use policy::{
     policy_version_key, GrpcPolicySource, PolicyClient, PolicySnapshot, PolicySource, ProjectPermission, ProjectRole,
-    StaticPolicy,
+    StaticPolicy, VisibleProjects,
 };
 pub use redis_handle::RedisHandle;
 pub use verifier::{revocation_key, TokenVerifier};

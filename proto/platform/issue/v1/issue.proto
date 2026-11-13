@@ -6,6 +6,12 @@ package platform.issue.v1;
 service Issues {
   // The fields a board card or sprint report needs, for issues of one project.
   rpc ListCards(ListCardsRequest) returns (Cards);
+  // Who hears about an issue: its reporter, assignee and watchers (notifications).
+  rpc GetAudience(GetAudienceRequest) returns (Audience);
+  // Search documents. Deleted or unknown issues come back in `missing_ids`.
+  rpc GetDocuments(GetDocumentsRequest) returns (Documents);
+  // Every issue id of a tenant in id order, a page at a time (full reindex).
+  rpc ListIssueIds(ListIssueIdsRequest) returns (IssueIds);
 }
 
 message ListCardsRequest {
@@ -43,4 +49,60 @@ message Card {
 message Cards {
   repeated Card cards = 1;
   bool truncated = 2;
+}
+
+message GetAudienceRequest {
+  string tenant_id = 1;
+  string issue_id = 2;
+}
+
+message Audience {
+  bool found = 1;
+  string key = 2;
+  string summary = 3;
+  string project_id = 4;
+  string reporter_id = 5;
+  string assignee_id = 6; // empty when unassigned
+  repeated string watcher_ids = 7;
+}
+
+message GetDocumentsRequest {
+  string tenant_id = 1;
+  repeated string issue_ids = 2; // at most 500
+}
+
+message Document {
+  string id = 1;
+  string key = 2;
+  string project_id = 3;
+  string project_key = 4;
+  string type = 5;
+  string status = 6;
+  string status_category = 7;
+  string priority = 8;
+  string summary = 9;
+  string description_text = 10; // plain text of the rich-text description
+  string comments_text = 11;    // plain text of all comments, newest last
+  string assignee_id = 12;
+  string reporter_id = 13;
+  repeated string labels = 14;
+  string created_at = 15; // RFC 3339
+  string updated_at = 16;
+  int64 version = 17;
+  string resolved_at = 18;
+}
+
+message Documents {
+  repeated Document documents = 1;
+  repeated string missing_ids = 2;
+}
+
+message ListIssueIdsRequest {
+  string tenant_id = 1;
+  string after_id = 2; // empty = from the start
+  uint32 limit = 3;    // at most 1000
+}
+
+message IssueIds {
+  repeated string ids = 1;
 }

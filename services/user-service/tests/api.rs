@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest};
+use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest, GetMembersRequest};
 use async_trait::async_trait;
 use axum::{
     body::Body,
@@ -624,5 +624,26 @@ async fn grpc_membership_check_reflects_role_and_status() {
         .check_membership(tonic::Request::new(CheckMembershipRequest { user_id: "x".into(), organization_id: "y".into() }))
         .await;
     assert_eq!(bad.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // Bulk lookup for other services: members only, with role, status and name.
+    let members = |tenant: Uuid, ids: Vec<String>| {
+        let service = &service;
+        async move {
+            service.get_members(tonic::Request::new(GetMembersRequest { tenant_id: tenant.to_string(), user_ids: ids })).await
+        }
+    };
+    let mut found = members(tenant, vec![ada.id.to_string(), grace.id.to_string(), stranger.id.to_string()])
+        .await
+        .unwrap()
+        .into_inner()
+        .members;
+    found.sort_by_key(|m| m.org_role.clone());
+    let summary: Vec<(String, &str, &str)> =
+        found.iter().map(|m| (m.user_id.clone(), m.org_role.as_str(), m.status.as_str())).collect();
+    assert_eq!(summary, [(grace.id.to_string(), "member", "suspended"), (ada.id.to_string(), "owner", "active")]);
+    assert!(found.iter().all(|m| !m.display_name.is_empty()));
+    assert!(members(Uuid::now_v7(), vec![ada.id.to_string()]).await.unwrap().into_inner().members.is_empty(), "other tenant");
+    assert_eq!(members(tenant, vec!["x".into()]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
+    assert_eq!(members(tenant, vec![ada.id.to_string(); 501]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
     h.db.cleanup().await;
 }

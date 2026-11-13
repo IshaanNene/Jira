@@ -116,6 +116,23 @@ export async function download(path: string): Promise<Blob> {
   return response.blob();
 }
 
+/**
+ * Open a Server-Sent Events stream with the session's bearer token (EventSource cannot
+ * send headers). Refreshes once on 401. The caller reads `response.body`.
+ */
+export async function openStream(path: string, query: Record<string, string>, lastEventId: string | undefined, signal: AbortSignal): Promise<Response> {
+  const open = () => {
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
+    const token = bridge.getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+    return fetch(buildUrl(path, query), { headers, credentials: "same-origin", signal, cache: "no-store" });
+  };
+  let response = await open();
+  if (response.status === 401 && (await bridge.refresh())) response = await open();
+  return response;
+}
+
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => request<T>("GET", path, options),
   post: <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("POST", path, { ...options, body }),

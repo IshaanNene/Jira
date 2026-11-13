@@ -122,6 +122,14 @@ static_resources:
                           route: { cluster: agile, timeout: 15s }
                         - match: { prefix: /api/v1/sprints }
                           route: { cluster: agile, timeout: 15s }
+                        # Server-Sent Events: no response timeout; the service sends a
+                        # keep-alive every 15 s and closes the stream when the token expires.
+                        - match: { prefix: /api/v1/rt/ }
+                          route: { cluster: realtime, timeout: 0s, idle_timeout: 120s }
+                        - match: { prefix: /api/v1/notifications }
+                          route: { cluster: notification, timeout: 15s }
+                        - match: { prefix: /api/v1/search }
+                          route: { cluster: search, timeout: 15s }
                         # API contracts, for docs tooling and `make gen-api`.
                         - match: { path: /api/docs/identity/openapi.json }
                           route: { cluster: identity, prefix_rewrite: /openapi.json }
@@ -135,6 +143,10 @@ static_resources:
                           route: { cluster: workflow, prefix_rewrite: /openapi.json }
                         - match: { path: /api/docs/agile/openapi.json }
                           route: { cluster: agile, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/notification/openapi.json }
+                          route: { cluster: notification, prefix_rewrite: /openapi.json }
+                        - match: { path: /api/docs/search/openapi.json }
+                          route: { cluster: search, prefix_rewrite: /openapi.json }
                         - match: { prefix: / }
                           direct_response:
                             status: 404
@@ -185,3 +197,24 @@ static_resources:
       load_assignment:
         cluster_name: agile
         endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8107 } } } }] }]
+    - name: realtime
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 10000, max_pending_requests: 256, max_requests: 10000 }] }
+      load_assignment:
+        cluster_name: realtime
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8109 } } } }] }]
+    - name: notification
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: notification
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8110 } } } }] }]
+    - name: search
+      type: STRICT_DNS
+      connect_timeout: 2s
+      circuit_breakers: { thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 1024 }] }
+      load_assignment:
+        cluster_name: search
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8111 } } } }] }]

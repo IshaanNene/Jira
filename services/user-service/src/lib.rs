@@ -99,6 +99,7 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
     let pools = pools_from_env(&PoolSettings::from_env()?)?;
     let placement = RegistryPlacement::new(&config.tenant_service_grpc_url, &config.internal_secret, SERVICE_NAME)?;
     let db = Arc::new(DbRouter::new(pools, Arc::new(placement)));
+    event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;
     let verifier = Arc::new(TokenVerifier::remote(config.token_issuer.clone(), config.jwks_url.clone())?.with_revocations(redis));
     let state = AppState {

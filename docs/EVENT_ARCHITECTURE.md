@@ -59,19 +59,24 @@ COMMIT
 `event_contracts::outbox::enqueue(&mut tx, event)` is the only way services emit events, so there is no code
 path that publishes without committing or commits without publishing.
 
-**Relay** (a Tokio task in each service, or the same binary with `--role worker`):
+**Relay** (as built in `crates/event-bus`; a Tokio task in each service, one loop per owned database):
 
-1. `SELECT … FROM outbox WHERE published_at IS NULL ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED`
-2. produce to Kafka (`acks=all`, `enable.idempotence=true`), await delivery reports
-3. `UPDATE outbox SET published_at = now()` for delivered rows; increment `attempts` + `last_error` for failed
-4. commit; sleep with backoff when idle or failing; woken early by `LISTEN outbox_new`
+1. `BEGIN`; `pg_try_advisory_xact_lock(…)` — if another instance holds it, this one stays idle (one active relay
+   per database, so ordering does not depend on row locks)
+2. `SELECT … FROM outbox WHERE published_at IS NULL ORDER BY created_at, id LIMIT 200`
+3. produce the batch concurrently to Kafka (`acks=all`, `enable.idempotence=true`, lz4), keyed by the partition
+   key, and await every delivery report
+4. mark delivered rows `published_at = now()`; for failed rows increment `attempts` and set `last_error`. A row is
+   only marked if no earlier row with the same key in the batch failed, so a key's events are never published
+   out of order
+5. commit; poll again at once after a full batch, every 250 ms when idle, with backoff up to 10 s on errors
 
-Guarantee: **at-least-once**, ordered per partition key as long as a single relay batch holds a key (rows of one
-key are published in `created_at` order and a failed row stops later rows of the same key in that batch).
-Published rows are deleted after 7 days. Rows with `attempts > 20` raise an alert; they are never silently dropped.
+Guarantee: **at-least-once**, ordered per partition key. An hourly sweep deletes published rows after 7 days and
+inbox rows after 14 days. Rows that keep failing stay in the outbox (never silently dropped); alerting on
+`attempts` is not built yet.
 
-The outbox table and writer exist from Phase 1. The Kafka relay is enabled in Phase 5 (`OUTBOX_RELAY=kafka`);
-before that the relay mode is `hold` — events accumulate, unpublished, and are drained on first enable.
+`OUTBOX_RELAY=kafka` is the default when `KAFKA_BROKERS` is set; `hold` leaves events in the outbox. Enabling the
+relay in Phase 5 drained every event held since Phase 1.
 
 ## 4. Consumers
 
@@ -83,12 +88,13 @@ poll -> validate envelope -> BEGIN
 ```
 
 - Retry in place with backoff (3 attempts) for transient errors, then publish to `<topic>.dlq` with headers
-  `x-error`, `x-consumer`, `x-attempts`, and move on. Order-sensitive projections pause the partition instead of
+  `x-error`, `x-consumer`, `x-attempts`, `x-original-topic`, and move on (as built). Envelopes without a
+  `tenant_id` are rejected on every topic except identity. Order-sensitive projections pause the partition instead of
   skipping, and alert.
 - Side effects that leave the platform (email, webhooks, Slack) cannot be made exactly-once. They use a
   delivery table keyed by `(event_id, target)` and send an idempotency key to providers that support one.
   We document at-least-once delivery to integrators and sign every webhook with a delivery id.
-- **Replay**: reset a consumer group's offsets, or re-drive a DLQ with `scripts/development/replay-dlq`.
+- **Replay**: reset a consumer group's offsets. A DLQ re-drive tool is specified but not built.
   Projections (search, analytics, read models) are rebuildable from offset 0 or from the owning service's
   gRPC stream when the topic has been compacted/expired.
 - **Loop prevention** for automation: the envelope's causation chain depth is carried in a header; automation

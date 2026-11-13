@@ -5,6 +5,8 @@ import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { LoginPage, RegisterPage } from "@/modules/auth";
 import { AcceptInvitationPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
+import { SearchPage } from "@/modules/search";
+import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
 import { ProfilePage, SessionsPage } from "@/modules/users";
 import { WorkflowDesignerPage, WorkflowsPage } from "@/modules/workflows";
@@ -52,10 +54,16 @@ export const router = createBrowserRouter([
                 children: [
                   { path: "/", element: <HomePage /> },
                   { path: "/people", element: <PeoplePage /> },
+                  { path: "/search", element: <SearchPage /> },
                   { path: "/projects", element: <ProjectsPage /> },
                   {
                     path: "/projects/:projectKey",
-                    element: <ProjectLayout />,
+                    element: (
+                      <>
+                        <ProjectLive />
+                        <ProjectLayout />
+                      </>
+                    ),
                     children: [
                       { index: true, element: <Navigate to="board" replace /> },
                       { path: "board", element: <BoardPage /> },

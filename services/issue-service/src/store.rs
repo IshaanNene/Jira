@@ -691,3 +691,43 @@ pub async fn delete_attachment(conn: &mut PgConnection, tenant_id: Uuid, id: Uui
         .await?;
     Ok(())
 }
+
+// --- internal readers (gRPC) ---------------------------------------------------
+
+pub async fn issues_by_id(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Issue>> {
+    Ok(sqlx::query_as::<_, Issue>(&format!("SELECT {ISSUE} WHERE i.tenant_id = $1 AND i.id = ANY($2) AND i.deleted_at IS NULL"))
+        .bind(tenant_id)
+        .bind(ids)
+        .fetch_all(conn)
+        .await?)
+}
+
+pub async fn watcher_ids(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Vec<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT user_id FROM watchers WHERE tenant_id = $1 AND issue_id = $2 ORDER BY created_at LIMIT 1000")
+        .bind(tenant_id)
+        .bind(issue_id)
+        .fetch_all(conn)
+        .await?)
+}
+
+/// Comment bodies per issue, oldest first, for the given issues.
+pub async fn comment_bodies(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<(Uuid, Value)>> {
+    Ok(sqlx::query_as(
+        "SELECT issue_id, body FROM comments WHERE tenant_id = $1 AND issue_id = ANY($2) AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .fetch_all(conn)
+    .await?)
+}
+
+pub async fn issue_ids_after(conn: &mut PgConnection, tenant_id: Uuid, after: Option<Uuid>, limit: i64) -> ApiResult<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM issues WHERE tenant_id = $1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT $3",
+    )
+    .bind(tenant_id)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?)
+}
