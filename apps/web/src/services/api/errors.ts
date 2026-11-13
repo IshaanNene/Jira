@@ -2,6 +2,8 @@ export interface FieldError {
   field: string;
   code: string;
   message: string;
+  /** For query text: the `[start, end)` character range the message is about. */
+  span?: [number, number];
 }
 
 interface ProblemBody {

@@ -17,6 +17,7 @@ use search_service::{
     http,
     index::Index,
     indexer::Indexer,
+    people::People,
     source::{Fetched, Source},
     AppState,
 };
@@ -69,11 +70,24 @@ impl PolicySource for Roles {
     }
 }
 
+/// user-service: email or name → members.
+#[derive(Default)]
+struct Directory(Mutex<HashMap<String, Vec<Uuid>>>);
+
+#[async_trait]
+impl People for Directory {
+    async fn find(&self, _tenant_id: Uuid, terms: &[String]) -> ApiResult<HashMap<String, Vec<Uuid>>> {
+        let all = self.0.lock().unwrap();
+        Ok(terms.iter().filter_map(|t| all.get(t).map(|ids| (t.clone(), ids.clone()))).collect())
+    }
+}
+
 struct Harness {
     app: Router,
     indexer: Indexer,
     issues: Arc<Issues>,
     roles: Arc<Roles>,
+    people: Arc<Directory>,
     auth: TestAuth,
     index: Index,
 }
@@ -84,11 +98,13 @@ async fn harness() -> Harness {
     index.ensure(1, 0).await.expect("OpenSearch reachable (make infra)");
     let issues = Arc::new(Issues::default());
     let roles = Arc::new(Roles::default());
+    let people = Arc::new(Directory::default());
     let auth = TestAuth::new().unwrap();
     let state = AppState {
         index: index.clone(),
         verifier: Arc::clone(&auth.verifier),
         policy: Arc::new(PolicyClient::new(roles.clone(), RedisHandle::default())),
+        people: people.clone(),
         allowed_origins: Arc::new(vec![]),
     };
     Harness {
@@ -96,6 +112,7 @@ async fn harness() -> Harness {
         indexer: Indexer { index: index.clone(), source: issues.clone() },
         issues,
         roles,
+        people,
         auth,
         index,
     }
@@ -164,11 +181,22 @@ impl Harness {
     }
 
     async fn search(&self, token: &str, query: &str) -> (u16, Value) {
-        let req = Request::builder()
-            .uri(format!("/api/v1/search/issues?{query}"))
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
+        self.get(token, &format!("/api/v1/search/issues?{query}")).await
+    }
+
+    async fn mql(&self, token: &str, mql: &str, extra: &str) -> (u16, Value) {
+        let encoded: String = url_escape(mql);
+        self.get(token, &format!("/api/v1/search/issues/query?mql={encoded}{extra}")).await
+    }
+
+    async fn mql_keys(&self, token: &str, mql: &str) -> Vec<String> {
+        let (status, body) = self.mql(token, mql, "&limit=50").await;
+        assert_eq!(status, 200, "{mql}: {body}");
+        body["items"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap().to_owned()).collect()
+    }
+
+    async fn get(&self, token: &str, uri: &str) -> (u16, Value) {
+        let req = Request::builder().uri(uri).header("authorization", format!("Bearer {token}")).body(Body::empty()).unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
         let status = res.status().as_u16();
         let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
@@ -276,5 +304,133 @@ async fn the_index_follows_changes_deletions_and_reindexes() {
     assert_eq!(h.indexer.reindex(t).await.unwrap(), 5);
     assert_eq!(h.keys(&owner, "q=landing&limit=50").await.len(), 5);
     assert!(h.keys(&owner, "").await.iter().all(|k| k.starts_with("WEB-")));
+    h.drop_index().await;
+}
+
+fn url_escape(raw: &str) -> String {
+    raw.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn doc(
+    key: &str,
+    project: Uuid,
+    kind: &str,
+    status: (&str, &str),
+    priority: &str,
+    assignee: Option<Uuid>,
+    labels: &[&str],
+    created: &str,
+    summary: &str,
+) -> Document {
+    Document {
+        id: Uuid::now_v7().to_string(),
+        key: key.into(),
+        project_id: project.to_string(),
+        project_key: key.split('-').next().unwrap().into(),
+        r#type: kind.into(),
+        status: status.0.into(),
+        status_category: status.1.into(),
+        priority: priority.into(),
+        summary: summary.into(),
+        description_text: String::new(),
+        comments_text: String::new(),
+        assignee_id: assignee.map(|a| a.to_string()).unwrap_or_default(),
+        reporter_id: Uuid::now_v7().to_string(),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        created_at: format!("{created}T10:00:00Z"),
+        updated_at: format!("{created}T12:00:00Z"),
+        version: 1,
+        resolved_at: if status.1 == "done" { format!("{created}T15:00:00Z") } else { String::new() },
+    }
+}
+
+#[tokio::test]
+async fn mql_queries_stay_inside_the_tenant_and_visible_projects() {
+    let h = harness().await;
+    let (t, other_tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (pay, hr) = (Uuid::now_v7(), Uuid::now_v7());
+    let (maya, me) = (Uuid::now_v7(), Uuid::now_v7());
+    h.people.0.lock().unwrap().insert("maya@example.com".into(), vec![maya]);
+    let docs = [
+        (
+            t,
+            doc(
+                "PAY-1",
+                pay,
+                "bug",
+                ("in_review", "in_progress"),
+                "high",
+                Some(maya),
+                &["backend"],
+                "2026-11-01",
+                "Refunds fail",
+            ),
+        ),
+        (t, doc("PAY-2", pay, "story", ("todo", "todo"), "low", None, &[], "2026-11-05", "Checkout button")),
+        (t, doc("PAY-10", pay, "task", ("done", "done"), "highest", Some(me), &["ops"], "2026-10-01", "Rotate keys")),
+        (t, doc("HR-1", hr, "bug", ("todo", "todo"), "high", Some(maya), &[], "2026-11-03", "Payroll export")),
+        (other_tenant, doc("PAY-1", pay, "bug", ("todo", "todo"), "high", Some(maya), &["backend"], "2026-11-01", "Refunds")),
+    ];
+    for (tenant, d) in docs {
+        let id = Uuid::parse_str(&d.id).unwrap();
+        h.issues.0.lock().unwrap().insert((tenant, id), d);
+        h.changed(tenant, id).await;
+    }
+    let owner = h.token(t, me, "owner");
+    let pay_only = h.viewer(t, &[pay]);
+
+    // Visibility and tenancy wrap every query; a query cannot widen them.
+    assert_eq!(h.mql_keys(&pay_only, "type = bug").await, ["PAY-1"]);
+    assert!(h.mql_keys(&pay_only, "project = HR OR project != HR").await.iter().all(|k| k.starts_with("PAY-")));
+    assert_eq!(h.mql_keys(&owner, "type = bug ORDER BY key").await, ["HR-1", "PAY-1"]);
+
+    // Fields, people, dates, text.
+    assert_eq!(h.mql_keys(&owner, "project = pay ORDER BY key").await, ["PAY-1", "PAY-2", "PAY-10"], "keys sort by number");
+    assert_eq!(h.mql_keys(&owner, "project = PAY ORDER BY key DESC").await, ["PAY-10", "PAY-2", "PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "assignee = Maya@Example.com ORDER BY key").await, ["HR-1", "PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "assignee = currentUser()").await, ["PAY-10"]);
+    assert_eq!(h.mql_keys(&owner, "assignee is EMPTY").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "status = \"In Review\"").await, ["PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "statusCategory != Done ORDER BY created").await, ["PAY-1", "HR-1", "PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "priority >= high ORDER BY priority DESC, key").await, ["PAY-10", "HR-1", "PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "created >= 2026-11-01 AND created < 2026-11-05 ORDER BY key").await, ["HR-1", "PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "created = 2026-11-05").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "resolved IS NOT EMPTY").await, ["PAY-10"]);
+    assert_eq!(h.mql_keys(&owner, "text ~ refunds").await, ["PAY-1"]);
+    assert_eq!(h.mql_keys(&owner, "summary ~ \"payr*\"").await, ["HR-1"]);
+    assert_eq!(h.mql_keys(&owner, "project = PAY AND NOT labels = backend ORDER BY key").await, ["PAY-2", "PAY-10"]);
+    assert_eq!(h.mql_keys(&owner, "labels in (ops, backend) AND (type = task OR assignee = currentUser())").await, ["PAY-10"]);
+
+    // Paging follows the query's own order; a cursor of another shape is refused.
+    let (_, first) = h.mql(&owner, "ORDER BY key", "&limit=2").await;
+    let keys =
+        |b: &Value| b["items"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(keys(&first), ["HR-1", "PAY-1"]);
+    let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    let (_, second) = h.mql(&owner, "ORDER BY key", &format!("&limit=2&cursor={cursor}")).await;
+    assert_eq!(keys(&second), ["PAY-2", "PAY-10"]);
+    assert_eq!(h.mql(&owner, "ORDER BY created", &format!("&cursor={cursor}")).await.0, 422);
+
+    // Errors say what and where.
+    let (status, body) = h.mql(&owner, "stauts = done", "").await;
+    assert_eq!(status, 422);
+    assert_eq!(body["errors"][0]["field"], "mql");
+    assert_eq!(body["errors"][0]["span"], json!([0, 6]));
+    let (_, body) = h.mql(&owner, "assignee = nobody@example.com", "").await;
+    assert_eq!(body["errors"][0]["span"], json!([11, 29]));
+
+    // Guests cannot look people up by email or name.
+    let guest = Uuid::now_v7();
+    h.roles.0.lock().unwrap().insert((t, guest), [(pay, ProjectRole::Viewer)].into_iter().collect());
+    let guest_token = h.token(t, guest, "guest");
+    let (status, body) = h.mql(&guest_token, "assignee = maya@example.com", "").await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(h.mql_keys(&guest_token, "assignee = currentUser()").await, Vec::<String>::new());
     h.drop_index().await;
 }

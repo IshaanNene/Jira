@@ -6,6 +6,8 @@
 pub mod http;
 pub mod index;
 pub mod indexer;
+pub mod mql;
+pub mod people;
 pub mod source;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -25,6 +27,7 @@ pub struct AppState {
     pub index: index::Index,
     pub verifier: Arc<TokenVerifier>,
     pub policy: Arc<PolicyClient>,
+    pub people: Arc<dyn people::People>,
     pub allowed_origins: Arc<Vec<String>>,
 }
 
@@ -63,6 +66,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let http_addr: SocketAddr = config::or("HTTP_ADDR", "127.0.0.1:8111").parse()?;
     let secret = config::required("INTERNAL_SERVICE_SECRET")?;
     let permission = config::or("PERMISSION_SERVICE_GRPC_URL", "http://127.0.0.1:9108");
+    let user = config::or("USER_SERVICE_GRPC_URL", "http://127.0.0.1:9103");
 
     let index = open_index()?;
     ensure_index(&index).await?;
@@ -87,6 +91,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
             TokenVerifier::remote(config::required("TOKEN_ISSUER")?, config::required("JWKS_URL")?)?.with_revocations(redis),
         ),
         policy,
+        people: Arc::new(people::GrpcPeople::new(&user, &secret)?),
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
     let health = server::health_router(move || {

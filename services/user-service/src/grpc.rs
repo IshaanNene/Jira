@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use api_contracts::user::v1::{
-    membership_server::Membership, CheckMembershipRequest, CheckMembershipResponse, GetMembersRequest, Member, Members,
+    membership_server::Membership, CheckMembershipRequest, CheckMembershipResponse, FindMembersRequest, GetMembersRequest,
+    Member, Members,
 };
 use error_handling::ApiError;
 use tenant_context::DbRouter;
@@ -58,17 +59,36 @@ impl Membership for MembershipService {
         let mut tx = self.db.begin(tenant_id).await?;
         let rows = store::members_by_id(tx.conn(), tenant_id, &ids).await?;
         tx.commit().await?;
-        Ok(Response::new(Members {
-            members: rows
-                .into_iter()
-                .map(|(user_id, org_role, status, display_name, email)| Member {
-                    user_id: user_id.to_string(),
-                    org_role,
-                    status,
-                    display_name,
-                    email,
-                })
-                .collect(),
-        }))
+        Ok(Response::new(members(rows)))
+    }
+
+    async fn find_members(&self, request: Request<FindMembersRequest>) -> Result<Response<Members>, Status> {
+        let req = request.into_inner();
+        let tenant_id = parse_id("tenant_id", &req.tenant_id)?;
+        if req.terms.len() > 100 || req.terms.iter().any(|t| t.chars().count() > 200) {
+            return Err(Status::from(ApiError::invalid("terms", "too_many", "At most 100 terms of 200 characters.")));
+        }
+        if req.terms.is_empty() {
+            return Ok(Response::new(Members::default()));
+        }
+        let mut tx = self.db.begin(tenant_id).await?;
+        let rows = store::members_matching(tx.conn(), tenant_id, &req.terms).await?;
+        tx.commit().await?;
+        Ok(Response::new(members(rows)))
+    }
+}
+
+fn members(rows: Vec<(Uuid, String, String, String, String)>) -> Members {
+    Members {
+        members: rows
+            .into_iter()
+            .map(|(user_id, org_role, status, display_name, email)| Member {
+                user_id: user_id.to_string(),
+                org_role,
+                status,
+                display_name,
+                email,
+            })
+            .collect(),
     }
 }

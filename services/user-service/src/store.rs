@@ -453,3 +453,22 @@ pub async fn members_by_id(
     .fetch_all(conn)
     .await?)
 }
+
+/// Members whose email or display name equals one of `terms`, ignoring case.
+pub async fn members_matching(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    terms: &[String],
+) -> ApiResult<Vec<(Uuid, String, String, String, String)>> {
+    let lowered: Vec<String> = terms.iter().map(|t| t.trim().to_lowercase()).collect();
+    Ok(sqlx::query_as(
+        "SELECT m.user_id, m.org_role, m.status, p.display_name, p.email::text FROM memberships m \
+         JOIN user_profiles p ON p.user_id = m.user_id \
+         WHERE m.tenant_id = $1 AND (lower(p.email::text) = ANY($2) OR lower(p.display_name) = ANY($2)) \
+         ORDER BY m.joined_at, m.user_id LIMIT 500",
+    )
+    .bind(tenant_id)
+    .bind(lowered)
+    .fetch_all(conn)
+    .await?)
+}

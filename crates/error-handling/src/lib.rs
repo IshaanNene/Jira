@@ -17,11 +17,20 @@ pub struct FieldError {
     pub field: String,
     pub code: String,
     pub message: String,
+    /// For text fields with a grammar (search queries): the `[start, end)` character
+    /// range the message is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<[usize; 2]>,
 }
 
 impl FieldError {
     pub fn new(field: impl Into<String>, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { field: field.into(), code: code.into(), message: message.into() }
+        Self { field: field.into(), code: code.into(), message: message.into(), span: None }
+    }
+
+    pub fn at(mut self, start: usize, end: usize) -> Self {
+        self.span = Some([start, end.max(start)]);
+        self
     }
 }
 

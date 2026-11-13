@@ -38,6 +38,12 @@ pub struct IssueDoc {
     pub resolved_at: Option<String>,
     pub version: i64,
     pub indexed_at: String,
+    /// 1 (lowest) … 5 (highest), for sorting and comparing priorities.
+    #[serde(default)]
+    pub priority_rank: Option<i32>,
+    /// The number in the key (`PAY-12` → 12), so keys sort as people expect.
+    #[serde(default)]
+    pub key_number: Option<i64>,
 }
 
 /// Highlight markers: private-use characters that cannot occur in indexed text (see
@@ -80,13 +86,11 @@ impl IssueDoc {
         Some(Self {
             tenant_id,
             issue_id: Uuid::parse_str(&d.id).ok()?,
-            key: d.key,
             project_id: Uuid::parse_str(&d.project_id).ok()?,
             project_key: d.project_key,
             kind: d.r#type,
             status: d.status,
             status_category: d.status_category,
-            priority: d.priority,
             summary: clean(&d.summary),
             description: clean(&d.description_text),
             comments: clean(&d.comments_text),
@@ -98,6 +102,10 @@ impl IssueDoc {
             resolved_at: optional(d.resolved_at),
             version: d.version,
             indexed_at: now(),
+            priority_rank: crate::mql::priority_rank(&d.priority),
+            key_number: d.key.rsplit_once('-').and_then(|(_, n)| n.parse().ok()),
+            key: d.key,
+            priority: d.priority,
         })
     }
 }
@@ -189,11 +197,19 @@ impl Index {
         matches!(self.http.head(self.url("")).send().await, Ok(r) if r.status().is_success())
     }
 
-    /// Create the index with its mapping if it does not exist yet.
+    /// Fields added after the index was first created; put on existing indexes (adding
+    /// fields to a mapping is allowed in place). Documents written before have none
+    /// until they are next indexed or the tenant is reindexed.
+    fn added_fields() -> Value {
+        json!({ "priority_rank": { "type": "integer" }, "key_number": { "type": "long" } })
+    }
+
+    /// Create the index with its mapping if it does not exist yet, or add newer fields.
     pub async fn ensure(&self, shards: u32, replicas: u32) -> ApiResult<()> {
         let head = self.http.head(self.url("")).send().await.map_err(unavailable)?;
         if head.status().is_success() {
-            return Ok(());
+            let body = json!({ "properties": Self::added_fields() });
+            return Self::checked(self.http.put(self.url("/_mapping")).json(&body).send().await).await.map(|_| ());
         }
         let keyword = json!({ "type": "keyword" });
         let date = json!({ "type": "date" });
@@ -215,7 +231,8 @@ impl Index {
                     "comments": { "type": "text", "analyzer": "english" },
                     "assignee_id": keyword, "reporter_id": keyword, "labels": keyword,
                     "created_at": date, "updated_at": date, "resolved_at": date, "indexed_at": date,
-                    "version": { "type": "long" }
+                    "version": { "type": "long" },
+                    "priority_rank": { "type": "integer" }, "key_number": { "type": "long" }
                 }
             }
         });
@@ -323,7 +340,23 @@ impl Index {
         limit: u32,
         after: Option<&Value>,
     ) -> ApiResult<Hits> {
-        let body = query(tenant_id, text, filters, limit, after);
+        self.execute(tenant_id, query(tenant_id, text, filters, limit, after)).await
+    }
+
+    /// Run an MQL query (compiled by [`crate::mql`]) inside the tenant and visibility filters.
+    pub async fn search_compiled(
+        &self,
+        tenant_id: Uuid,
+        compiled: &crate::mql::Compiled,
+        filters: &Filters,
+        limit: u32,
+        after: Option<&Value>,
+    ) -> ApiResult<Hits> {
+        let body = body(tenant_id, filters, json!([compiled.query]), compiled.sort.clone(), limit, after);
+        self.execute(tenant_id, body).await
+    }
+
+    async fn execute(&self, tenant_id: Uuid, body: Value) -> ApiResult<Hits> {
         let url = format!("{}?routing={tenant_id}", self.url("/_search"));
         let reply = Self::checked(self.http.post(url).json(&body).send().await).await?;
         let total = reply["hits"]["total"]["value"].as_u64().unwrap_or(0);
@@ -356,8 +389,9 @@ fn looks_like_key(text: &str) -> bool {
         && number.chars().all(|c| c.is_ascii_digit())
 }
 
-/// The OpenSearch query for a search. The tenant filter is unconditional.
-pub fn query(tenant_id: Uuid, text: &str, filters: &Filters, limit: u32, after: Option<&Value>) -> Value {
+/// The OpenSearch request around `must`: the tenant filter is unconditional, the
+/// visibility filters are added when given.
+fn body(tenant_id: Uuid, filters: &Filters, must: Value, sort: Value, limit: u32, after: Option<&Value>) -> Value {
     let mut filter = vec![json!({ "term": { "tenant_id": tenant_id } })];
     if let Some(projects) = &filters.projects {
         filter.push(json!({ "terms": { "project_id": projects } }));
@@ -368,6 +402,25 @@ pub fn query(tenant_id: Uuid, text: &str, filters: &Filters, limit: u32, after: 
     if let Some(assignee) = filters.assignee_id {
         filter.push(json!({ "term": { "assignee_id": assignee } }));
     }
+    let mut body = json!({
+        "size": limit,
+        "track_total_hits": 1000,
+        "query": { "bool": { "filter": filter, "must": must } },
+        "sort": sort,
+        "highlight": {
+            "pre_tags": [MARK_START.to_string()], "post_tags": [MARK_END.to_string()],
+            "encoder": "default", "number_of_fragments": 1, "fragment_size": 160, "no_match_size": 0,
+            "fields": { "summary": {}, "description": {}, "comments": {} }
+        }
+    });
+    if let Some(after) = after {
+        body["search_after"] = after.clone();
+    }
+    body
+}
+
+/// The OpenSearch query for a plain-text search.
+pub fn query(tenant_id: Uuid, text: &str, filters: &Filters, limit: u32, after: Option<&Value>) -> Value {
     let text = text.trim();
     let (must, sort) = if text.is_empty() {
         (json!([]), json!([{ "updated_at": "desc" }, { "issue_id": "asc" }]))
@@ -384,21 +437,7 @@ pub fn query(tenant_id: Uuid, text: &str, filters: &Filters, limit: u32, after: 
             json!([{ "_score": "desc" }, { "updated_at": "desc" }, { "issue_id": "asc" }]),
         )
     };
-    let mut body = json!({
-        "size": limit,
-        "track_total_hits": 1000,
-        "query": { "bool": { "filter": filter, "must": must } },
-        "sort": sort,
-        "highlight": {
-            "pre_tags": [MARK_START.to_string()], "post_tags": [MARK_END.to_string()],
-            "encoder": "default", "number_of_fragments": 1, "fragment_size": 160, "no_match_size": 0,
-            "fields": { "summary": {}, "description": {}, "comments": {} }
-        }
-    });
-    if let Some(after) = after {
-        body["search_after"] = after.clone();
-    }
-    body
+    body(tenant_id, filters, must, sort, limit, after)
 }
 
 #[cfg(test)]

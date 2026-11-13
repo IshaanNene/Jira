@@ -1,14 +1,16 @@
 //! `/api/v1/search/issues`: full-text issue search across the projects the caller can
 //! browse in their current workspace.
 
-use auth_middleware::{OrgContext, VisibleProjects};
+use std::collections::HashMap;
+
+use auth_middleware::{OrgContext, OrgPermission, VisibleProjects};
 use axum::{
     extract::{Query, State},
     http::{header, Method},
     routing::get,
     Json, Router,
 };
-use error_handling::{ApiError, ApiResult};
+use error_handling::{ApiError, ApiResult, FieldError};
 use platform_common::pagination::{decode_cursor, encode_cursor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,7 +19,8 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    index::{Filters, Hit, MARK_END, MARK_START},
+    index::{Filters, Hit, Hits, MARK_END, MARK_START},
+    mql::{self, MqlError, SortValue},
     AppState,
 };
 
@@ -177,38 +180,119 @@ pub async fn search_issues(
     };
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    // Never wider than what the caller may browse; a project they cannot see simply has
-    // no results (indistinguishable from an empty one).
-    let projects = match (state.policy.snapshot(&ctx).await?.visible_projects(&ctx), q.project_id) {
+    let Some(projects) = visible(&state, &ctx, q.project_id).await? else {
+        return Ok(Json(SearchResults::empty()));
+    };
+    let filters = Filters { projects, status_category: q.status_category, assignee_id };
+    let found = state.index.search(ctx.tenant_id, &q.q, &filters, limit, after.as_ref()).await?;
+    Ok(Json(SearchResults::from_hits(found, limit)))
+}
+
+/// The projects a search may cover: `Some(None)` = all of the tenant's, `Some(Some(ids))`
+/// = only these, `None` = nothing at all. Never wider than what the caller may browse; a
+/// project they cannot see simply has no results (indistinguishable from an empty one).
+async fn visible(state: &AppState, ctx: &OrgContext, project: Option<Uuid>) -> ApiResult<Option<Option<Vec<Uuid>>>> {
+    let projects = match (state.policy.snapshot(ctx).await?.visible_projects(ctx), project) {
         (VisibleProjects::All, None) => None,
         (VisibleProjects::All, Some(p)) => Some(vec![p]),
         (VisibleProjects::Only(ids), None) => Some(ids),
         (VisibleProjects::Only(ids), Some(p)) => Some(if ids.contains(&p) { vec![p] } else { vec![] }),
     };
-    if projects.as_ref().is_some_and(Vec::is_empty) {
-        return Ok(Json(SearchResults { items: vec![], total: 0, total_is_lower_bound: false, next_cursor: None }));
+    Ok(if projects.as_ref().is_some_and(Vec::is_empty) { None } else { Some(projects) })
+}
+
+impl SearchResults {
+    fn empty() -> Self {
+        Self { items: vec![], total: 0, total_is_lower_bound: false, next_cursor: None }
     }
-    let filters = Filters { projects, status_category: q.status_category, assignee_id };
-    let found = state.index.search(ctx.tenant_id, &q.q, &filters, limit, after.as_ref()).await?;
-    let next_cursor = (found.hits.len() as u32 == limit).then(|| found.hits.last().map(|h| encode_cursor(&h.sort))).flatten();
-    Ok(Json(SearchResults {
-        items: found.hits.into_iter().map(hit).collect(),
-        total: found.total,
-        total_is_lower_bound: found.total_is_lower_bound,
-        next_cursor,
-    }))
+
+    fn from_hits(found: Hits, limit: u32) -> Self {
+        let next_cursor = (found.hits.len() as u32 == limit).then(|| found.hits.last().map(|h| encode_cursor(&h.sort))).flatten();
+        Self {
+            items: found.hits.into_iter().map(hit).collect(),
+            total: found.total,
+            total_is_lower_bound: found.total_is_lower_bound,
+            next_cursor,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct MqlQuery {
+    /// An MQL query, e.g. `project = PAY AND assignee = currentUser() ORDER BY updated DESC`.
+    /// Empty lists recently updated issues.
+    #[serde(default)]
+    pub mql: String,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+fn mql_error(e: MqlError) -> ApiError {
+    ApiError::Validation(vec![FieldError::new("mql", "invalid_query", e.message).at(e.start, e.end)])
+}
+
+#[utoipa::path(get, path = "/api/v1/search/issues/query", params(MqlQuery), security(("bearer" = [])),
+    responses((status = 200, body = SearchResults),
+        (status = 422, description = "The query is invalid; `errors[0].span` is the [start, end) character range at fault"),
+        (status = 503)))]
+pub async fn query_issues(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Query(q): Query<MqlQuery>,
+) -> ApiResult<Json<SearchResults>> {
+    let parsed = mql::parse(&q.mql).map_err(mql_error)?;
+    // Naming people by email or name needs the member directory, which guests cannot see.
+    let people = if ctx.require(OrgPermission::ViewMembers).is_ok() {
+        let terms = mql::person_terms(&parsed);
+        Some(if terms.is_empty() { HashMap::new() } else { state.people.find(ctx.tenant_id, &terms).await? })
+    } else {
+        None
+    };
+    let compiled =
+        mql::compile(&parsed, &mql::Context { current_user: ctx.user_id, people: people.as_ref() }).map_err(mql_error)?;
+
+    let invalid_cursor = || ApiError::invalid("cursor", "invalid_cursor", "Not a valid cursor for this query.");
+    let after: Option<Value> = match q.cursor.as_deref() {
+        Some(raw) => {
+            let v: Value = decode_cursor(raw).map_err(|_| invalid_cursor())?;
+            // Exactly the sort values this query produces, each of the right kind.
+            let ok = v.as_array().is_some_and(|a| {
+                a.len() == compiled.sort_values.len()
+                    && a.iter().zip(&compiled.sort_values).all(|(x, kind)| match kind {
+                        SortValue::Number => x.is_number(),
+                        SortValue::Text => x.is_string() || x.is_null(),
+                    })
+            });
+            if !ok {
+                return Err(invalid_cursor());
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let Some(projects) = visible(&state, &ctx, None).await? else {
+        return Ok(Json(SearchResults::empty()));
+    };
+    let filters = Filters { projects, ..Filters::default() };
+    let found = state.index.search_compiled(ctx.tenant_id, &compiled, &filters, limit, after.as_ref()).await?;
+    Ok(Json(SearchResults::from_hits(found, limit)))
 }
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "Search API", version = "1.0.0", description = "Full-text search over the issues the caller can browse."),
-    paths(search_issues),
+    info(
+        title = "Search API",
+        version = "1.0.0",
+        description = "Full-text and MQL search over the issues the caller can browse."
+    ),
+    paths(search_issues, query_issues),
     components(schemas(SearchResults, SearchHit, Snippet, TextPart))
 )]
 pub struct ApiDoc;
 
 pub fn router(state: AppState) -> Router {
-    let api = Router::new().route("/search/issues", get(search_issues));
+    let api = Router::new().route("/search/issues", get(search_issues)).route("/search/issues/query", get(query_issues));
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))

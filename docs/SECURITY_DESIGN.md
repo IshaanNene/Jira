@@ -86,6 +86,7 @@ service could impersonate another; per-workload identity (SPIFFE/SPIRE) is the p
 | Mass assignment | separate request DTOs; `deny_unknown_fields` |
 | Headers | HSTS, `X-Content-Type-Options`, `Referrer-Policy`, `frame-ancestors 'none'`; strict CORS allow-list |
 | Outgoing email | names and summaries HTML-escaped and flattened to one line in subjects (no header injection); links only to well-formed issue keys under the configured `APP_URL`; recipient addresses never logged; finished deliveries deleted after 7 days |
+| Search queries (MQL) | parsed and compiled server-side into a query built from fixed shapes: values become term values, analysed match text, or date math assembled from validated parts (no query-string or script syntax reaches OpenSearch); always nested inside the tenant and visible-project filters; bounded size, depth, list length and sort fields; cursors must match the query's sort shape. Looking people up by email or name requires the member-directory permission (guests cannot), so the query box is not a way around the directory |
 | Unsubscribe links | public endpoint (gateway exempts only `/api/v1/notifications/unsubscribe`); HMAC-SHA256 token over (tenant, user, kind, issued-at) with a purpose-derived key, 90-day expiry, constant-time verification; the token can only turn email **off**; `GET` only describes the link (mail scanners prefetch links), `POST` acts (RFC 8058) |
 | Abuse | gateway global + per-IP limits; service per-user/tenant token bucket in Redis; body size limits; pagination caps |
 

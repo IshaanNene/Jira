@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-13 (end of Phase 5).
+Last updated: 2026-11-13 (Phase 6 started: issue query language).
 
 ## Phase status
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-13 (end of Phase 5).
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
-| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | ⬜ |
+| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language done; the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ⬜ |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
 
@@ -63,12 +63,14 @@ Everything else is not started. Four of the fifteen logical services have no cod
 | Email notifications | Queued with each notification per the person's preferences, sent after a short delay unless read in the app first; leased sender safe across instances; retry with backoff, permanent failures recorded; escaped content, no header injection; per-workspace preferences (master switch + per kind) | 3 unit + 2 integration tests sending through a real Mailpit; live: an assignment by Maya reached Olivia's Mailpit inbox and rendered correctly |
 | One-click unsubscribe and board cleanup | Signed, expiring, off-only unsubscribe links in every email (footer page + RFC 8058 headers), public through the gateway for that one path; agile consumer removes placements of deleted issues (scope removal logged for running sprints) and retires boards of deleted projects | 2 unit + 1 integration test (headers and link read from a real Mailpit message), 1 agile integration test, 2 web tests; live: unsubscribed from a real email's link in the browser |
 | search-service | OpenSearch index fed from issue and project events (fresh document per event, external versioning, deletes), tenant-filtered and routed, limited to visible projects; key, prefix and typo-tolerant matching over summary, description, comments and labels; structured highlights (no HTML); cursor paging; `reindex <tenant>` that also drops vanished issues | 3 unit + 2 integration tests against real OpenSearch; live: reindexed the demo workspace, an edit was searchable within 3 s through Kafka |
-| New internal RPCs | `issue.v1.Issues/GetAudience`, `GetDocuments` (≤ 500), `ListIssueIds` (≤ 1000); `user.v1.Membership/GetMembers` (≤ 500) | `audiences_and_search_documents_are_served_to_other_services`, `grpc_membership_check_reflects_role_and_status` |
+| New internal RPCs | `issue.v1.Issues/GetAudience`, `GetDocuments` (≤ 500), `ListIssueIds` (≤ 1000); `user.v1.Membership/GetMembers` (≤ 500), `FindMembers` (≤ 100 terms) | `audiences_and_search_documents_are_served_to_other_services`, `grpc_membership_check_reflects_role_and_status` |
+| Issue query language (MQL) | Fields, operators, AND / OR / NOT, parentheses, lists, EMPTY, people by `currentUser()` / email / exact name, relative and absolute dates, text match with prefixes, ORDER BY with keys sorted by number and priorities by rank; compiled server-side inside the tenant and visibility filters; errors with a character span; size and depth limits; guests limited to `currentUser()` | 8 unit + 1 integration test against real OpenSearch (tenancy, visibility, every field kind, paging, errors, guests) |
+| Web: MQL search | Basic / MQL switch on `/search` (basic filters carried over as a query), query editor with suggestions for fields, operators, values (project keys, statuses, people from the directory, dates) and connectives; Tab completes, Enter runs; invalid queries show the message with the faulty part underlined; syntax help with runnable examples; query kept in the URL | 5 web tests; driven in a real browser against the demo workspace |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
 | Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **179 Rust tests, 75 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **188 Rust tests, 80 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -77,7 +79,7 @@ Totals: **179 Rust tests, 75 web tests, all passing**; `cargo clippy -D warnings
 | Email | One email per notification (no digests); comment emails do not quote the comment; no bounce or complaint handling |
 | Notification preferences | Email only (in-app is always on), per workspace. No notifications for sprint, project or workflow events |
 | Boards | Still read cards from issue-service on each load rather than an event-fed copy |
-| Search | No query language (Phase 6), no custom fields, components or versions in the index, no search for projects or people; `reindex` takes one tenant id; no index alias for mapping changes; the shared `search_db` database is unused |
+| Search | No custom fields, components, versions, sprints or parents in the index (so not in MQL either), no search for projects or people; `reindex` takes one tenant id; no index alias for mapping changes; the shared `search_db` database is unused |
 | Realtime | No presence, no WebSocket transport, no per-tenant connection quotas; fan-out has not been load tested |
 | Event pipeline | No DLQ replay tool or consumer-lag dashboards; delivery is at least once (consumers are idempotent), not exactly once |
 | Search highlight of status names | Search results show the status key in title case (e.g. "In review"), not the workflow's display name, which the index does not carry |
@@ -157,6 +159,15 @@ so that a new migration file is always embedded in the binary.
 - Policy snapshots without Redis are trusted for up to 5 seconds, so a revocation can lag by that long when Redis is down.
 - The web app's organization-role checks are a hand-written mirror of the server table (display only).
 
+## Incomplete within Phase 6 scope
+
+| Item | State |
+|---|---|
+| Query language | Built (see above). Not built: saved filters, filter subscriptions, sharing; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog do not accept MQL yet |
+| SSO (OIDC, SAML), SCIM, MFA / WebAuthn, API tokens | Not started |
+| Admin console, audit log | Not started |
+| Automation, integrations (webhooks, Git, Slack) | Not started |
+
 ## Measured performance
 
 No load tests have been run. The targets in the brief (1M users, 50k concurrent, p95 200/300 ms, 99.95 %)
@@ -164,5 +175,5 @@ are **design targets only** until k6 results are recorded here.
 
 ## Next
 
-1. Phase 6: SSO / SCIM / MFA, admin console, audit log, the issue query language on top of search-service,
-   declarative automation, integrations.
+1. Phase 6, remaining: audit log and admin console, MFA (TOTP, WebAuthn) and API tokens, SSO (OIDC, SAML) and
+   SCIM, saved filters on top of MQL, declarative automation, integrations.

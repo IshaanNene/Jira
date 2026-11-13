@@ -6,7 +6,9 @@ on failure).
 
 **API.** REST under `/api/v1` — contract at `/openapi.json`: `users/me`, `organizations`,
 `organizations/current`, `.../members`, `.../invitations`, `invitations/{token}` (+`/accept`).
-Internal gRPC `Membership.CheckMembership` for identity-service.
+Internal gRPC `Membership`: `CheckMembership` for identity-service, `GetMembers` (people by id: role, status,
+name, email) for notification-service, and `FindMembers` (members whose email or display name equals a term,
+ignoring case; no partial matches) for search-service's query language.
 
 **Tenancy.** `organizations`, `memberships`, `invitations` are tenant-owned with forced row-level
 security; all access goes through `DbRouter::begin(tenant_id)`. Three small global tables exist by

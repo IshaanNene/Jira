@@ -7,6 +7,9 @@ service Membership {
   // Role, status and name of the given people in one workspace (notification-service).
   // People who are not members are left out of the reply.
   rpc GetMembers(GetMembersRequest) returns (Members);
+  // Members whose email or display name equals one of the terms, ignoring case
+  // (search-service resolves people named in a query).
+  rpc FindMembers(FindMembersRequest) returns (Members);
 }
 
 message CheckMembershipRequest {
@@ -36,4 +39,9 @@ message Member {
 
 message Members {
   repeated Member members = 1;
+}
+
+message FindMembersRequest {
+  string tenant_id = 1;
+  repeated string terms = 2; // at most 100, each at most 200 characters
 }

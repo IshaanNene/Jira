@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest, GetMembersRequest};
+use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest, FindMembersRequest, GetMembersRequest};
 use async_trait::async_trait;
 use axum::{
     body::Body,
@@ -645,5 +645,22 @@ async fn grpc_membership_check_reflects_role_and_status() {
     assert!(members(Uuid::now_v7(), vec![ada.id.to_string()]).await.unwrap().into_inner().members.is_empty(), "other tenant");
     assert_eq!(members(tenant, vec!["x".into()]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
     assert_eq!(members(tenant, vec![ada.id.to_string(); 501]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // Finding people by exact email or name, ignoring case, only in that workspace.
+    let find = |tenant: Uuid, terms: Vec<String>| {
+        let service = &service;
+        async move { service.find_members(tonic::Request::new(FindMembersRequest { tenant_id: tenant.to_string(), terms })).await }
+    };
+    let ada_row = found.iter().find(|m| m.user_id == ada.id.to_string()).unwrap().clone();
+    let by_email = find(tenant, vec![ada_row.email.to_uppercase()]).await.unwrap().into_inner().members;
+    assert_eq!(by_email.iter().map(|m| m.user_id.clone()).collect::<Vec<_>>(), [ada.id.to_string()]);
+    let by_name = find(tenant, vec![format!("  {}  ", ada_row.display_name.to_lowercase())]).await.unwrap().into_inner().members;
+    assert_eq!(by_name.len(), 1);
+    assert!(
+        find(tenant, vec![ada_row.display_name[..2].to_owned()]).await.unwrap().into_inner().members.is_empty(),
+        "no partial matches"
+    );
+    assert!(find(Uuid::now_v7(), vec![ada_row.email.clone()]).await.unwrap().into_inner().members.is_empty(), "other tenant");
+    assert_eq!(find(tenant, vec!["x".repeat(201)]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
     h.db.cleanup().await;
 }
