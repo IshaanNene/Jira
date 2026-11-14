@@ -95,8 +95,10 @@ Locally the same routing table is expressed as a static Envoy config
   test suite against the Compose data stores; RustSec advisories (cargo-deny); web lint, typecheck, tests and
   build; Helm lint for both value sets plus Envoy's own validation of the generated gateway config; Terraform
   format and validate; then all images built with one builder, scanned with Trivy (fails on fixable high and
-  critical findings), and pushed to GHCR tagged with the commit on `main`. The workflow has not run on GitHub
-  yet (the repository has no Actions history); each step was run locally, including the Trivy scan, except the push.
+  critical findings), and pushed to GHCR tagged with the commit on `main`. All jobs passed on GitHub on
+  2026-11-14 (run 43604095879), including the push of all thirteen images. The first runs found two problems,
+  both fixed: librdkafka 2.12 needs curl's headers to compile even with curl off, and images built by a separate
+  buildx container builder were rejected by GHCR (`unknown blob`), so the job uses the engine's own builder.
 - **CD (Argo CD)** **(not built)**: app-of-apps per environment pointing at the Helm chart; image tags bumped by
   PR. Argo Rollouts canary (5 % → 25 % → 100 %) gated on error-rate and latency analysis from Prometheus.
 - **Migrations**: a pre-sync Job per service runs `sqlx migrate run` as the owner role. Migrations are

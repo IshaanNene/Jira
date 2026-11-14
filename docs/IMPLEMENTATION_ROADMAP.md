@@ -78,7 +78,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Container images | One shared release build for all twelve services on distroless without OpenSSL (non-root, no shell; zlib and Kafka's OpenSSL linked statically); web on unprivileged nginx 1.30; base images always pulled fresh; every service image is started once during the build | `scripts/images/build.sh`; all 13 images passed Trivy (no fixable high/critical) on 2026-11-14. The scan and the start check found and fixed: images that could not start (`libz.so.1` missing), stale bases with fixable CVEs, and the web build copying the host's `node_modules` |
 | Helm chart | Deployment, Service, ServiceAccount, PDB and HPA per service; migration Jobs as pre-install/upgrade hooks with owner-role secrets only; Envoy gateway generated from a route list (admin API on loopback, read-only ops port, HSTS on https); default-deny NetworkPolicy with gateway/service/JWKS/egress rules; restricted pod security on every pod; topology spread | `helm lint` for both value sets; generated Envoy config passes `envoy --mode validate`; installed on a three-node kind cluster: migrations, all 14 pods, sign-in and API through the gateway (also in a browser), ingress rules probed from test pods |
 | Terraform (AWS) | Modules for VPC, EKS, RDS PostgreSQL, MSK (SCRAM), ElastiCache (TLS), OpenSearch and S3, a staging environment with S3 state locking | `terraform fmt` and `validate` (1.10.5); never applied |
-| CI | GitHub Actions: Rust fmt, clippy, tests against the Compose data stores; RustSec advisories; web lint, typecheck, tests, build; chart lint + Envoy validation; Terraform validate; image build, Trivy scan, push to GHCR on `main` | actionlint; every step run locally (push excepted); has not run on GitHub |
+| CI | GitHub Actions: Rust fmt, clippy, tests against the Compose data stores; RustSec advisories; web lint, typecheck, tests, build; chart lint + Envoy validation; Terraform validate; image build, Trivy scan, push to GHCR on `main` | actionlint; all jobs green on GitHub (2026-11-14), 13 images pushed to GHCR |
 | Kafka over TLS/SASL | `KAFKA_SECURITY_PROTOCOL` (plaintext, ssl, sasl_ssl), SCRAM or PLAIN, CA file; incomplete settings refused at start-up; password never in `Debug` output | 1 unit test |
 | Consumer retries | A transient failure is retried with backoff (200 ms → 30 s) until it succeeds; only permanent failures are dead-lettered; `events_retried_total` | 1 unit test; `tests/resilience/run.sh opensearch` fails on the old code (an issue changed during the outage never reached search) and passes on the new |
 | Observability stack | Prometheus, Grafana (provisioned overview dashboard), Jaeger in the `observability` compose profile; latency exported as histograms; 7 alert rules (service down, error rate, slow requests, consumer waiting, dead letters, outbox, email) | promtool; all 13 targets scraped; p95 by service queried; `ConsumerWaitingOnDependency` went pending with OpenSearch stopped; search-service traces reached Jaeger |
@@ -167,7 +167,7 @@ so that a new migration file is always embedded in the binary.
 |---|---|
 | Cloud deployment | Terraform has never been applied; nothing runs in AWS. No ExternalSecret manifests, no cert-manager, no DNS |
 | CD | No Argo CD, no Argo Rollouts canaries; the chart is installed with `helm upgrade` |
-| CI | The workflow has never run on GitHub; no image signing or SBOM; no Playwright or contract tests in it |
+| CI | No image signing or SBOM; no Playwright or contract tests in it |
 | NetworkPolicy egress | Rendered and correct on inspection, but **not verified**: kind's network plugin does not enforce egress, so a cluster with Calico, Cilium or the EKS VPC CNI policy agent is needed |
 | Autoscaling | CPU-based HPA only; no KEDA scaling on Kafka lag, no connection-based scaling for realtime; HPAs were not exercised (kind runs one replica) |
 | Observability | No log aggregation (Loki or similar), no Alertmanager routing, no SLO burn-rate alerts, no consumer-lag exporter; traces cover HTTP requests only, not Kafka hops; Grafana has one dashboard |
@@ -229,7 +229,7 @@ pushed to find the saturation point.
 
 ## Next
 
-1. Phase 8, remaining: run CI on GitHub, verify egress policies on a CNI that enforces them, a staging
+1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
    environment from the Terraform with External Secrets and Argo CD, a load test against release builds in a
    cluster to find the saturation point, and a restore drill.
 2. Phase 7, remaining: more chart kinds (cumulative flow first), a rebuild command for the analytics store, `If-Match` on dashboards.
