@@ -3,7 +3,7 @@
 # so building all twelve images reuses one compilation:
 #   docker build -f infrastructure/docker/service.Dockerfile --build-arg SERVICE=identity-service -t identity-service .
 FROM rust:1.94-bookworm AS build
-RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler cmake libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
