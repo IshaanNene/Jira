@@ -271,7 +271,7 @@ Open **http://localhost:5173**. The seed script prints the demo sign-ins: owner,
 | `make logs` | Tail the service logs (`.run/logs/`) |
 | `make observability` | Prometheus (:59090), Grafana (:53000) and Jaeger (:56686) |
 | `make resilience` | Stop each data store under the running stack and check the documented behaviour |
-| `make load` | k6 load test against the running stack |
+| `make load` | k6 load test against the running stack (`tests/load/stress.mjs` finds saturation with autocannon) |
 | `make images` | Build all 13 container images |
 | `make kind-up` / `make kind-down` | Run the Helm chart in a local three-node kind cluster (:8088) |
 
@@ -331,15 +331,31 @@ The full threat model is in [`docs/SECURITY_DESIGN.md`](docs/SECURITY_DESIGN.md)
 
 ## Measured, not claimed
 
-A k6 open-model test on a laptop, against **debug builds** with each service running as a single process:
+An [autocannon](https://github.com/mcollina/autocannon) stress test ([`tests/load/stress.mjs`](tests/load/stress.mjs)):
+- **Setup:** release builds on a three-node kind cluster, one replica per service, everything on **one laptop**
+  (Apple M4 Pro).
+- **Route:** all requests go through the Envoy gateway, with its rate limit raised for the test.
+- **Mix:** reads use the same mix as the k6 test: issue lists, issues, boards, unread counts, search and charts.
 
-| Scenario | Rate | p50 | p95 | p99 |
+| Load | Served | p50 | p99 | Failed |
 |---|---|---|---|---|
-| Reads across six endpoints | 100 req/s | 5.7 ms | 12.6 ms | 46.6 ms |
-| Writes (issues and comments) | 10 req/s | 7.1 ms | 16.3 ms | 76.9 ms |
+| Reads at 500/s | 500/s | 4 ms | 37 ms | 0 |
+| Reads at 1,000/s | 1,000/s | 7 ms | 70 ms | 0 |
+| Reads at 2,000/s | 1,948/s | 16 ms | 249 ms | 8 of 58,447 |
+| Reads, no rate cap | **2,959/s** | 58 ms | 178 ms | 96 of 88,829 |
+| Writes at 200/s | 200/s | 6 ms | 24 ms | 0 |
+| Writes, no rate cap | **1,799/s** | 102 ms | 310 ms | **0 of 35,967** |
 
-14,408 requests, 1 failure. These figures are a baseline, not a capacity claim. A release-build test in a
-cluster to find the saturation point is on the roadmap.
+> [!NOTE]
+> The services were not the first thing to saturate; the query engines were. Alone, the Postgres-backed
+> endpoints peak at **4,400–7,000 reads/s**, search (OpenSearch) at 1,900/s and chart queries (ClickHouse)
+> at 670/s. With the production limit, the gateway serves 200 requests/s per pod and answers the excess with
+> `429` and `retry-after`. After the uncapped write burst, Kafka delivered all ~40,000 events to search and
+> analytics, and none were lost.
+
+These are single-machine numbers, where the load generator and every data store share 14 cores. They are not
+a capacity claim. The full results, including what the test found, are in the
+[roadmap](docs/IMPLEMENTATION_ROADMAP.md#measured-performance).
 
 ## Project status
 

@@ -83,7 +83,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Consumer retries | A transient failure is retried with backoff (200 ms → 30 s) until it succeeds; only permanent failures are dead-lettered; `events_retried_total` | 1 unit test; `tests/resilience/run.sh opensearch` fails on the old code (an issue changed during the outage never reached search) and passes on the new |
 | Observability stack | Prometheus, Grafana (provisioned overview dashboard), Jaeger in the `observability` compose profile; latency exported as histograms; 7 alert rules (service down, error rate, slow requests, consumer waiting, dead letters, outbox, email) | promtool; all 13 targets scraped; p95 by service queried; `ConsumerWaitingOnDependency` went pending with OpenSearch stopped; search-service traces reached Jaeger |
 | Failure tests | `make resilience` stops Kafka, OpenSearch, ClickHouse, Redis and PostgreSQL in turn under the running stack and checks the documented behaviour and the recovery | 21 checks, all passing (results in SYSTEM_DESIGN.md §8) |
-| Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds | see Measured performance |
+| Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
 Totals: **208 Rust tests, 94 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
@@ -171,7 +171,7 @@ so that a new migration file is always embedded in the binary.
 | NetworkPolicy egress | Rendered and correct on inspection, but **not verified**: kind's network plugin does not enforce egress, so a cluster with Calico, Cilium or the EKS VPC CNI policy agent is needed |
 | Autoscaling | CPU-based HPA only; no KEDA scaling on Kafka lag, no connection-based scaling for realtime; HPAs were not exercised (kind runs one replica) |
 | Observability | No log aggregation (Loki or similar), no Alertmanager routing, no SLO burn-rate alerts, no consumer-lag exporter; traces cover HTTP requests only, not Kafka hops; Grafana has one dashboard |
-| Load testing | One laptop run at 110 iterations/s against debug builds with every service as a single local process; no soak, spike or realtime fan-out tests; the brief's scale targets remain untested |
+| Load testing | Saturation found on one laptop only (reads ~2,000/s, writes ~1,800/s, with one replica per service sharing the CPU with every data store); no soak, spike, realtime fan-out or multi-replica tests; the brief's scale targets remain untested |
 | Failure testing | Data stores only, each stopped cleanly; no network partitions, slow disks, pod kills under load, or database fail-over |
 | Backups | No restore drill; RPO/RTO remain targets |
 
@@ -183,6 +183,15 @@ so that a new migration file is always embedded in the binary.
   service, unmaintained rustls-pemfile).
 - A checkout inside an iCloud-synced folder (such as the Desktop) breaks local development: iCloud evicts files
   such as service logs and test caches, and anything that opens them blocks. Keep the repository outside iCloud.
+- analytics-service writes each event to ClickHouse as its own `INSERT`, so each event creates a data part. Under
+  the stress test's write burst about 31,000 parts were created; merges kept up (3 active parts per table) and the
+  4.5 GB of replaced parts were removed after ClickHouse's 8-minute grace period, but a sustained higher rate would
+  reach ClickHouse's "too many parts" limit. Batch the inserts or turn on `async_insert`.
+- Chart queries are the slowest read path (666/s on one replica, p99 658 ms at saturation): every request queries
+  ClickHouse directly, with no cache.
+- When a disk passes 95 %, OpenSearch makes its indices read-only. Search then answers queries but the search
+  consumer stops on `429` and waits (by design, without dropping events) until space is freed. There is no alert for
+  OpenSearch disk use yet.
 - SQL is runtime-checked (`sqlx::query_as`), not compile-time-checked macros; schema drift is caught by integration
   tests rather than the compiler.
 - Session revocation fails open when Redis is unavailable (bounded by the 10-minute token lifetime) — by design, documented in SECURITY_DESIGN.md.
@@ -214,24 +223,64 @@ so that a new migration file is always embedded in the binary.
 
 ## Measured performance
 
-One run of `make load` on 2026-11-14, on a single laptop (Apple silicon, 14 cores) against **debug builds** of
-every service running as local processes with the Compose data stores, through the Envoy gateway:
+### Stress test: release builds on Kubernetes (autocannon)
 
-| Scenario | Rate | p50 | p95 | p99 | Max |
-|---|---|---|---|---|---|
-| Reads (issue list, issue, board, unread count, search, analytics query) | 100/s for 2 min | 5.7 ms | 12.6 ms | 46.6 ms | 196 ms |
-| Writes (create issue, add comment) | 10/s for 2 min | 7.1 ms | 16.3 ms | 76.9 ms | 574 ms |
+`tests/load/stress.mjs` on 2026-11-14, against the Helm chart on a three-node kind cluster on one laptop
+(Apple M4 Pro, 14 cores, Docker Desktop), through the Envoy gateway. **Release builds**, one replica per service,
+no CPU limits, `DATABASE_MAX_CONNECTIONS=5` per service, data stores from Compose. The gateway's rate limit
+(200 requests/s per pod) was raised for the run and restored afterwards. Each stage held its target rate for
+30 s (writes 20 s); latency is measured by autocannon per request.
 
-14,408 requests, 1 failed (0.01 %), 0 dropped iterations; all thresholds (p95 < 200 ms reads, < 300 ms writes,
-errors < 1 %) passed. This shows the request paths are fast at a small, steady rate; it says nothing about the
-targets in the brief (1M users, 50k concurrent, 99.95 %), which remain **design targets only**. The run was not
-pushed to find the saturation point.
+**With the production rate limit**, 400 reads/s offered: 211/s served, the rest refused with `429` and
+`retry-after: 1` (p99 49 ms). The limit holds.
+
+| Reads (same mix as k6) | Served | p50 | p90 | p99 | Max | Failures |
+|---|---|---|---|---|---|---|
+| 250/s | 250/s | 5 ms | 22 ms | 85 ms | 114 ms | 0 |
+| 500/s | 500/s | 4 ms | 22 ms | 37 ms | 81 ms | 0 |
+| 1,000/s | 1,000/s | 7 ms | 35 ms | 70 ms | 150 ms | 0 |
+| 2,000/s | 1,948/s | 16 ms | 109 ms | 249 ms | 433 ms | 8 timeouts (> 10 s) |
+| Uncapped, 200 connections | **2,959/s** | 58 ms | 101 ms | 178 ms | 524 ms | 83 timeouts, 13 × `503` (of 88,746) |
+
+| Writes (create issue, add comment) | Served | p50 | p90 | p99 | Max | Failures |
+|---|---|---|---|---|---|---|
+| 50/s | 50/s | 7 ms | 19 ms | 34 ms | 48 ms | 0 |
+| 100/s | 100/s | 7 ms | 21 ms | 47 ms | 80 ms | 0 |
+| 200/s | 200/s | 6 ms | 13 ms | 24 ms | 48 ms | 0 |
+| Uncapped, 200 connections | **1,799/s** | 102 ms | 143 ms | 310 ms | 469 ms | 0 (35,967 × `201`) |
+
+Each read endpoint alone, uncapped (15 s, 200 connections), shows where the mix saturates:
+
+| Endpoint | Backed by | Peak | p99 | Timeouts |
+|---|---|---|---|---|
+| Unread count | PostgreSQL | 6,961/s | 45 ms | 0 |
+| View issue | PostgreSQL | 5,707/s | 66 ms | 0 |
+| List issues | PostgreSQL | 4,398/s | 85 ms | 0 |
+| Board view | agile → issue (gRPC) | 2,460/s | 142 ms | 0 |
+| Search | OpenSearch | 1,905/s | 71 ms | 176 |
+| Chart query | ClickHouse | **666/s** | 658 ms | 150, plus 6 × `503` |
+
+**Event pipeline after the uncapped write burst** (about 40,000 events): every outbox drained to Kafka
+straight away; analytics caught up in about 40 s; search caught up at about 290 events/s once its index was
+writable again (see Known issues: the Docker disk filled during the run, OpenSearch made its index read-only,
+and the search consumer waited, as designed, without losing an event).
+
+What this does and does not show: one laptop runs the load generator, all fifteen pods, Kafka, OpenSearch,
+ClickHouse and PostgreSQL, so every number is shared-CPU. The PostgreSQL-backed paths scale well; the first limits
+are the ClickHouse and OpenSearch query paths, not the Rust services. The brief's targets (1M users, 50k concurrent,
+99.95 %) remain **design targets only**: there is no soak test, no realtime fan-out test, and no multi-replica run.
+
+### Baseline: debug builds on the host (k6)
+
+One run of `make load` on 2026-11-14 against **debug builds** running as local processes, through the gateway:
+reads at 100/s for 2 min (p50 5.7 ms, p95 12.6 ms, p99 46.6 ms) and writes at 10/s for 2 min (p50 7.1 ms,
+p95 16.3 ms, p99 76.9 ms); 14,408 requests, 1 failed. All thresholds passed.
 
 ## Next
 
 1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
-   environment from the Terraform with External Secrets and Argo CD, a load test against release builds in a
-   cluster to find the saturation point, and a restore drill.
+   environment from the Terraform with External Secrets and Argo CD, batched ClickHouse inserts and a cache for chart queries
+   (the first limits the stress test found), and a restore drill.
 2. Phase 7, remaining: more chart kinds (cumulative flow first), a rebuild command for the analytics store, `If-Match` on dashboards.
 3. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.
