@@ -1,0 +1,46 @@
+# Local Kubernetes (kind) against the Docker Compose data stores. Used by scripts/kind/up.sh.
+# Every credential here is a development placeholder.
+image:
+  registry: meridian
+  tag: dev
+  # Images are loaded into the nodes with `kind load`, never pulled.
+  pullPolicy: Never
+
+publicUrl: http://localhost:8088
+environment: kind
+region: local-1
+
+config:
+  COOKIE_SECURE: "false"
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_SECURITY_PROTOCOL: plaintext
+  CLICKHOUSE_URL: http://clickhouse:8123
+  S3_ENDPOINT: http://object-storage:8333
+  S3_BUCKET: attachments
+  S3_REGION: us-east-1
+  EMAIL_FROM: "Meridian <notifications@meridian.localhost>"
+  EMAIL_DELAY_SECONDS: "10"
+  DATABASE_MAX_CONNECTIONS: "5"
+
+defaults:
+  replicas: 1
+  autoscaling: { enabled: false }
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 256Mi }
+
+web:
+  replicas: 1
+
+gateway:
+  replicas: 1
+  # The browser reaches the node port through kind's port mapping (localhost:8088).
+  service: { type: NodePort, port: 80, nodePort: 30080 }
+  trustedHops: 0
+
+networkPolicy:
+  monitoringNamespaceLabels: { kubernetes.io/metadata.name: observability }
+  egress:
+    enabled: true
+    # Set by scripts/kind/up.sh to the Docker network the data stores share with the nodes.
+    cidrs: []

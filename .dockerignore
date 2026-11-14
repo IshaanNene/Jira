@@ -1,6 +1,8 @@
 target
-node_modules
-apps/web/dist
+**/node_modules
+**/dist
 .run
 .git
 .env
+**/.terraform
+tests/load/results

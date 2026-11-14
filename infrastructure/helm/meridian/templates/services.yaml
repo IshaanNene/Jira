@@ -1,0 +1,118 @@
+{{- $root := . -}}
+{{- range $name, $raw := .Values.services }}
+{{- $svc := include "meridian.serviceValues" (dict "root" $root "svc" $raw) | fromYaml }}
+{{- $ctx := dict "root" $root "name" $name }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+# Services call no Kubernetes API.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "meridian.labels" $root | nindent 4 }}
+    {{- include "meridian.selector" $ctx | nindent 4 }}
+spec:
+  {{- if not $svc.autoscaling.enabled }}
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.labels" $root | nindent 8 }}
+        {{- include "meridian.selector" $ctx | nindent 8 }}
+        meridian.dev/grpc-client: "true"
+      annotations:
+        # Roll pods when shared settings change.
+        checksum/config: {{ include (print $root.Template.BasePath "/config.yaml") $root | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds }}
+      {{- include "meridian.spread" $ctx | nindent 6 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "meridian.image" (dict "root" $root "image" (printf "%s-service" $name)) }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext: {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+            {{- if $svc.grpc }}
+            - { name: grpc, containerPort: 9090 }
+            {{- end }}
+          envFrom:
+            - configMapRef: { name: meridian-config }
+            - secretRef: { name: meridian-shared }
+            - secretRef: { name: meridian-{{ $name }}, optional: {{ not $svc.database }} }
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources: {{- toYaml $svc.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+spec:
+  selector: {{- include "meridian.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    {{- if $svc.grpc }}
+    - { name: grpc, port: 9090, targetPort: grpc, appProtocol: grpc }
+    {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+spec:
+  maxUnavailable: {{ $root.Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
+{{- if $svc.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+  minReplicas: {{ $svc.autoscaling.minReplicas }}
+  maxReplicas: {{ $svc.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage }} } }
+{{- end }}
+{{- end }}

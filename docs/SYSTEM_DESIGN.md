@@ -161,19 +161,28 @@ are served by agile-service from its own tables. Materialized views and rollups 
 
 ## 8. Reliability
 
-| Failure | Behaviour |
-|---|---|
-| PostgreSQL down / failing over | pool acquire timeout 3 s → `503` + `Retry-After`; readiness fails; no in-process retry of writes |
-| Kafka down | writes still commit (outbox); relay backs off; lag alert. Nothing user-facing fails |
-| Redis down | permission cache falls back to in-process snapshot then to gRPC; rate limiter fails open at service level (gateway still limits); realtime degrades to polling |
-| OpenSearch down | search falls back to the PostgreSQL plan for structured queries; text search returns `503 search_degraded` |
-| Downstream gRPC slow | deadline → circuit breaker opens after 5 consecutive failures, half-open after 10 s |
-| Duplicate event | inbox dedupe |
-| Out-of-order event | aggregate version check; older version ignored |
-| Worker crash mid-event | offset not committed → redelivered → inbox makes it safe |
-| Partial multi-service operation | sagas with explicit states (e.g. org provisioning), reaper for stuck states |
+Rows marked ✓ are checked by `tests/resilience/run.sh` (`make resilience`), which stops each data store under the
+running stack and checks the behaviour below and the recovery afterwards. All checks passed on 2026-11-14.
 
-Retries are always bounded (max 3, exponential backoff with full jitter) and only for idempotent calls.
+| Failure | Behaviour | Checked |
+|---|---|---|
+| PostgreSQL down / failing over | pool acquire timeout 3 s → `503` + `Retry-After`; readiness fails; no in-process retry of writes; recovers when it is back | ✓ |
+| Kafka down | writes still commit (outbox); the relay backs off; the backlog drains when Kafka is back and consumers catch up. Nothing user-facing fails | ✓ |
+| Redis down | session revocation checks fail open (bounded by the 10-minute token lifetime); policy snapshots are trusted for 5 s, then re-read; reads and writes keep working | ✓ |
+| OpenSearch down | search answers `503`; issue writes keep working; search-service's consumer retries the missed changes until OpenSearch is back, so nothing is lost | ✓ |
+| ClickHouse down | chart queries answer `503`, dashboards still list, analytics readiness fails; the consumer retries and the facts catch up afterwards | ✓ |
+| Downstream gRPC slow | deadline → circuit breaker opens after 5 consecutive failures, half-open after 10 s | unit tests |
+| Duplicate event | inbox dedupe | integration tests |
+| Out-of-order event | aggregate version check; older version ignored | integration tests |
+| Worker crash mid-event | offset not committed → redelivered → inbox makes it safe | — |
+| Partial multi-service operation | sagas with explicit states (e.g. org provisioning), reaper for stuck states | integration tests |
+
+Request-path retries are bounded (max 3, exponential backoff with full jitter) and only for idempotent calls.
+Event consumers are different: a transient failure (a data store or service unavailable) is retried with backoff
+from 200 ms to 30 s **until it succeeds**, holding that partition, and `events_retried_total` drives the
+`ConsumerWaitingOnDependency` alert; only permanent failures (invalid payload, refused by validation) go to the
+dead-letter topic. Before Phase 8 consumers gave up after 3 attempts, and the failure test showed that an issue
+changed during a short OpenSearch outage then never reached search; the same test passes with the change.
 RPO/RTO are **targets, not claims**: RPO ≤ 5 min (WAL archiving / PITR), RTO ≤ 60 min. They become claims only
 after a restore drill is recorded in `docs/operations/`.
 

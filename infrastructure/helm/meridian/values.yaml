@@ -1,0 +1,142 @@
+# Production-shaped defaults. Per-environment files (values-<env>.yaml) override them.
+#
+# Secrets are never in values. The chart expects these Secrets to exist in the release
+# namespace (created by External Secrets in staging/production, by scripts/kind/up.sh locally):
+#   meridian-shared            INTERNAL_SERVICE_SECRET, REDIS_URL [, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD]
+#   meridian-<service>         what that service needs at run time (DATABASE_URL, and per service:
+#                              identity IDENTITY_KEY_ENCRYPTION_KEY; issue S3_ACCESS_KEY_ID,
+#                              S3_SECRET_ACCESS_KEY; notification SMTP_URL; search OPENSEARCH_URL;
+#                              analytics CLICKHOUSE_WRITER_PASSWORD, CLICKHOUSE_READER_PASSWORD)
+#   meridian-<service>-migrate DATABASE_MIGRATION_URL (owner role; analytics also
+#                              CLICKHOUSE_OWNER_USER, CLICKHOUSE_OWNER_PASSWORD). Only the
+#                              migration Job sees it, never the running service.
+
+image:
+  registry: ghcr.io/meridian
+  # Set per release (CI writes the digest-pinned tag).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The public origin. Tokens are issued for it and the gateway checks it.
+publicUrl: https://meridian.example.com
+environment: production
+region: eu-west-1
+
+config:
+  PRODUCT_NAME: Meridian
+  LOG_FORMAT: json
+  COOKIE_SECURE: "true"
+  TRUST_FORWARDED_FOR: "true"
+  KAFKA_BROKERS: ""
+  KAFKA_SECURITY_PROTOCOL: sasl_ssl
+  CLICKHOUSE_URL: ""
+  CLICKHOUSE_DATABASE: analytics
+  CLICKHOUSE_OWNER_USER: analytics_owner
+  CLICKHOUSE_WRITER_USER: analytics_writer
+  CLICKHOUSE_READER_USER: analytics_reader
+  S3_ENDPOINT: ""
+  S3_BUCKET: ""
+  S3_REGION: eu-west-1
+  EMAIL_FROM: "Meridian <notifications@meridian.example.com>"
+  EMAIL_DELAY_SECONDS: "60"
+  DATABASE_MAX_CONNECTIONS: "10"
+  # Traces go to the OpenTelemetry Collector when set.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile: { type: RuntimeDefault }
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+
+defaults:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPUUtilizationPercentage: 70 }
+  terminationGracePeriodSeconds: 30
+
+# Every service: whether it has gRPC, a PostgreSQL database to migrate, and overrides.
+services:
+  tenant:       { grpc: true,  database: true }
+  identity:     { grpc: false, database: true }
+  user:         { grpc: true,  database: true }
+  permission:   { grpc: true,  database: true }
+  project:      { grpc: true,  database: true }
+  workflow:     { grpc: true,  database: true }
+  issue:        { grpc: true,  database: true }
+  agile:        { grpc: false, database: true }
+  # Server-Sent Events: long-lived connections, drained on shutdown.
+  realtime:     { grpc: false, database: false, terminationGracePeriodSeconds: 120 }
+  notification: { grpc: false, database: true }
+  search:       { grpc: false, database: false }
+  analytics:    { grpc: false, database: true }
+
+web:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+gateway:
+  image: envoyproxy/envoy:v1.33.2
+  replicas: 2
+  service:
+    type: LoadBalancer
+    port: 80
+    nodePort: null
+  # Hops in front of the gateway that append X-Forwarded-For (a cloud load balancer: 1).
+  trustedHops: 1
+  rateLimit:
+    perPod: { maxTokens: 400, tokensPerFill: 200 }
+    credentials: { maxTokens: 20, tokensPerFill: 10 }
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  # Path routing to services. First match wins.
+  routes:
+    - { regex: "^/api/v1/auth/(login|register)$", service: identity, credentials: true }
+    - { prefix: /api/v1/auth/, service: identity }
+    - { prefix: /api/v1/users, service: user }
+    - { prefix: /api/v1/organizations, service: user }
+    - { prefix: /api/v1/invitations/, service: user }
+    - { prefix: /api/v1/projects, service: project }
+    - { prefix: /api/v1/issues, service: issue, timeout: 60s }
+    - { prefix: /api/v1/custom-fields, service: issue }
+    - { prefix: /api/v1/workflow, service: workflow }
+    - { prefix: /api/v1/boards, service: agile }
+    - { prefix: /api/v1/sprints, service: agile }
+    - { prefix: /api/v1/rt/, service: realtime, timeout: 0s, idleTimeout: 120s }
+    - { prefix: /api/v1/notifications, service: notification }
+    - { prefix: /api/v1/search, service: search }
+    - { prefix: /api/v1/dashboards, service: analytics }
+    - { prefix: /api/v1/analytics, service: analytics }
+  # Public without a token (each service authenticates these itself).
+  public:
+    - { prefix: /api/v1/auth/ }
+    - { prefix: /api/v1/invitations/ }
+    - { path: /api/v1/notifications/unsubscribe }
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to scrape /metrics (label selector on the namespace).
+  monitoringNamespaceLabels: { kubernetes.io/metadata.name: observability }
+  egress:
+    # When enabled, pods may only reach DNS, each other, and these CIDRs (the data stores,
+    # SMTP relay and object storage endpoints).
+    enabled: true
+    cidrs: []
+
+podDisruptionBudget: { maxUnavailable: 1 }
+
+migrations:
+  enabled: true
+  backoffLimit: 2
+  activeDeadlineSeconds: 600

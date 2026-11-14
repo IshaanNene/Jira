@@ -1,0 +1,24 @@
+{{- $ns := .Release.Namespace -}}
+# Non-secret settings shared by every service. Secrets come from the Secrets listed in values.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meridian-config
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  DEFAULT_REGION: {{ .Values.region | quote }}
+  TOKEN_ISSUER: {{ .Values.publicUrl | quote }}
+  APP_URL: {{ .Values.publicUrl | quote }}
+  WEB_BASE_URL: {{ .Values.publicUrl | quote }}
+  ALLOWED_ORIGINS: {{ .Values.publicUrl | quote }}
+  JWKS_URL: {{ printf "http://identity.%s.svc.cluster.local:8080/api/v1/auth/.well-known/jwks.json" $ns | quote }}
+  {{- range $name := list "tenant" "user" "permission" "project" "workflow" "issue" }}
+  {{ upper $name }}_SERVICE_GRPC_URL: {{ printf "http://%s.%s.svc.cluster.local:9090" $name $ns | quote }}
+  {{- end }}
+  HTTP_ADDR: "0.0.0.0:8080"
+  {{- range $key, $value := .Values.config }}
+  {{- if $value }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}

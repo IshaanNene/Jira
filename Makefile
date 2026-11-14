@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api
+.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -52,7 +52,25 @@ web-install: ## Install web dependencies
 gen-api: ## Regenerate TypeScript API types from the running services' OpenAPI documents
 	pnpm --dir apps/web gen:api
 
+observability: ## Start Prometheus (:59090), Grafana (:53000) and Jaeger (:56686)
+	docker compose --profile observability up -d prometheus grafana jaeger
+
+images: ## Build every service image and the web image (tag: dev)
+	@./scripts/images/build.sh dev
+
+kind-up: images ## Run the platform in a local Kubernetes cluster with the Helm chart (http://localhost:8088)
+	@./scripts/kind/up.sh
+
+kind-down: ## Delete the local Kubernetes cluster
+	@./scripts/kind/down.sh
+
+load: ## Load test through the gateway with k6 (services and seed data must be running)
+	@./tests/load/run.sh
+
+resilience: ## Stop and restart data stores and check the documented failure behaviour
+	@./tests/resilience/run.sh
+
 clean: stop ## Stop everything and delete containers, volumes and build output
-	docker compose down -v
+	docker compose --profile observability down -v
 	rm -rf .run
 	cargo clean

@@ -10,7 +10,7 @@ mod propagation;
 pub use http_layers::{apply_http_layers, metrics_router, HttpLayerConfig};
 pub use propagation::{extract_remote_context, inject_into_metadata};
 
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{propagation::TraceContextPropagator, runtime, trace::TracerProvider, Resource};
@@ -32,6 +32,9 @@ impl Telemetry {
         }
     }
 }
+
+/// Request latency buckets in seconds: fine around the 200–300 ms p95 targets.
+const LATENCY_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0];
 
 /// Install the global logger, tracer and metrics recorder. Call once, first thing in `main`.
 pub fn init(service: &'static str) -> anyhow::Result<Telemetry> {
@@ -68,7 +71,10 @@ pub fn init(service: &'static str) -> anyhow::Result<Telemetry> {
 
     tracing_subscriber::registry().with(filter).with(log_layer).with(otel_layer).try_init()?;
 
+    // Buckets rather than client-side quantiles, so latency percentiles can be aggregated
+    // across replicas (histogram_quantile over the summed buckets).
     let metrics = PrometheusBuilder::new()
+        .set_buckets_for_metric(Matcher::Full("http_request_duration_seconds".into()), LATENCY_BUCKETS)?
         .add_global_label("service", service)
         .add_global_label("environment", environment)
         .install_recorder()?;

@@ -32,6 +32,11 @@ containers, volumes and build output.
 | `make migrate` | apply every service's migrations |
 | `make gen-api` | regenerate TypeScript types from the services' OpenAPI documents |
 | `make logs` | tail service logs (`.run/logs/`) |
+| `make observability` | Prometheus (:59090), Grafana (:53000) and Jaeger (:56686) |
+| `make resilience` / `make load` | failure tests (stop each data store) / k6 load test, against the running stack |
+| `make kind-up` / `make kind-down` | build the images and run the Helm chart in a local kind cluster (:8088) |
+
+Keep the checkout outside iCloud-synced folders such as the Desktop: evicted files make local logs and caches hang.
 
 ## What is running locally
 
@@ -56,12 +61,14 @@ development placeholders.
 ## Repository layout
 
 ```
+.github/          CI workflow
 apps/web/         React app (modules per feature, design system in src/components/ui)
 services/         one crate per service: src/, migrations/, tests/, README.md
 crates/           shared infrastructure only (errors, auth, tenant routing, events, telemetry)
 proto/            internal gRPC contracts
-infrastructure/   docker, envoy, postgres bootstrap
-scripts/          development, seed
+infrastructure/   docker images, envoy, postgres bootstrap, helm chart, terraform, observability
+scripts/          development, seed, images, kind
+tests/            load (k6) and failure tests
 docs/             architecture, design documents, ADRs
 ```
 

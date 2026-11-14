@@ -1,0 +1,7 @@
+apiVersion: v2
+name: meridian
+description: Meridian application services, edge gateway and web app. Data stores are external (managed services).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0-0"

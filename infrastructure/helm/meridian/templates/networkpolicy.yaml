@@ -1,0 +1,95 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . -}}
+# Default deny: nothing reaches a pod in this release unless a policy below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+  policyTypes: [Ingress{{ if .Values.networkPolicy.egress.enabled }}, Egress{{ end }}]
+---
+# The gateway takes traffic from anywhere (the load balancer) on its public port, and from
+# monitoring on its ops port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "meridian.selector" (dict "root" . "name" "gateway") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ port: 8080 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: {{- toYaml .Values.networkPolicy.monitoringNamespaceLabels | nindent 14 }}
+      ports: [{ port: 8081 }]
+---
+# Services and the web app: HTTP only from the gateway (and /metrics from monitoring);
+# gRPC only from the release's own services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: services-ingress
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name }}] }
+      - { key: app.kubernetes.io/name, operator: NotIn, values: [gateway] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { meridian.dev/edge: "true", app.kubernetes.io/instance: {{ .Release.Name }} } }
+      ports: [{ port: 8080 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: {{- toYaml .Values.networkPolicy.monitoringNamespaceLabels | nindent 14 }}
+      ports: [{ port: 8080 }]
+    - from:
+        - podSelector: { matchLabels: { meridian.dev/grpc-client: "true", app.kubernetes.io/instance: {{ .Release.Name }} } }
+      ports: [{ port: 9090 }]
+---
+# Services fetch the token signing keys from identity's HTTP port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-jwks
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "meridian.selector" (dict "root" . "name" "identity") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { meridian.dev/grpc-client: "true", app.kubernetes.io/instance: {{ .Release.Name }} } }
+      ports: [{ port: 8080 }]
+{{- if .Values.networkPolicy.egress.enabled }}
+---
+# Egress: DNS, the release's own pods, and the listed external CIDRs (data stores, SMTP,
+# object storage, the OpenTelemetry collector).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} } } }]
+    {{- with .Values.networkPolicy.egress.cidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

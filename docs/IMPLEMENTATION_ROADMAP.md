@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-13 (Phase 7: ClickHouse pipeline and dashboards; Phase 6: issue query language, audit log, two-step verification).
+Last updated: 2026-11-14 (Phase 8: container images, Helm chart, Terraform, CI, observability stack, load and failure tests).
 
 ## Phase status
 
@@ -19,15 +19,16 @@ Last updated: 2026-11-13 (Phase 7: ClickHouse pipeline and dashboards; Phase 6: 
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
 | 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language, audit log and authenticator-app two-step verification done; the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ✅ (four chart kinds; gaps listed below) |
-| 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | ⬜ |
+| 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | 🚧 (chart, images, CI, observability and tests built and run locally; Terraform validated but never applied; no Argo CD; gaps listed below) |
 
 Deviations from the brief's phase order, and why, are in [ARCHITECTURE.md](ARCHITECTURE.md) §7.
 
 Against the brief's 45 final deliverables: roughly the foundations of items 1–6, 8, 9 (revocation list only),
-15–16 (password auth and org-level RBAC only), 26–27, 34 (instrumentation, no collector stack), 36–37, 41–43, 45
+15–16 (password auth and org-level RBAC only), 26–27, 34 (Prometheus, Grafana, Jaeger, alert rules), 36–37, 41–43, 45
 exist, plus items 12 (attachment storage), 17–18 (issue and project management), 20 (workflow designer and
 engine), plus the agile item (boards, backlog, sprints and sprint reports), and the event pipeline, realtime updates,
-in-app and email notifications, full-text issue search, and dashboards over a ClickHouse pipeline.
+in-app and email notifications, full-text issue search, dashboards over a ClickHouse pipeline, and the deployment
+items (container images, a Helm chart, Terraform for AWS, CI) with load and failure tests.
 Everything else is not started. Three of the fifteen logical services have no code.
 
 ## Implemented and verified
@@ -57,7 +58,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Gateway | Envoy: routing, request ids, rate limits, edge EdDSA JWT validation, identity headers stripped | manual curl checks (401 without/with bad token, 200 with valid) |
 | Web: projects & issues | Top navigation with Projects menu and Create; Your work; project list, create, settings (details, access, components, releases); issue list with URL filters; issue view with inline editing, conflict handling, description editor, child issues, links, comments, history, watch; `c` shortcut | driven in a real browser: create project → create issue → change status → comment → history |
 | Web app | Design system (light/dark), login, register, onboarding / workspace chooser, app shell (sidebar, workspace switcher, breadcrumbs, command palette, shortcuts), home, people + invitations, invitation acceptance, workspace settings with conflict handling, profile, sessions | 17 unit tests; register → create workspace → invite driven in a real browser against the running stack |
-| Event pipeline | Transactional outbox → Kafka relay in every service (advisory-locked, one relay per database, ordered per aggregate, failures hold back later events of the same key), consumers with manual commits, bounded retry and a dead-letter topic, tenant required on every envelope, inbox de-duplication, retention sweep | 2 integration tests against real Kafka + PostgreSQL; live: every service's outbox drained to 0, including events held since Phase 1 |
+| Event pipeline | Transactional outbox → Kafka relay in every service (advisory-locked, one relay per database, ordered per aggregate, failures hold back later events of the same key), consumers with manual commits, retry with backoff until a transient failure clears (permanent failures go to a dead-letter topic), tenant required on every envelope, inbox de-duplication, retention sweep | 2 integration tests against real Kafka + PostgreSQL; live: every service's outbox drained to 0, including events held since Phase 1 |
 | realtime-service | SSE change hints per project, per person and per workspace; Redis Streams buffer with cursor resume and `resync` when a gap is detected; access and session revocation re-checked every 60 s; token expiry ends the stream; connection cap | 4 integration tests against real Redis; live: an edit by another user appeared on an open backlog within 2 s |
 | notification-service | Notifications for assignment, mention, comment and status change to reporter, assignee and watchers, only for active members who can still browse the project; never to the actor; idempotent on redelivery; list / unread count / mark read / mark all; hidden when access is lost | 3 unit + 2 integration tests incl. cross-tenant and cross-user isolation |
 | Email notifications | Queued with each notification per the person's preferences, sent after a short delay unless read in the app first; leased sender safe across instances; retry with backoff, permanent failures recorded; escaped content, no header injection; per-workspace preferences (master switch + per kind) | 3 unit + 2 integration tests sending through a real Mailpit; live: an assignment by Maya reached Olivia's Mailpit inbox and rendered correctly |
@@ -74,9 +75,18 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Web: dashboards | Dashboards in the top navigation (`g d`): list with owner, sharing and chart count; create, rename, share / stop sharing, delete with confirmation; charts in a half/full-width grid with edit, resize, reorder and remove for editors and read-only for viewers; add/edit dialog with a live preview; every chart has a table view, hover tooltips, one value axis, legends for two series and values in ink colours; chart chrome shared with the sprint reports | 6 web tests; driven in a real browser against the demo workspace in both themes (counts checked against ClickHouse) |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
 | Web: notifications and search | Bell with live unread badge, unread filter, mark all read, open-and-mark-read, link to settings; Settings → Notifications with email switches saved instantly; ⌘K palette searches issues as you type; `/search` page with project, status and "assigned to me" filters, highlighted matches, paging | 7 web tests; driven in a real browser in light and dark themes |
-| Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api`, `.env.example`, seed script (idempotent, via public API) | each command run |
+| Container images | One shared release build for all twelve services on distroless without OpenSSL (non-root, no shell; zlib and Kafka's OpenSSL linked statically); web on unprivileged nginx 1.30; base images always pulled fresh; every service image is started once during the build | `scripts/images/build.sh`; all 13 images passed Trivy (no fixable high/critical) on 2026-11-14. The scan and the start check found and fixed: images that could not start (`libz.so.1` missing), stale bases with fixable CVEs, and the web build copying the host's `node_modules` |
+| Helm chart | Deployment, Service, ServiceAccount, PDB and HPA per service; migration Jobs as pre-install/upgrade hooks with owner-role secrets only; Envoy gateway generated from a route list (admin API on loopback, read-only ops port, HSTS on https); default-deny NetworkPolicy with gateway/service/JWKS/egress rules; restricted pod security on every pod; topology spread | `helm lint` for both value sets; generated Envoy config passes `envoy --mode validate`; installed on a three-node kind cluster: migrations, all 14 pods, sign-in and API through the gateway (also in a browser), ingress rules probed from test pods |
+| Terraform (AWS) | Modules for VPC, EKS, RDS PostgreSQL, MSK (SCRAM), ElastiCache (TLS), OpenSearch and S3, a staging environment with S3 state locking | `terraform fmt` and `validate` (1.10.5); never applied |
+| CI | GitHub Actions: Rust fmt, clippy, tests against the Compose data stores; RustSec advisories; web lint, typecheck, tests, build; chart lint + Envoy validation; Terraform validate; image build, Trivy scan, push to GHCR on `main` | actionlint; every step run locally (push excepted); has not run on GitHub |
+| Kafka over TLS/SASL | `KAFKA_SECURITY_PROTOCOL` (plaintext, ssl, sasl_ssl), SCRAM or PLAIN, CA file; incomplete settings refused at start-up; password never in `Debug` output | 1 unit test |
+| Consumer retries | A transient failure is retried with backoff (200 ms → 30 s) until it succeeds; only permanent failures are dead-lettered; `events_retried_total` | 1 unit test; `tests/resilience/run.sh opensearch` fails on the old code (an issue changed during the outage never reached search) and passes on the new |
+| Observability stack | Prometheus, Grafana (provisioned overview dashboard), Jaeger in the `observability` compose profile; latency exported as histograms; 7 alert rules (service down, error rate, slow requests, consumer waiting, dead letters, outbox, email) | promtool; all 13 targets scraped; p95 by service queried; `ConsumerWaitingOnDependency` went pending with OpenSearch stopped; search-service traces reached Jaeger |
+| Failure tests | `make resilience` stops Kafka, OpenSearch, ClickHouse, Redis and PostgreSQL in turn under the running stack and checks the documented behaviour and the recovery | 21 checks, all passing (results in SYSTEM_DESIGN.md §8) |
+| Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds | see Measured performance |
+| Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **206 Rust tests, 94 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **208 Rust tests, 94 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -147,15 +157,32 @@ so that a new migration file is always embedded in the binary.
 | Tenant tier migration; business/enterprise provisioning | Schema and placement decision only; dedicated tiers are recorded as `pending` and are not routable |
 | WebAuthn, OIDC, SAML, SCIM, API tokens | Not built (Phase 6); TOTP two-step verification is built |
 | Per-IP rate limiting | Dev gateway has global and credential-route buckets only; per-IP needs the rate-limit service planned with Envoy Gateway |
-| OpenTelemetry export | Code path exists (OTLP/HTTP) but has not been run against a collector |
+| OpenTelemetry export | Verified in Phase 8: search-service traces reached Jaeger over OTLP/HTTP. Spans cover HTTP requests only; no trace propagation through Kafka |
 | Playwright end-to-end tests, Storybook | Not set up |
-| Contract tests | Event wire-format fixture only; no gRPC/REST compatibility check in CI (there is no CI yet) |
-| Kubernetes, Helm, Terraform, GitHub Actions, Argo CD | Not started (Phase 8); `DEPLOYMENT_GUIDE.md` is design only |
+| Contract tests | Event wire-format fixture only; no gRPC/REST compatibility check in CI |
+
+## Incomplete within Phase 8 scope
+
+| Item | State |
+|---|---|
+| Cloud deployment | Terraform has never been applied; nothing runs in AWS. No ExternalSecret manifests, no cert-manager, no DNS |
+| CD | No Argo CD, no Argo Rollouts canaries; the chart is installed with `helm upgrade` |
+| CI | The workflow has never run on GitHub; no image signing or SBOM; no Playwright or contract tests in it |
+| NetworkPolicy egress | Rendered and correct on inspection, but **not verified**: kind's network plugin does not enforce egress, so a cluster with Calico, Cilium or the EKS VPC CNI policy agent is needed |
+| Autoscaling | CPU-based HPA only; no KEDA scaling on Kafka lag, no connection-based scaling for realtime; HPAs were not exercised (kind runs one replica) |
+| Observability | No log aggregation (Loki or similar), no Alertmanager routing, no SLO burn-rate alerts, no consumer-lag exporter; traces cover HTTP requests only, not Kafka hops; Grafana has one dashboard |
+| Load testing | One laptop run at 110 iterations/s against debug builds with every service as a single local process; no soak, spike or realtime fan-out tests; the brief's scale targets remain untested |
+| Failure testing | Data stores only, each stopped cleanly; no network partitions, slow disks, pod kills under load, or database fail-over |
+| Backups | No restore drill; RPO/RTO remain targets |
 
 ## Known issues
 
 - Crate versions are pinned one major behind current for several dependencies (sqlx 0.8, tonic 0.13, jsonwebtoken 9,
-  utoipa 5, tower-http 0.6) to stay on APIs that were verified here. Upgrading is a tracked chore.
+  utoipa 5, tower-http 0.6) to stay on APIs that were verified here. Upgrading is a tracked chore. `redis` (0.27 → 1)
+  and `object_store` (0.11 → 0.14) were upgraded in Phase 8 to clear RustSec advisories (quick-xml denial of
+  service, unmaintained rustls-pemfile).
+- A checkout inside an iCloud-synced folder (such as the Desktop) breaks local development: iCloud evicts files
+  such as service logs and test caches, and anything that opens them blocks. Keep the repository outside iCloud.
 - SQL is runtime-checked (`sqlx::query_as`), not compile-time-checked macros; schema drift is caught by integration
   tests rather than the compiler.
 - Session revocation fails open when Redis is unavailable (bounded by the 10-minute token lifetime) — by design, documented in SECURITY_DESIGN.md.
@@ -187,12 +214,24 @@ so that a new migration file is always embedded in the binary.
 
 ## Measured performance
 
-No load tests have been run. The targets in the brief (1M users, 50k concurrent, p95 200/300 ms, 99.95 %)
-are **design targets only** until k6 results are recorded here.
+One run of `make load` on 2026-11-14, on a single laptop (Apple silicon, 14 cores) against **debug builds** of
+every service running as local processes with the Compose data stores, through the Envoy gateway:
+
+| Scenario | Rate | p50 | p95 | p99 | Max |
+|---|---|---|---|---|---|
+| Reads (issue list, issue, board, unread count, search, analytics query) | 100/s for 2 min | 5.7 ms | 12.6 ms | 46.6 ms | 196 ms |
+| Writes (create issue, add comment) | 10/s for 2 min | 7.1 ms | 16.3 ms | 76.9 ms | 574 ms |
+
+14,408 requests, 1 failed (0.01 %), 0 dropped iterations; all thresholds (p95 < 200 ms reads, < 300 ms writes,
+errors < 1 %) passed. This shows the request paths are fast at a small, steady rate; it says nothing about the
+targets in the brief (1M users, 50k concurrent, 99.95 %), which remain **design targets only**. The run was not
+pushed to find the saturation point.
 
 ## Next
 
-1. Phase 8: Kubernetes, Helm, Terraform, CI/CD, the observability stack, load and failure testing.
+1. Phase 8, remaining: run CI on GitHub, verify egress policies on a CNI that enforces them, a staging
+   environment from the Terraform with External Secrets and Argo CD, a load test against release builds in a
+   cluster to find the saturation point, and a restore drill.
 2. Phase 7, remaining: more chart kinds (cumulative flow first), a rebuild command for the analytics store, `If-Match` on dashboards.
 3. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.

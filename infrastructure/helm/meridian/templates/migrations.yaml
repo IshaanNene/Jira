@@ -1,0 +1,61 @@
+{{- /*
+Schema migrations run before the new code: one Job per service with a database, as a Helm
+pre-install / pre-upgrade hook. Migrations are expand/contract (backwards compatible with the
+previous release), so a rollback of the code never needs a rollback of the schema. The Job is the
+only workload given the owner-role credentials.
+*/ -}}
+{{- if .Values.migrations.enabled }}
+{{- $root := . -}}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.database }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-{{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ $root.Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ $root.Values.migrations.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.labels" $root | nindent 8 }}
+        app.kubernetes.io/name: migrate-{{ $name }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "meridian.image" (dict "root" $root "image" (printf "%s-service" $name)) }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          args: [migrate]
+          securityContext: {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          env:
+            # The ConfigMap is a regular release object, so it does not exist yet on first
+            # install; the few settings a migration needs are set here.
+            - { name: LOG_FORMAT, value: json }
+            {{- if eq $name "analytics" }}
+            - { name: CLICKHOUSE_URL, value: {{ $root.Values.config.CLICKHOUSE_URL | quote }} }
+            - { name: CLICKHOUSE_DATABASE, value: {{ $root.Values.config.CLICKHOUSE_DATABASE | quote }} }
+            - { name: CLICKHOUSE_READER_USER, value: {{ $root.Values.config.CLICKHOUSE_READER_USER | quote }} }
+            - { name: CLICKHOUSE_WRITER_USER, value: {{ $root.Values.config.CLICKHOUSE_WRITER_USER | quote }} }
+            {{- end }}
+          envFrom:
+            - secretRef: { name: meridian-{{ $name }}-migrate }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+{{- end }}
+{{- end }}
+{{- end }}

@@ -91,10 +91,15 @@ poll -> validate envelope -> BEGIN
         COMMIT -> commit offset
 ```
 
-- Retry in place with backoff (3 attempts) for transient errors, then publish to `<topic>.dlq` with headers
-  `x-error`, `x-consumer`, `x-attempts`, `x-original-topic`, and move on (as built). Envelopes without a
-  `tenant_id` are rejected on every topic except identity. Order-sensitive projections pause the partition instead of
-  skipping, and alert.
+- **Transient errors** (a data store or service is down) are retried in place until they succeed, with backoff
+  from 200 ms doubling to 30 s: the consumer waits instead of skipping ahead, so search, analytics and
+  notifications never silently miss a change made during an outage. Each retry counts in `events_retried_total`;
+  the `ConsumerWaitingOnDependency` alert fires after 10 minutes. (Until Phase 8 the consumer gave up after three
+  attempts, about 0.6 s, and dead-lettered the event; the failure tests showed that a short OpenSearch outage lost
+  every change from search.)
+- **Permanent errors** (invalid envelope, payload against its contract, a handler's permanent error) go to
+  `<topic>.dlq` with headers `x-error`, `x-consumer`, `x-attempts`, `x-original-topic`, and the consumer moves
+  on. Envelopes without a `tenant_id` are rejected on every topic except identity.
 - Side effects that leave the platform (email, webhooks, Slack) cannot be made exactly-once. They use a
   delivery table keyed by `(event_id, target)` and send an idempotency key to providers that support one.
   We document at-least-once delivery to integrators and sign every webhook with a delivery id.

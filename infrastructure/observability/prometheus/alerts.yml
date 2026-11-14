@@ -1,0 +1,56 @@
+# Alerts on the service-level signals. Thresholds follow the targets in docs/SYSTEM_DESIGN.md
+# (p95 200 ms reads / 300 ms writes, 99.95 % availability).
+groups:
+  - name: meridian
+    rules:
+      - alert: ServiceDown
+        expr: up{job="services"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.instance }} is not answering /metrics"
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+            / sum by (service) (rate(http_requests_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service }}: more than 2 % of requests fail"
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{route!~".*/rt/.*"}[5m]))) > 0.3
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $labels.service }}: p95 latency above 300 ms"
+
+      - alert: ConsumerWaitingOnDependency
+        # A consumer retries a transient failure until it succeeds; this fires when it has
+        # been stuck for a while (its data store is down, or a "transient" error is not).
+        expr: rate(events_retried_total[5m]) > 0
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.consumer }} has been retrying an event for over 10 minutes"
+
+      - alert: EventsDeadLettered
+        expr: increase(events_dead_lettered_total[10m]) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $labels.consumer }} sent events to a dead-letter topic"
+
+      - alert: OutboxPublishFailing
+        expr: increase(outbox_failed_total[5m]) > 0
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service }} cannot publish its outbox (Kafka unreachable?)"
+
+      - alert: EmailsFailing
+        expr: increase(notification_emails_total{outcome="failed"}[15m]) > 5
+        labels: { severity: ticket }
+        annotations:
+          summary: "Notification emails are failing"

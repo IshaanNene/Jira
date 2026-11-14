@@ -161,7 +161,48 @@ services:
       timeout: 3s
       retries: 30
 
+  # --- Observability (optional): `make observability` or `docker compose --profile observability up -d`.
+  # Prometheus scrapes the services on the host and the gateway; Grafana shows the service
+  # overview dashboard; Jaeger receives traces over OTLP (set OTEL_EXPORTER_OTLP_ENDPOINT).
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports: ["127.0.0.1:59090:9090"]
+    volumes:
+      - ./infrastructure/observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: [observability]
+    environment:
+      # Local only: anyone on this machine may view; the admin password is a placeholder.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: dev-only-admin
+      GF_USERS_DEFAULT_THEME: system
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/service-overview.json
+    ports: ["127.0.0.1:53000:3000"]
+    volumes:
+      - ./infrastructure/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.64.0
+    profiles: [observability]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:56686:16686"
+      - "127.0.0.1:4318:4318"
+
 volumes:
+  prometheus-data:
   postgres-data:
   object-data:
   kafka-data:

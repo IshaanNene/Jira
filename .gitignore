@@ -11,3 +11,10 @@ playwright-report/
 test-results/
 storybook-static/
 .run/
+
+# Terraform: downloaded providers and local state (the lock file is committed)
+.terraform/
+*.tfstate
+*.tfstate.*
+backend.hcl
+tests/load/results/

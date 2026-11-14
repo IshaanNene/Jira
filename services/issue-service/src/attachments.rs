@@ -17,7 +17,7 @@ use axum::{
 use bytes::Bytes;
 use error_handling::{ApiError, ApiResult};
 use event_contracts::payloads::IssueUpdatedV1;
-use object_store::{aws::AmazonS3Builder, memory::InMemory, path::Path as ObjectPath, ObjectStore, PutPayload};
+use object_store::{aws::AmazonS3Builder, memory::InMemory, path::Path as ObjectPath, ObjectStore, ObjectStoreExt, PutPayload};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;

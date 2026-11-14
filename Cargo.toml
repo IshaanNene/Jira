@@ -35,13 +35,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # data
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "migrate", "macros"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-# librdkafka built from source (needs cmake); TLS/SASL support is added with the production
-# deployment (Phase 8).
+# rediss:// (TLS) for managed Redis, with the Mozilla root set.
+redis = { version = "1", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
-rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
+# librdkafka built from source (needs cmake), with OpenSSL compiled in for TLS and SASL/SCRAM
+# against managed brokers (see crates/event-bus/src/settings.rs).
+rdkafka = { version = "0.37", features = ["cmake-build", "tokio", "ssl-vendored", "libz-static"] }
 
-object_store = { version = "0.11", features = ["aws"] }
+object_store = { version = "0.14", features = ["aws"] }
 infer = "0.16"
 bytes = "1"
 

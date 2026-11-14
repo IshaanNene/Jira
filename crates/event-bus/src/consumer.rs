@@ -1,9 +1,14 @@
-//! Consumer loop: Kafka → handler, with bounded retries and a dead-letter topic.
+//! Consumer loop: Kafka → handler, with retries and a dead-letter topic.
 //!
 //! Offsets are committed only after the handler succeeded or the event was parked in
 //! `<topic>.dlq`, so nothing is skipped silently. Events are processed one at a time per
 //! consumer instance; parallelism comes from more instances in the group (one per
 //! partition at most).
+//!
+//! A transient failure (a dependency is down) is retried until it succeeds, with backoff up
+//! to 30 s: the consumer pauses rather than skip ahead, so a projection never silently misses
+//! a change made during an outage. Only events that can never succeed (invalid envelope,
+//! payload against its contract, a permanent handler error) go to the dead-letter topic.
 
 use std::{sync::Arc, time::Duration};
 
@@ -22,7 +27,9 @@ use uuid::Uuid;
 
 use crate::settings::KafkaSettings;
 
-const ATTEMPTS: u32 = 3;
+/// Backoff for transient failures: 200 ms, doubling, at most 30 s between attempts.
+const FIRST_RETRY: Duration = Duration::from_millis(200);
+const MAX_RETRY: Duration = Duration::from_secs(30);
 
 /// A received event: the validated envelope with its payload still as JSON.
 #[derive(Debug, Clone)]
@@ -134,7 +141,7 @@ pub async fn run_consumer(
                 continue;
             }
         };
-        let outcome = process(&message, handler.as_ref()).await;
+        let outcome = process(&message, handler.as_ref(), group).await;
         if let Err((error, attempts)) = outcome {
             park(&dlq, group, &message, &error, attempts).await;
         }
@@ -144,30 +151,50 @@ pub async fn run_consumer(
     }
 }
 
-async fn process(message: &BorrowedMessage<'_>, handler: &dyn Handler) -> Result<(), (String, u32)> {
+async fn process(message: &BorrowedMessage<'_>, handler: &dyn Handler, group: &str) -> Result<(), (String, u32)> {
     let topic = message.topic();
     let event = match message.payload().map(|bytes| Event::parse(topic, bytes)) {
         Some(Ok(event)) => event,
         Some(Err(error)) => return Err((format!("invalid envelope: {error}"), 0)),
         None => return Err(("empty message".to_owned(), 0)),
     };
-    let mut delay = Duration::from_millis(200);
-    for attempt in 1..=ATTEMPTS {
-        match handler.handle(&event).await {
+    handle_with_retry(handler, &event, group, FIRST_RETRY, MAX_RETRY).await
+}
+
+/// Run the handler until it succeeds or fails permanently. Transient failures are retried
+/// without limit; `events_retried_total` counts them so a stalled consumer is visible.
+async fn handle_with_retry(
+    handler: &dyn Handler,
+    event: &Event,
+    group: &str,
+    first_retry: Duration,
+    max_retry: Duration,
+) -> Result<(), (String, u32)> {
+    let mut delay = first_retry;
+    let mut attempt: u32 = 1;
+    loop {
+        match handler.handle(event).await {
             Ok(()) => {
                 metrics::counter!("events_consumed_total", "event_type" => event.event_type().to_owned()).increment(1);
+                if attempt > 1 {
+                    tracing::info!(consumer = group, event_id = %event.event_id(), attempt, "event handled after retrying");
+                }
                 return Ok(());
             }
             Err(HandlerError::Permanent(error)) => return Err((error.to_string(), attempt)),
-            Err(HandlerError::Transient(error)) if attempt == ATTEMPTS => return Err((error.to_string(), attempt)),
             Err(HandlerError::Transient(error)) => {
-                tracing::warn!(event_type = event.event_type(), event_id = %event.event_id(), attempt, %error, "event handling failed; retrying");
+                metrics::counter!("events_retried_total", "consumer" => group.to_owned()).increment(1);
+                // Every attempt while it is short, then once a minute or so, to keep logs readable.
+                if attempt <= 5 || delay == max_retry && attempt.is_multiple_of(2) {
+                    tracing::warn!(consumer = group, event_type = event.event_type(), event_id = %event.event_id(), attempt, %error,
+                        "event handling failed; retrying (the consumer waits until it succeeds)");
+                }
                 tokio::time::sleep(delay).await;
-                delay *= 2;
+                delay = (delay * 2).min(max_retry);
+                attempt = attempt.saturating_add(1);
             }
         }
     }
-    Ok(())
 }
 
 /// Park a failed event in `<topic>.dlq`. Blocks (retrying) rather than lose it.
@@ -211,7 +238,54 @@ async fn park(dlq: &FutureProducer, group: &str, message: &BorrowedMessage<'_>, 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
+
+    /// Fails transiently `outage` times, then succeeds; or always fails permanently.
+    struct Flaky {
+        outage: u32,
+        permanent: bool,
+        calls: AtomicU32,
+    }
+
+    #[async_trait]
+    impl Handler for Flaky {
+        async fn handle(&self, _: &Event) -> Result<(), HandlerError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.permanent {
+                Err(HandlerError::Permanent(anyhow::anyhow!("bad payload")))
+            } else if call <= self.outage {
+                Err(HandlerError::Transient(anyhow::anyhow!("index unavailable")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn sample_event() -> Event {
+        let raw = r#"{"event_id":"0195c1e2-0000-7000-8000-000000000001","event_type":"issue.created","schema_version":1,
+            "tenant_id":"0195c1e2-0000-7000-8000-000000000002","aggregate_type":"issue","aggregate_id":"0195c1e2-0000-7000-8000-000000000003",
+            "aggregate_version":1,"occurred_at":"2026-11-11T09:00:00Z","correlation_id":null,"causation_id":null,
+            "actor":{"type":"system","id":"test"},"payload":{}}"#;
+        Event::parse(topics::ISSUE, raw.as_bytes()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_outage_is_waited_out_instead_of_dead_lettering_the_event() {
+        let event = sample_event();
+        // Far more failures than the old three attempts: the event is still handled.
+        let flaky = Flaky { outage: 12, permanent: false, calls: AtomicU32::new(0) };
+        let outcome = handle_with_retry(&flaky, &event, "test", Duration::from_millis(1), Duration::from_millis(4)).await;
+        assert!(outcome.is_ok());
+        assert_eq!(flaky.calls.load(Ordering::SeqCst), 13);
+
+        // A permanent failure goes to the dead-letter topic at once.
+        let broken = Flaky { outage: 0, permanent: true, calls: AtomicU32::new(0) };
+        let outcome = handle_with_retry(&broken, &event, "test", Duration::from_millis(1), Duration::from_millis(4)).await;
+        assert_eq!(outcome.unwrap_err().1, 1);
+        assert_eq!(broken.calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn envelopes_without_a_tenant_are_rejected_on_tenant_topics() {

@@ -1,0 +1,137 @@
+# Continuous integration: every push and pull request is formatted, linted, tested and built.
+# On main, images are pushed to GHCR and tagged with the commit; deployment picks them up by
+# digest (docs/DEPLOYMENT_GUIDE.md §4).
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Data stores
+        # The same containers as local development (docker-compose.yml), without the gateway.
+        run: |
+          docker compose up -d --wait postgres redis object-storage kafka opensearch clickhouse mailpit
+          docker compose up -d object-storage-setup
+          docker compose run --rm kafka-setup > /dev/null
+      - name: Test
+        run: |
+          set -a; . ./.env.example; set +a
+          cargo test --workspace --locked
+      - name: Data store logs
+        if: failure()
+        run: docker compose logs --tail 200
+
+  advisories:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with: { command: check advisories }
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults: { run: { working-directory: apps/web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.23.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: apps/web/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -s lint
+      - run: pnpm exec tsc --noEmit -p .
+      - run: pnpm exec vitest run
+      - run: pnpm build
+
+  chart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.16.4 }
+      - name: Lint
+        run: |
+          helm lint infrastructure/helm/meridian --set image.tag=ci
+          helm lint infrastructure/helm/meridian -f infrastructure/helm/meridian/values-kind.yaml
+      - name: Gateway configuration is valid Envoy
+        run: |
+          helm template ci infrastructure/helm/meridian --set image.tag=ci --show-only templates/gateway.yaml \
+            | yq 'select(.kind == "ConfigMap") | .data["envoy.yaml"]' > envoy.yaml
+          docker run --rm -v "$PWD/envoy.yaml:/envoy.yaml:ro" envoyproxy/envoy:v1.33.2 --mode validate -c /envoy.yaml
+
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults: { run: { working-directory: infrastructure/terraform/environments/staging } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.10.5 }
+      - run: terraform fmt -check -recursive ../..
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  images:
+    needs: [rust, web, chart]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      PREFIX: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Build
+        # One builder for every image, so the Rust workspace compiles once.
+        run: |
+          PREFIX="$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')"
+          scripts/images/build.sh "${GITHUB_SHA::12}" "$PREFIX"
+          echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
+      - name: Scan
+        # Fails on fixable high and critical vulnerabilities in any image.
+        run: |
+          for image in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^$PREFIX/.*:${GITHUB_SHA::12}$"); do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 image \
+              --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$image"
+          done
+      - name: Push
+        if: env.PUSH == 'true'
+        run: |
+          for image in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^$PREFIX/.*:${GITHUB_SHA::12}$"); do
+            docker push "$image"
+          done

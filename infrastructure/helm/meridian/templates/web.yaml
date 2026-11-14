@@ -1,0 +1,55 @@
+{{- if .Values.web.enabled }}
+{{- $ctx := dict "root" . "name" "web" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    {{- include "meridian.selector" $ctx | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.labels" . | nindent 8 }}
+        {{- include "meridian.selector" $ctx | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "meridian.spread" $ctx | nindent 6 }}
+      containers:
+        - name: web
+          image: {{ include "meridian.image" (dict "root" . "image" "web") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            # nginx writes its pid and temp files; the image itself stays read-only.
+            - { name: tmp, mountPath: /tmp }
+            - { name: cache, mountPath: /var/cache/nginx }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+        - { name: cache, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "meridian.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}

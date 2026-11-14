@@ -1,0 +1,241 @@
+{{- /*
+Edge gateway: Envoy with the same policies as infrastructure/envoy/envoy.dev.yaml (request ids,
+client address, body and rate limits, coarse JWT validation, identity headers stripped,
+path routing), generated from .Values.gateway.routes. Unmatched /api paths get a problem+json
+404; everything else is the web app.
+*/ -}}
+{{- $root := . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $g := .Values.gateway -}}
+{{- $ctx := dict "root" . "name" "gateway" -}}
+{{- $clusters := dict -}}
+{{- range $g.routes }}{{ $_ := set $clusters .service true }}{{ end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+data:
+  envoy.yaml: |
+    admin:
+      # Loopback only: the admin API can stop the server. /ready and /stats/prometheus are
+      # exposed read-only through the "ops" listener below.
+      address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
+    static_resources:
+      listeners:
+        - name: ops
+          address: { socket_address: { address: 0.0.0.0, port_value: 8081 } }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ops
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+                    route_config:
+                      virtual_hosts:
+                        - name: ops
+                          domains: ["*"]
+                          routes:
+                            - match: { path: /ready, headers: [{ name: ":method", string_match: { exact: GET } }] }
+                              route: { cluster: admin }
+                            - match: { path: /stats/prometheus, headers: [{ name: ":method", string_match: { exact: GET } }] }
+                              route: { cluster: admin }
+        - name: public
+          address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+          per_connection_buffer_limit_bytes: 1048576
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: public
+                    generate_request_id: true
+                    use_remote_address: true
+                    xff_num_trusted_hops: {{ $g.trustedHops }}
+                    request_timeout: 30s
+                    stream_idle_timeout: 60s
+                    common_http_protocol_options: { max_headers_count: 100 }
+                    max_request_headers_kb: 32
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              ts: "%START_TIME%"
+                              method: "%REQ(:METHOD)%"
+                              path: "%REQ(:PATH)%"
+                              status: "%RESPONSE_CODE%"
+                              flags: "%RESPONSE_FLAGS%"
+                              duration_ms: "%DURATION%"
+                              upstream: "%UPSTREAM_CLUSTER%"
+                              request_id: "%REQ(X-REQUEST-ID)%"
+                    http_filters:
+                      - name: envoy.filters.http.local_ratelimit
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                          stat_prefix: edge
+                          token_bucket: { max_tokens: {{ $g.rateLimit.perPod.maxTokens }}, tokens_per_fill: {{ $g.rateLimit.perPod.tokensPerFill }}, fill_interval: 1s }
+                          filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                          filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
+                          response_headers_to_add:
+                            - header: { key: retry-after, value: "1" }
+                      - name: envoy.filters.http.jwt_authn
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                          providers:
+                            platform:
+                              issuer: {{ .Values.publicUrl | quote }}
+                              audiences: [platform-api]
+                              forward: true
+                              remote_jwks:
+                                http_uri:
+                                  uri: http://identity.{{ $ns }}.svc.cluster.local:8080/api/v1/auth/.well-known/jwks.json
+                                  cluster: identity
+                                  timeout: 2s
+                                cache_duration: 300s
+                                async_fetch: { fast_listener: true }
+                          rules:
+                            {{- range $g.public }}
+                            - match: { {{ if .path }}path: {{ .path }}{{ else }}prefix: {{ .prefix }}{{ end }} }
+                            {{- end }}
+                            - match: { prefix: /api/v1/ }
+                              requires: { provider_name: platform }
+                      - name: envoy.filters.http.router
+                        typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+                    route_config:
+                      name: public
+                      request_headers_to_remove: [x-tenant-id, x-user-id, x-internal-service]
+                      response_headers_to_add:
+                        - header: { key: x-frame-options, value: DENY }
+                        - header: { key: x-content-type-options, value: nosniff }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        {{- if hasPrefix "https://" .Values.publicUrl }}
+                        - header: { key: strict-transport-security, value: "max-age=31536000; includeSubDomains" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        {{- end }}
+                      virtual_hosts:
+                        - name: public
+                          domains: ["*"]
+                          routes:
+                            {{- range $g.routes }}
+                            - match: { {{ if .regex }}safe_regex: { regex: {{ .regex | quote }} }{{ else }}prefix: {{ .prefix }}{{ end }} }
+                              route: { cluster: {{ .service }}, timeout: {{ .timeout | default "15s" }}{{ if .idleTimeout }}, idle_timeout: {{ .idleTimeout }}{{ end }} }
+                              {{- if .credentials }}
+                              typed_per_filter_config:
+                                envoy.filters.http.local_ratelimit:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                                  stat_prefix: credentials
+                                  token_bucket: { max_tokens: {{ $g.rateLimit.credentials.maxTokens }}, tokens_per_fill: {{ $g.rateLimit.credentials.tokensPerFill }}, fill_interval: 1s }
+                                  filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                                  filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
+                              {{- end }}
+                            {{- end }}
+                            - match: { prefix: /api/ }
+                              direct_response:
+                                status: 404
+                                body: { inline_string: '{"type":"https://errors.platform.dev/not_found","title":"Not found","status":404,"code":"not_found","detail":"No such route."}' }
+                              response_headers_to_add:
+                                - header: { key: content-type, value: application/problem+json }
+                            {{- if .Values.web.enabled }}
+                            - match: { prefix: / }
+                              route: { cluster: web, timeout: 15s }
+                            {{- end }}
+      clusters:
+        - name: admin
+          type: STATIC
+          connect_timeout: 1s
+          load_assignment:
+            cluster_name: admin
+            endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 9901 } } } }] }]
+        {{- $all := keys $clusters | sortAlpha }}
+        {{- if .Values.web.enabled }}{{ $all = append $all "web" }}{{ end }}
+        {{- range $all }}
+        - name: {{ . }}
+          type: STRICT_DNS
+          connect_timeout: 2s
+          circuit_breakers: { thresholds: [{ max_connections: {{ if eq . "realtime" }}10000{{ else }}1024{{ end }}, max_pending_requests: 256, max_requests: {{ if eq . "realtime" }}10000{{ else }}1024{{ end }} }] }
+          load_assignment:
+            cluster_name: {{ . }}
+            endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: {{ . }}.{{ $ns }}.svc.cluster.local, port_value: 8080 } } } }] }]
+        {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    {{- include "meridian.labels" . | nindent 4 }}
+    {{- include "meridian.selector" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $g.replicas }}
+  revisionHistoryLimit: 5
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meridian.labels" . | nindent 8 }}
+        {{- include "meridian.selector" $ctx | nindent 8 }}
+        meridian.dev/edge: "true"
+      annotations:
+        checksum/config: {{ toYaml $g | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: /stats/prometheus
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "meridian.spread" $ctx | nindent 6 }}
+      containers:
+        - name: envoy
+          image: {{ $g.image }}
+          args: [-c, /etc/envoy/envoy.yaml, --log-level, warn, --drain-time-s, "20"]
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: ops, containerPort: 8081 }
+          readinessProbe:
+            httpGet: { path: /ready, port: ops }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /ready, port: ops }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources: {{- toYaml $g.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/envoy, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: config, configMap: { name: gateway } }
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  type: {{ $g.service.type }}
+  selector: {{- include "meridian.selector" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $g.service.port }}
+      targetPort: http
+      {{- if and (eq $g.service.type "NodePort") $g.service.nodePort }}
+      nodePort: {{ $g.service.nodePort }}
+      {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
