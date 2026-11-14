@@ -264,7 +264,10 @@ async fn charts_count_only_the_viewers_tenant_and_projects() {
             .owner
             .query(
                 tenant,
-                "SELECT to_category FROM issue_events FINAL WHERE issue_id = {issue:UUID}",
+                // The transition only: the issue's created row has no category, and without a
+                // filter the order of the two rows is up to ClickHouse.
+                "SELECT to_category FROM issue_events FINAL \
+                 WHERE issue_id = {issue:UUID} AND event_type = 'issue.transitioned'",
                 &Params::new().add("issue", doing),
             )
             .await
