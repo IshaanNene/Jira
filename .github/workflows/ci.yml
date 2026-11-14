@@ -135,7 +135,13 @@ jobs:
           done
       - name: Push
         if: env.PUSH == 'true'
+        # Retries: GHCR sometimes rejects the manifest with "unknown blob" just after mounting a
+        # shared layer from another repository; a second push finds every layer and succeeds.
         run: |
           for image in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^$PREFIX/.*:${GITHUB_SHA::12}$"); do
-            docker push "$image"
+            for attempt in 1 2 3 4; do
+              docker push -q "$image" && break
+              [ "$attempt" = 4 ] && exit 1
+              echo "push of $image failed (attempt $attempt); retrying"; sleep $((attempt * 10))
+            done
           done
