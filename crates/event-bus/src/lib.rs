@@ -7,6 +7,6 @@ pub mod inbox;
 pub mod relay;
 pub mod settings;
 
-pub use consumer::{run_consumer, Event, Handler, HandlerError};
+pub use consumer::{run_batch_consumer, run_consumer, BatchHandler, Batching, Event, Handler, HandlerError};
 pub use relay::{spawn_relay, OutboxRelay};
 pub use settings::KafkaSettings;

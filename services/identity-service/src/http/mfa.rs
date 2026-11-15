@@ -236,6 +236,7 @@ async fn confirm_password(state: &AppState, account: &Account, password: String)
 }
 
 async fn current_account(state: &AppState, auth: &AuthContext) -> ApiResult<Account> {
+    super::auth::require_session(auth)?;
     if !store::session_is_active(&state.pool, auth.session_id, auth.user_id).await? {
         return Err(ApiError::Unauthenticated("Your session has ended. Sign in again."));
     }
@@ -315,6 +316,7 @@ async fn log_event(pool: &PgPool, account_id: Uuid, email_hash: &[u8], outcome: 
 
 #[utoipa::path(get, path = "/api/v1/auth/mfa", security(("bearer" = [])), responses((status = 200, body = MfaStatus)))]
 pub async fn status(State(state): State<AppState>, auth: AuthContext) -> ApiResult<Json<MfaStatus>> {
+    super::auth::require_session(&auth)?;
     let (enabled_at, remaining): (Option<OffsetDateTime>, i64) = sqlx::query_as(
         "SELECT (SELECT confirmed_at FROM totp_factors WHERE account_id = $1), \
                 (SELECT count(*) FROM recovery_codes WHERE account_id = $1 AND used_at IS NULL)",

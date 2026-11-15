@@ -22,7 +22,7 @@ use axum::{
     Router,
 };
 use error_handling::ApiResult;
-use event_bus::{Event, Handler};
+use event_bus::{BatchHandler, Event, Handler};
 use event_contracts::topics;
 use serde_json::{json, Value};
 use tenant_context::DbRouter;
@@ -426,5 +426,91 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
     assert_eq!(h.call(Method::DELETE, &path, &ben_t, None).await.0, StatusCode::FORBIDDEN);
     assert_eq!(h.call(Method::DELETE, &path, &ada_t, None).await.0, StatusCode::NO_CONTENT);
     assert_eq!(h.call(Method::GET, &path, &ada_t, None).await.0, StatusCode::NOT_FOUND);
+    h.cleanup().await;
+}
+
+fn envelope(tenant: Uuid, topic: &str, event_type: &str, at: OffsetDateTime, payload: Value) -> Event {
+    let raw = json!({
+        "event_id": Uuid::now_v7(), "event_type": event_type, "schema_version": 1, "tenant_id": tenant,
+        "aggregate_type": "issue", "aggregate_id": Uuid::now_v7(), "aggregate_version": 1,
+        "occurred_at": ts(at), "correlation_id": null, "causation_id": null,
+        "actor": {"type": "system", "id": "test"}, "payload": payload
+    });
+    Event::parse(topic, &serde_json::to_vec(&raw).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn a_batch_is_written_with_one_insert_per_table() {
+    let h = harness().await;
+    let (tenant, project) = (Uuid::now_v7(), Uuid::now_v7());
+    let now = OffsetDateTime::now_utc();
+    let created = |id: Uuid| json!({ "issue_id": id, "key": "X-1", "project_id": project, "issue_type": "task", "summary": "s", "reporter_id": Uuid::now_v7(), "assignee_id": null });
+
+    let mut events = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..200 {
+        let id = Uuid::now_v7();
+        h.put(tenant, id, project, "in_review", "in_progress", "task", now, None, 2);
+        events.push(envelope(tenant, topics::ISSUE, "issue.created", now, created(id)));
+        ids.push(id);
+    }
+    // In the same batch: a move without categories (filled from the current state), the
+    // deletion of an issue created earlier in the batch, an event this consumer ignores, and a
+    // payload that breaks its contract.
+    events.push(envelope(
+        tenant,
+        topics::ISSUE,
+        "issue.transitioned",
+        now,
+        json!({ "issue_id": ids[0], "key": "X-1", "project_id": project, "from_status": "todo", "to_status": "in_review" }),
+    ));
+    events.push(envelope(
+        tenant,
+        topics::ISSUE,
+        "issue.deleted",
+        now,
+        json!({ "issue_id": ids[1], "key": "X-2", "project_id": project }),
+    ));
+    events.push(envelope(tenant, topics::ISSUE, "comment.created", now, json!({ "issue_id": ids[2] })));
+    events.push(envelope(tenant, topics::ISSUE, "issue.created", now, json!({ "issue_id": "not a uuid" })));
+
+    let rejected = h.ingester.handle_batch(&events).await.unwrap();
+    assert_eq!(rejected.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [203], "only the broken payload");
+
+    #[derive(serde::Deserialize)]
+    struct Count {
+        n: u64,
+    }
+    let count = |sql: &'static str| {
+        let owner = &h.owner;
+        async move { owner.query::<Count>(tenant, sql, &Params::new()).await.unwrap()[0].n }
+    };
+    assert_eq!(
+        count("SELECT count() AS n FROM system.parts WHERE database = currentDatabase() AND table = 'issue_events' AND active")
+            .await,
+        1
+    );
+    assert_eq!(
+        count("SELECT count() AS n FROM system.parts WHERE database = currentDatabase() AND table = 'issue_state' AND active")
+            .await,
+        1
+    );
+    assert_eq!(count("SELECT count() AS n FROM issue_events FINAL WHERE event_type = 'issue.created'").await, 200);
+    assert_eq!(count("SELECT count() AS n FROM issue_state FINAL WHERE is_deleted = 0").await, 199);
+    let category: Vec<Count> = h
+        .owner
+        .query(
+            tenant,
+            "SELECT toUInt64(to_category = 'in_progress') AS n FROM issue_events FINAL WHERE event_type = 'issue.transitioned'",
+            &Params::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(category.iter().map(|c| c.n).collect::<Vec<_>>(), [1], "category filled from the current state");
+
+    // Redelivering the whole batch changes nothing.
+    h.ingester.handle_batch(&events).await.unwrap();
+    assert_eq!(count("SELECT count() AS n FROM issue_events FINAL WHERE event_type = 'issue.created'").await, 200);
+    assert_eq!(count("SELECT count() AS n FROM issue_state FINAL WHERE is_deleted = 0").await, 199);
     h.cleanup().await;
 }

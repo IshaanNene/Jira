@@ -10,11 +10,11 @@ pub mod ingest;
 pub mod source;
 pub mod widgets;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use auth_middleware::{GrpcPolicySource, PolicyClient, RedisHandle, TokenVerifier};
 use axum::extract::FromRef;
-use event_bus::{run_consumer, KafkaSettings};
+use event_bus::{run_batch_consumer, Batching, KafkaSettings};
 use event_contracts::topics;
 use observability::{HttpLayerConfig, Telemetry};
 use platform_common::{config, server};
@@ -90,10 +90,12 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
                 store: clickhouse_user("WRITER")?,
                 source: Arc::new(source::GrpcSource::new(&issue, &secret)?),
             });
+            // Batches, because ClickHouse makes one data part per insert: up to 500 events, and an
+            // event waits at most 250 ms for others to join it.
+            let batching = Batching { max_events: 500, max_wait: Duration::from_millis(250) };
             tokio::spawn(async move {
-                if let Err(error) =
-                    run_consumer(&settings, ingest::CONSUMER, &[topics::ISSUE, topics::AGILE, topics::PROJECT], handler).await
-                {
+                let topics = [topics::ISSUE, topics::AGILE, topics::PROJECT];
+                if let Err(error) = run_batch_consumer(&settings, ingest::CONSUMER, &topics, handler, batching).await {
                     tracing::error!(%error, "analytics ingester stopped");
                 }
             });

@@ -1,3 +1,4 @@
+pub mod api_tokens;
 pub mod auth;
 pub mod dto;
 pub mod mfa;
@@ -35,7 +36,11 @@ use crate::AppState;
         mfa::regenerate,
         mfa::disable,
         sessions::list,
-        sessions::revoke
+        sessions::revoke,
+        api_tokens::list,
+        api_tokens::create,
+        api_tokens::revoke,
+        api_tokens::exchange
     ),
     components(schemas(
         dto::RegisterRequest,
@@ -54,7 +59,12 @@ use crate::AppState;
         mfa::TotpSetup,
         mfa::CodeConfirmation,
         mfa::PasswordAndCode,
-        mfa::RecoveryCodes
+        mfa::RecoveryCodes,
+        api_tokens::ApiTokenDto,
+        api_tokens::ApiTokenList,
+        api_tokens::CreateApiToken,
+        api_tokens::CreatedApiToken,
+        api_tokens::ApiTokenExchange
     ))
 )]
 pub struct ApiDoc;
@@ -76,6 +86,9 @@ pub fn router(state: AppState) -> Router {
         .route("/mfa/totp/disable", post(mfa::disable))
         .route("/mfa/recovery-codes", post(mfa::regenerate))
         .route("/token/exchange", post(auth::exchange))
+        .route("/token/api", post(api_tokens::exchange))
+        .route("/api-tokens", get(api_tokens::list).post(api_tokens::create))
+        .route("/api-tokens/{id}", delete(api_tokens::revoke))
         .route("/me", get(auth::me))
         .route("/sessions", get(sessions::list))
         .route("/sessions/{id}", delete(sessions::revoke))

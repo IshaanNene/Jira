@@ -37,4 +37,9 @@ pub struct Claims {
     /// Policy version the roles were read at.
     #[serde(default)]
     pub pv: i64,
+    /// Issued in exchange for an API token rather than from a signed-in session: `sid` is then
+    /// the API token's id. Such tokens cannot manage credentials (API tokens, sessions,
+    /// two-step verification) or switch organization.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub api: bool,
 }

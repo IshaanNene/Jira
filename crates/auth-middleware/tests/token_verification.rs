@@ -24,6 +24,7 @@ fn claims() -> Claims {
         org: None,
         roles: vec![],
         pv: 0,
+        api: false,
     }
 }
 

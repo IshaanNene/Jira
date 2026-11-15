@@ -629,3 +629,161 @@ async fn two_step_verification_guards_sign_in() {
     assert_eq!(outcomes, ["locked", "mfa_failed", "mfa_required", "success"]);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn api_tokens_are_exchanged_for_org_tokens_and_cannot_manage_credentials() {
+    let h = harness().await;
+    let registered = register(&h.app, "script@example.com").await;
+    let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    h.membership.0.lock().unwrap().insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member });
+    let session = token(
+        &call(
+            &h.app,
+            Method::POST,
+            "/api/v1/auth/token/exchange",
+            Some(json!({ "organization_id": org })),
+            Some(&token(&registered)),
+            None,
+        )
+        .await,
+    );
+
+    // Tokens belong to an organization: an account-level session cannot make one.
+    let no_org = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "ci", "expires_in_days": 30 })),
+        Some(&token(&registered)),
+        None,
+    )
+    .await;
+    assert_eq!(no_org.status, StatusCode::UNAUTHORIZED);
+    for bad in [
+        json!({ "name": " ", "expires_in_days": 30 }),
+        json!({ "name": "ci", "expires_in_days": 0 }),
+        json!({ "name": "ci", "expires_in_days": 366 }),
+    ] {
+        let r = call(&h.app, Method::POST, "/api/v1/auth/api-tokens", Some(bad), Some(&session), None).await;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    }
+
+    let created = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "ci", "expires_in_days": 30 })),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let secret = created.body["secret"].as_str().unwrap().to_owned();
+    let id = created.body["token"]["id"].as_str().unwrap().to_owned();
+    assert!(secret.starts_with("mrd_"));
+    assert!(secret.starts_with(created.body["token"]["hint"].as_str().unwrap()));
+    // Only the hash is stored.
+    let (stored,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM api_tokens WHERE hint = $1 AND token_hash <> convert_to($2, 'UTF8')")
+            .bind(created.body["token"]["hint"].as_str().unwrap())
+            .bind(&secret)
+            .fetch_one(&h.db.app)
+            .await
+            .unwrap();
+    assert_eq!(stored, 1);
+
+    let list = call(&h.app, Method::GET, "/api/v1/auth/api-tokens", None, Some(&session), None).await;
+    assert_eq!(list.body["items"].as_array().unwrap().len(), 1);
+    assert!(list.body["items"][0].get("secret").is_none());
+
+    let exchanged = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(exchanged.status, StatusCode::OK, "{}", exchanged.body);
+    let api = token(&exchanged);
+    let claims = jwt_payload(&api);
+    assert_eq!(claims["typ"], "org");
+    assert_eq!(claims["tid"], tenant.to_string());
+    assert_eq!(claims["roles"], json!(["member"]));
+    assert_eq!(claims["api"], true);
+    assert_eq!(claims["sid"], id);
+    assert!(jwt_payload(&session).get("api").is_none());
+    let used = call(&h.app, Method::GET, "/api/v1/auth/api-tokens", None, Some(&session), None).await;
+    assert!(used.body["items"][0]["last_used_at"].is_string());
+
+    // An API-derived token reaches the services but never credential management.
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/auth/api-tokens".to_owned(), None),
+        (Method::POST, "/api/v1/auth/api-tokens".to_owned(), Some(json!({ "name": "more", "expires_in_days": 1 }))),
+        (Method::DELETE, format!("/api/v1/auth/api-tokens/{id}"), None),
+        (Method::GET, "/api/v1/auth/sessions".to_owned(), None),
+        (Method::GET, "/api/v1/auth/mfa".to_owned(), None),
+        (Method::POST, "/api/v1/auth/token/exchange".to_owned(), Some(json!({ "organization_id": org }))),
+    ] {
+        let r = call(&h.app, method.clone(), &path, body, Some(&api), None).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {path}: {}", r.body);
+    }
+
+    // Unknown, malformed and expired secrets look the same.
+    for bad in ["mrd_nope", "not-a-token", &"mrd_x".repeat(30)] {
+        let r = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": bad })), None, None).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let expiring = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "short", "expires_in_days": 1 })),
+        Some(&session),
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE api_tokens SET created_at = now() - interval '2 days', expires_at = now() - interval '1 day' WHERE name = 'short'")
+        .execute(&h.db.app)
+        .await
+        .unwrap();
+    let r =
+        call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": expiring.body["secret"] })), None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    // Removed from the organization: the token stops working at the next exchange.
+    h.membership.0.lock().unwrap().clear();
+    let r = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    h.membership.0.lock().unwrap().insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member });
+
+    // Someone else cannot revoke it; its owner can, and then it is dead.
+    let mallory = register(&h.app, "mallory@example.com").await;
+    let r = call(&h.app, Method::DELETE, &format!("/api/v1/auth/api-tokens/{id}"), None, Some(&token(&mallory)), None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(&h.app, Method::DELETE, &format!("/api/v1/auth/api-tokens/{id}"), None, Some(&session), None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let list = call(&h.app, Method::GET, "/api/v1/auth/api-tokens", None, Some(&session), None).await;
+    assert_eq!(list.body["items"].as_array().unwrap().len(), 0);
+
+    // At most 25 active per person per organization.
+    for i in 0..25 {
+        let r = call(
+            &h.app,
+            Method::POST,
+            "/api/v1/auth/api-tokens",
+            Some(json!({ "name": format!("t{i}"), "expires_in_days": 7 })),
+            Some(&session),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{i}: {}", r.body);
+    }
+    let r = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "one too many", "expires_in_days": 7 })),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    h.db.cleanup().await;
+}

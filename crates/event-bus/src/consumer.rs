@@ -2,8 +2,8 @@
 //!
 //! Offsets are committed only after the handler succeeded or the event was parked in
 //! `<topic>.dlq`, so nothing is skipped silently. Events are processed one at a time per
-//! consumer instance; parallelism comes from more instances in the group (one per
-//! partition at most).
+//! consumer instance, or in batches with [`run_batch_consumer`]; parallelism comes from more
+//! instances in the group (one per partition at most).
 //!
 //! A transient failure (a dependency is down) is retried until it succeeds, with backoff up
 //! to 30 s: the consumer pauses rather than skip ahead, so a projection never silently misses
@@ -17,10 +17,10 @@ use error_handling::ApiError;
 use event_contracts::{topics, EventEnvelope};
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
-    message::{BorrowedMessage, Header, Headers, OwnedHeaders},
+    message::{BorrowedMessage, Header, Headers, OwnedHeaders, OwnedMessage},
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
-    Message,
+    Message, Offset, TopicPartitionList,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -113,14 +113,24 @@ pub trait Handler: Send + Sync + 'static {
     async fn handle(&self, event: &Event) -> Result<(), HandlerError>;
 }
 
-/// Consume `topics` as consumer group `group` until the process stops. Connection problems
-/// are retried by the client; this never returns under normal operation.
-pub async fn run_consumer(
-    settings: &KafkaSettings,
-    group: &str,
-    topics: &[&str],
-    handler: Arc<dyn Handler>,
-) -> anyhow::Result<()> {
+/// A handler that applies events in batches, for stores that want few large writes (ClickHouse
+/// makes one data part per insert).
+#[async_trait]
+pub trait BatchHandler: Send + Sync + 'static {
+    /// Apply every event of the batch. `Ok` lists the events (by index) that can never succeed;
+    /// they are dead-lettered and the rest count as applied. `Err` is a transient failure: the
+    /// whole batch is retried, so applying an event twice must be harmless.
+    async fn handle_batch(&self, events: &[Event]) -> Result<Vec<(usize, anyhow::Error)>, anyhow::Error>;
+}
+
+/// How large a batch may grow, and how long the first event of a batch may wait for company.
+#[derive(Debug, Clone, Copy)]
+pub struct Batching {
+    pub max_events: usize,
+    pub max_wait: Duration,
+}
+
+fn subscribe(settings: &KafkaSettings, group: &str, topics: &[&str]) -> anyhow::Result<StreamConsumer> {
     let consumer: StreamConsumer = settings
         .base()
         .set("group.id", group)
@@ -129,6 +139,134 @@ pub async fn run_consumer(
         .set("session.timeout.ms", "10000")
         .create()?;
     consumer.subscribe(topics)?;
+    Ok(consumer)
+}
+
+/// Like [`run_consumer`], but hands the handler batches of up to `batching.max_events` events.
+/// Offsets are committed after the whole batch is applied or parked, with the same guarantees.
+pub async fn run_batch_consumer(
+    settings: &KafkaSettings,
+    group: &str,
+    topics: &[&str],
+    handler: Arc<dyn BatchHandler>,
+    batching: Batching,
+) -> anyhow::Result<()> {
+    let consumer = subscribe(settings, group, topics)?;
+    let dlq: FutureProducer = settings.producer().create()?;
+    tracing::info!(group, ?topics, max_events = batching.max_events, "batch consumer started");
+
+    loop {
+        let batch = collect(&consumer, group, batching).await;
+        let mut events = Vec::with_capacity(batch.len());
+        let mut origin = Vec::with_capacity(batch.len());
+        for (i, message) in batch.iter().enumerate() {
+            match message.payload().map(|bytes| Event::parse(message.topic(), bytes)) {
+                Some(Ok(event)) => {
+                    events.push(event);
+                    origin.push(i);
+                }
+                Some(Err(error)) => park(&dlq, group, message, &format!("invalid envelope: {error}"), 0).await,
+                None => park(&dlq, group, message, "empty message", 0).await,
+            }
+        }
+        if !events.is_empty() {
+            let rejected = handle_batch_with_retry(handler.as_ref(), &events, group, FIRST_RETRY, MAX_RETRY).await;
+            for (index, error) in rejected {
+                if let Some(&message) = origin.get(index) {
+                    park(&dlq, group, &batch[message], &error.to_string(), 1).await;
+                }
+            }
+        }
+        // One commit per batch: the next offset of every partition it touched.
+        let mut next: std::collections::BTreeMap<(&str, i32), i64> = Default::default();
+        for message in &batch {
+            let offset = next.entry((message.topic(), message.partition())).or_insert(0);
+            *offset = (*offset).max(message.offset() + 1);
+        }
+        let mut offsets = TopicPartitionList::new();
+        for ((topic, partition), offset) in next {
+            if let Err(error) = offsets.add_partition_offset(topic, partition, Offset::Offset(offset)) {
+                tracing::warn!(group, %error, "could not record an offset to commit");
+            }
+        }
+        if let Err(error) = consumer.commit(&offsets, CommitMode::Async) {
+            tracing::warn!(group, %error, "offset commit failed; the batch may be redelivered");
+        }
+    }
+}
+
+/// Wait for one message, then gather more until the batch is full or `max_wait` has passed.
+async fn collect(consumer: &StreamConsumer, group: &str, batching: Batching) -> Vec<OwnedMessage> {
+    let first = loop {
+        match consumer.recv().await {
+            Ok(m) => break m.detach(),
+            Err(error) => {
+                tracing::warn!(group, %error, "kafka receive failed");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
+    let mut batch = vec![first];
+    let deadline = tokio::time::Instant::now() + batching.max_wait;
+    while batch.len() < batching.max_events {
+        match tokio::time::timeout_at(deadline, consumer.recv()).await {
+            Ok(Ok(m)) => batch.push(m.detach()),
+            Ok(Err(error)) => {
+                tracing::warn!(group, %error, "kafka receive failed");
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    batch
+}
+
+/// Run the batch handler until it succeeds; returns the events it rejected for good.
+async fn handle_batch_with_retry(
+    handler: &dyn BatchHandler,
+    events: &[Event],
+    group: &str,
+    first_retry: Duration,
+    max_retry: Duration,
+) -> Vec<(usize, anyhow::Error)> {
+    let mut delay = first_retry;
+    let mut attempt: u32 = 1;
+    loop {
+        match handler.handle_batch(events).await {
+            Ok(rejected) => {
+                for (i, event) in events.iter().enumerate() {
+                    if !rejected.iter().any(|(r, _)| *r == i) {
+                        metrics::counter!("events_consumed_total", "event_type" => event.event_type().to_owned()).increment(1);
+                    }
+                }
+                if attempt > 1 {
+                    tracing::info!(consumer = group, events = events.len(), attempt, "batch handled after retrying");
+                }
+                return rejected;
+            }
+            Err(error) => {
+                metrics::counter!("events_retried_total", "consumer" => group.to_owned()).increment(events.len() as u64);
+                if attempt <= 5 || delay == max_retry && attempt.is_multiple_of(2) {
+                    tracing::warn!(consumer = group, events = events.len(), attempt, %error,
+                        "batch handling failed; retrying (the consumer waits until it succeeds)");
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(max_retry);
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Consume `topics` as consumer group `group` until the process stops. Connection problems
+/// are retried by the client; this never returns under normal operation.
+pub async fn run_consumer(
+    settings: &KafkaSettings,
+    group: &str,
+    topics: &[&str],
+    handler: Arc<dyn Handler>,
+) -> anyhow::Result<()> {
+    let consumer = subscribe(settings, group, topics)?;
     let dlq: FutureProducer = settings.producer().create()?;
     tracing::info!(group, ?topics, "consumer started");
 
@@ -198,7 +336,7 @@ async fn handle_with_retry(
 }
 
 /// Park a failed event in `<topic>.dlq`. Blocks (retrying) rather than lose it.
-async fn park(dlq: &FutureProducer, group: &str, message: &BorrowedMessage<'_>, error: &str, attempts: u32) {
+async fn park<M: Message>(dlq: &FutureProducer, group: &str, message: &M, error: &str, attempts: u32) {
     let topic = topics::dead_letter(message.topic());
     let attempts = attempts.to_string();
     let mut headers = OwnedHeaders::new();
@@ -285,6 +423,33 @@ mod tests {
         let outcome = handle_with_retry(&broken, &event, "test", Duration::from_millis(1), Duration::from_millis(4)).await;
         assert_eq!(outcome.unwrap_err().1, 1);
         assert_eq!(broken.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Fails the whole batch transiently `outage` times, then rejects event 1 for good.
+    struct FlakyBatch {
+        outage: u32,
+        calls: AtomicU32,
+    }
+
+    #[async_trait]
+    impl BatchHandler for FlakyBatch {
+        async fn handle_batch(&self, _: &[Event]) -> Result<Vec<(usize, anyhow::Error)>, anyhow::Error> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.outage {
+                Err(anyhow::anyhow!("store unavailable"))
+            } else {
+                Ok(vec![(1, anyhow::anyhow!("bad payload"))])
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_batch_is_retried_whole_and_only_rejected_events_are_dead_lettered() {
+        let events = vec![sample_event(), sample_event(), sample_event()];
+        let handler = FlakyBatch { outage: 6, calls: AtomicU32::new(0) };
+        let rejected =
+            handle_batch_with_retry(&handler, &events, "test", Duration::from_millis(1), Duration::from_millis(4)).await;
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 7);
+        assert_eq!(rejected.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [1]);
     }
 
     #[test]

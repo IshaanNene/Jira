@@ -7,12 +7,12 @@ import { ApiError, errorMessage, type TotpSetup } from "@/services/api";
 import { formatDate } from "@/utils/format";
 
 /** The message for one field from a 422, or a general one. */
-function fieldMessage(error: unknown, field: string): string | undefined {
+export function fieldMessage(error: unknown, field: string): string | undefined {
   if (error instanceof ApiError && error.fieldErrors.length > 0) return error.fieldErrors.find((e) => e.field === field)?.message;
   return undefined;
 }
 
-function generalMessage(error: unknown): string | null {
+export function generalMessage(error: unknown): string | null {
   if (!error) return null;
   if (error instanceof ApiError && error.fieldErrors.length > 0) return null;
   return errorMessage(error);

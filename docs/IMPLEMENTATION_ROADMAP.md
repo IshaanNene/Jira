@@ -17,7 +17,7 @@ Last updated: 2026-11-14 (Phase 8: container images, Helm chart, Terraform, CI, 
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
-| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language, audit log and authenticator-app two-step verification done; the rest not started) |
+| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language, audit log, authenticator-app two-step verification and API tokens done; the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ✅ (four chart kinds; gaps listed below) |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | 🚧 (chart, images, CI, observability and tests built and run locally; Terraform validated but never applied; no Argo CD; gaps listed below) |
 
@@ -71,6 +71,8 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Web: audit log | Settings → Audit log for admins and owners: entries as sentences ("gave Maya Chen Viewer access to PAY"), expandable details, activity / person / date filters kept in the URL, older entries on demand, CSV export, "Check integrity" banner | 4 web tests; checked in a real browser (17 entries intact) |
 | Two-step verification (TOTP) | Authenticator-app codes (RFC 6238: SHA-1, 6 digits, 30 s, one step of drift) and ten single-use recovery codes; set-up and changes need the password again; turning it on or off ends the account's other sessions; after a correct password, sign-in returns `202` with a single-use 5-minute challenge instead of tokens; 5 wrong codes end the challenge and every wrong code counts towards the account lockout; a used time step is never accepted again; secrets sealed with AES-256-GCM bound to the account id; recovery codes stored as SHA-256; QR code rendered server-side as SVG | 5 unit tests (RFC 6238 and RFC 4648 vectors, replay, drift, recovery code typing) + 1 crypto test + 1 integration test (set-up, sign-in, replay, recovery codes, challenge exhaustion, lockout, new codes, turning off) |
 | Web: two-step verification | Settings → Security (was Sessions): set up with a QR code or typed key, recovery codes to copy or download, new codes, turn off; sign-in asks for the app code or a recovery code after the password and goes back to the password when the attempt expires | 4 web tests; set up, signed in with a code and turned off with a recovery code in a real browser |
+| API tokens | Personal tokens for scripts and integrations, bound to one person in one organization: `mrd_` + 256 random bits, only the SHA-256 kept, a hint shown, 1–365 days, at most 25 active; exchanged at `POST /api/v1/auth/token/api` (credential-route rate limit) for an ordinary 10-minute org token marked `api`, with membership and account status read afresh at every exchange; such tokens cannot list or make API tokens, see sessions, change two-step verification or switch organization; revoking one revokes its access tokens through the revocation list | 1 integration test (create, list, exchange, refusals, expiry, removed member, other person's revoke, limit) |
+| Web: API tokens | Settings → Security: create with a name and lifetime, the secret shown once with copy, list with hint, last use and expiry, revoke with confirmation; scoped to the open organization | 1 web test |
 | analytics-service | Kafka consumer (`analytics-service` group on the issue, agile and project topics) turns events into ClickHouse facts: `issue_events` (ReplacingMergeTree keyed by event id, so redelivery and replay are idempotent) and `issue_state` (current issue state fetched with `GetDocuments`, versioned by issue version; deletions win); `issue.transitioned` now carries status categories. Four chart kinds compiled from a closed enum into fixed SQL with typed parameters: created vs resolved per UTC day, weekly cycle time (median and 85th percentile, first start to resolution), open-issue breakdown by status category, status, type, priority, assignee or project, and sprint velocity. Every query runs as a read-only ClickHouse user under a row policy on `SQL_tenant_id` (sent from the verified token) and is limited to the projects the caller can browse. Dashboards and widgets in PostgreSQL with forced RLS: private until shared, edited by the owner (or an admin when shared), only the owner shares; 200 dashboards per owner, 30 charts per dashboard | 2 ClickHouse + 3 widget unit tests + 2 integration tests against real ClickHouse and PostgreSQL (tenant and project isolation, replay de-duplication, cycle time, issue and project deletion, velocity order, 422 on bad options, the reader refused without the tenant setting, across tenants and for writes; dashboard privacy, sharing and edit rights); live: the dev consumer backfilled the demo workspace from Kafka |
 | Web: dashboards | Dashboards in the top navigation (`g d`): list with owner, sharing and chart count; create, rename, share / stop sharing, delete with confirmation; charts in a half/full-width grid with edit, resize, reorder and remove for editors and read-only for viewers; add/edit dialog with a live preview; every chart has a table view, hover tooltips, one value axis, legends for two series and values in ink colours; chart chrome shared with the sprint reports | 6 web tests; driven in a real browser against the demo workspace in both themes (counts checked against ClickHouse) |
 | Web: live updates | Fetch-based SSE client with token refresh, jittered reconnect and cursor resume; project screens refetch only what a hint affects, batched and deferred while the person's own change is in flight; "Live updates paused" banner | 7 web tests; live in a real browser |
@@ -80,13 +82,14 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Terraform (AWS) | Modules for VPC, EKS, RDS PostgreSQL, MSK (SCRAM), ElastiCache (TLS), OpenSearch and S3, a staging environment with S3 state locking | `terraform fmt` and `validate` (1.10.5); never applied |
 | CI | GitHub Actions: Rust fmt, clippy, tests against the Compose data stores; RustSec advisories; web lint, typecheck, tests, build; chart lint + Envoy validation; Terraform validate; image build, Trivy scan, push to GHCR on `main` | actionlint; all jobs green on GitHub (2026-11-14), 13 images pushed to GHCR |
 | Kafka over TLS/SASL | `KAFKA_SECURITY_PROTOCOL` (plaintext, ssl, sasl_ssl), SCRAM or PLAIN, CA file; incomplete settings refused at start-up; password never in `Debug` output | 1 unit test |
+| Batch consumer | `run_batch_consumer`: up to N events or a time limit per batch, the whole batch retried on a transient failure, only the rejected events dead-lettered, one offset commit per batch; analytics-service writes 500 events / 250 ms as one `INSERT` per table, fetching issue documents in one RPC per tenant | 1 unit test; 1 analytics integration test (204 events, one active part per table, one rejected event, redelivery idempotent) |
 | Consumer retries | A transient failure is retried with backoff (200 ms → 30 s) until it succeeds; only permanent failures are dead-lettered; `events_retried_total` | 1 unit test; `tests/resilience/run.sh opensearch` fails on the old code (an issue changed during the outage never reached search) and passes on the new |
 | Observability stack | Prometheus, Grafana (provisioned overview dashboard), Jaeger in the `observability` compose profile; latency exported as histograms; 7 alert rules (service down, error rate, slow requests, consumer waiting, dead letters, outbox, email) | promtool; all 13 targets scraped; p95 by service queried; `ConsumerWaitingOnDependency` went pending with OpenSearch stopped; search-service traces reached Jaeger |
 | Failure tests | `make resilience` stops Kafka, OpenSearch, ClickHouse, Redis and PostgreSQL in turn under the running stack and checks the documented behaviour and the recovery | 21 checks, all passing (results in SYSTEM_DESIGN.md §8) |
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **208 Rust tests, 94 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **211 Rust tests, 95 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -155,7 +158,7 @@ so that a new migration file is always embedded in the binary.
 | Email verification, password reset, invitation email | Not built — need email delivery (Phase 5). Invitation links are shown once to the inviter instead. **Consequence: an invitation can be accepted by whoever registers the invited address first; email ownership is not proven** |
 | Teams, departments, groups, avatars, org logo/branding, domains | Not built |
 | Tenant tier migration; business/enterprise provisioning | Schema and placement decision only; dedicated tiers are recorded as `pending` and are not routable |
-| WebAuthn, OIDC, SAML, SCIM, API tokens | Not built (Phase 6); TOTP two-step verification is built |
+| WebAuthn, OIDC, SAML, SCIM | Not built (Phase 6); TOTP two-step verification and API tokens are built |
 | Per-IP rate limiting | Dev gateway has global and credential-route buckets only; per-IP needs the rate-limit service planned with Envoy Gateway |
 | OpenTelemetry export | Verified in Phase 8: search-service traces reached Jaeger over OTLP/HTTP. Spans cover HTTP requests only; no trace propagation through Kafka |
 | Playwright end-to-end tests, Storybook | Not set up |
@@ -183,10 +186,6 @@ so that a new migration file is always embedded in the binary.
   service, unmaintained rustls-pemfile).
 - A checkout inside an iCloud-synced folder (such as the Desktop) breaks local development: iCloud evicts files
   such as service logs and test caches, and anything that opens them blocks. Keep the repository outside iCloud.
-- analytics-service writes each event to ClickHouse as its own `INSERT`, so each event creates a data part. Under
-  the stress test's write burst about 31,000 parts were created; merges kept up (3 active parts per table) and the
-  4.5 GB of replaced parts were removed after ClickHouse's 8-minute grace period, but a sustained higher rate would
-  reach ClickHouse's "too many parts" limit. Batch the inserts or turn on `async_insert`.
 - Chart queries are the slowest read path (666/s on one replica, p99 658 ms at saturation): every request queries
   ClickHouse directly, with no cache.
 - When a disk passes 95 %, OpenSearch makes its indices read-only. Search then answers queries but the search
@@ -216,7 +215,8 @@ so that a new migration file is always embedded in the binary.
 |---|---|
 | Query language | Built (see above). Not built: saved filters, filter subscriptions, sharing; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog do not accept MQL yet |
 | Two-step verification | TOTP built (see above). Not built: WebAuthn / passkeys; a workspace setting that requires it of members; an email when it is turned on or off or a recovery code is used; an `amr` claim in tokens; admin reset for a member who lost their phone and codes (today only a database operator can) |
-| SSO (OIDC, SAML), SCIM, API tokens | Not started |
+| API tokens | Built (see above). Not built: scopes narrower than the person's own access; tokens owned by a service account rather than a person; an admin view of a workspace's tokens; expiry reminders; secret scanning for the `mrd_` prefix |
+| SSO (OIDC, SAML), SCIM | Not started |
 | Audit log | Built (see above). Not built: client IP address on entries; retention and purge (append-only for now, so entries are kept forever); workflow and board entries have no name (their events carry none); entries are listed in the order they were recorded, which can differ slightly from when they happened across topics; project access entries are written just after the permission change rather than in the same transaction, so a crash between the two loses the entry; no scheduled verifier; no audit of sign-ins (identity-service emits no events yet) |
 | Admin console | Not started (settings pages exist for members, invitations, notifications and the audit log) |
 | Automation, integrations (webhooks, Git, Slack) | Not started |
@@ -279,8 +279,8 @@ p95 16.3 ms, p99 76.9 ms); 14,408 requests, 1 failed. All thresholds passed.
 ## Next
 
 1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
-   environment from the Terraform with External Secrets and Argo CD, batched ClickHouse inserts and a cache for chart queries
-   (the first limits the stress test found), and a restore drill.
+   environment from the Terraform with External Secrets and Argo CD, a cache for chart queries
+   (the slowest read path in the stress test), and a restore drill.
 2. Phase 7, remaining: more chart kinds (cumulative flow first), a rebuild command for the analytics store, `If-Match` on dashboards.
-3. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, API tokens, SSO (OIDC, SAML) and
+3. Phase 6, remaining: admin console, WebAuthn and requiring two-step verification per workspace, SSO (OIDC, SAML) and
    SCIM, saved filters on top of MQL, declarative automation, integrations.

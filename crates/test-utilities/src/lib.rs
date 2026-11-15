@@ -149,6 +149,7 @@ impl TestAuth {
             org: None,
             roles: Vec::new(),
             pv: 0,
+            api: false,
         }
     }
 

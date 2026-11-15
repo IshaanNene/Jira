@@ -24,6 +24,10 @@ export type MfaChallenge = Identity["MfaChallenge"];
 export type MfaStatus = Identity["MfaStatus"];
 export type TotpSetup = Identity["TotpSetup"];
 export type RecoveryCodes = Identity["RecoveryCodes"];
+export type ApiToken = Identity["ApiTokenDto"];
+export type ApiTokenList = Identity["ApiTokenList"];
+export type CreateApiToken = Identity["CreateApiToken"];
+export type CreatedApiToken = Identity["CreatedApiToken"];
 
 export type Profile = User["ProfileDto"];
 export type UpdateProfileRequest = User["UpdateProfileRequest"];

@@ -13,7 +13,19 @@ use uuid::Uuid;
 pub trait Source: Send + Sync {
     /// The issue as it is now, or `None` if it no longer exists.
     async fn document(&self, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Option<Document>>;
+
+    /// The issues that still exist among `issue_ids`, as they are now.
+    async fn documents(&self, tenant_id: Uuid, issue_ids: &[Uuid]) -> ApiResult<Vec<Document>> {
+        let mut found = Vec::with_capacity(issue_ids.len());
+        for id in issue_ids {
+            found.extend(self.document(tenant_id, *id).await?);
+        }
+        Ok(found)
+    }
 }
+
+/// `GetDocuments` serves at most this many issues per call.
+const PER_CALL: usize = 500;
 
 pub struct GrpcSource {
     issues: IssuesClient<InterceptedService<Channel, ServiceClientAuth>>,
@@ -42,5 +54,22 @@ impl Source for GrpcSource {
         .map_err(|s| from_status(&s, "issue-service"))?
         .into_inner();
         Ok(reply.documents.into_iter().next())
+    }
+
+    async fn documents(&self, tenant_id: Uuid, issue_ids: &[Uuid]) -> ApiResult<Vec<Document>> {
+        let mut found = Vec::with_capacity(issue_ids.len());
+        for chunk in issue_ids.chunks(PER_CALL) {
+            let ids: Vec<String> = chunk.iter().map(Uuid::to_string).collect();
+            let reply = retry(RetryPolicy::default(), is_transient, || {
+                let mut client = self.issues.clone();
+                let req = GetDocumentsRequest { tenant_id: tenant_id.to_string(), issue_ids: ids.clone() };
+                async move { client.get_documents(req).await }
+            })
+            .await
+            .map_err(|s| from_status(&s, "issue-service"))?
+            .into_inner();
+            found.extend(reply.documents);
+        }
+        Ok(found)
     }
 }

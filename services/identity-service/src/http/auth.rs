@@ -86,6 +86,17 @@ pub(crate) fn issue_access_token(
     session_id: Uuid,
     organization: Option<(Uuid, &MembershipInfo)>,
 ) -> ApiResult<TokenResponse> {
+    issue_token(state, account, session_id, organization, false)
+}
+
+/// `api`: issued for an API token, whose id is then the `sid`.
+pub(crate) fn issue_token(
+    state: &AppState,
+    account: &Account,
+    session_id: Uuid,
+    organization: Option<(Uuid, &MembershipInfo)>,
+    api: bool,
+) -> ApiResult<TokenResponse> {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let claims = Claims {
         iss: state.settings.issuer.clone(),
@@ -102,6 +113,7 @@ pub(crate) fn issue_access_token(
         org: organization.map(|(id, _)| id),
         roles: organization.map(|(_, m)| vec![m.role.as_str().to_owned()]).unwrap_or_default(),
         pv: 0,
+        api,
     };
     Ok(TokenResponse {
         access_token: state.signer.sign(&claims).map_err(ApiError::internal)?,
@@ -272,22 +284,38 @@ pub(crate) async fn revoke_everywhere(
         )
         .await?;
     }
-    // Make outstanding access tokens for this session unusable before they expire.
+    publish_revocation(state, session_id).await;
+    Ok(())
+}
+
+/// Make outstanding access tokens carrying `sid` (a session, or an API token) unusable before
+/// they expire. Best effort: without Redis they stay valid until expiry (at most 10 minutes).
+pub(crate) async fn publish_revocation(state: &AppState, sid: Uuid) {
     if let Some(mut redis) = state.redis.get() {
         let result: Result<(), redis::RedisError> = redis::cmd("SET")
-            .arg(revocation_key(session_id))
+            .arg(revocation_key(sid))
             .arg(1)
             .arg("EX")
             .arg(ACCESS_TOKEN_TTL_SECS + 30)
             .query_async(&mut redis)
             .await;
         if let Err(err) = result {
-            tracing::warn!(error = %err, "could not publish session revocation; access token stays valid until expiry");
+            tracing::warn!(error = %err, "could not publish revocation; access token stays valid until expiry");
         }
     } else {
-        tracing::warn!("redis unavailable; revoked session's access token stays valid until expiry");
+        tracing::warn!("redis unavailable; revoked access token stays valid until expiry");
     }
-    Ok(())
+}
+
+/// Credentials are managed from a signed-in session only: an access token obtained with an API
+/// token cannot create API tokens, list or end sessions, change two-step verification or
+/// switch organization.
+pub(crate) fn require_session(auth: &AuthContext) -> ApiResult<()> {
+    if auth.claims.api {
+        Err(ApiError::Forbidden)
+    } else {
+        Ok(())
+    }
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/token/refresh", request_body = RefreshRequest,
@@ -357,6 +385,7 @@ pub async fn exchange(
     auth: AuthContext,
     Json(body): Json<ExchangeRequest>,
 ) -> ApiResult<Json<TokenResponse>> {
+    require_session(&auth)?;
     if !store::session_is_active(&state.pool, auth.session_id, auth.user_id).await? {
         return Err(SESSION_ENDED);
     }

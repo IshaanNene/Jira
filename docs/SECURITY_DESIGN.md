@@ -27,7 +27,7 @@ Internal ports (gRPC, metrics) are ClusterIP-only and covered by default-deny Ne
 | Email flows | single-use, hashed, expiring tokens; responses never reveal whether an email exists |
 | Two-step verification (TOTP) | Built. RFC 6238 (HMAC-SHA1 from `ring`, 6 digits, 30 s, ±1 step) is a dozen lines, so it is implemented directly and checked against the RFC's test vectors rather than adding a crate. Secrets sealed with AES-256-GCM under the key-encryption key, bound to the account id as associated data; a used time step is never accepted again; 10 recovery codes of 60 bits, stored as SHA-256 of account id and code. Sign-in: correct password → `202` with a single-use challenge (5 min, 5 tries); wrong codes count towards the account lockout and the password-stage success does not reset it. Set-up, new codes and turning off need the password again (failures count towards the lockout); turning it on or off ends the other sessions |
 | WebAuthn / OIDC / SAML / SCIM | Phase 6, with `webauthn-rs`, `openidconnect`, `samael`. No hand-rolled protocol code for these |
-| API tokens | random, prefixed (`mrd_pat_…`) for secret scanning, stored hashed, scoped, expiring, tenant-bound |
+| API tokens | 256 random bits prefixed `mrd_` (easy to scan for), only the SHA-256 stored, expiring (≤ 365 days), bound to one person in one organization; exchanged for a 10-minute access token marked `api` that cannot manage credentials; membership re-checked at every exchange. Not yet narrower than the person's own access |
 
 CSRF: state-changing API calls require the bearer header, which a cross-site form cannot set. The only
 cookie-authenticated endpoints (`/auth/token/refresh`, `/auth/logout`) are `SameSite=Strict`, require

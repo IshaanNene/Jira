@@ -5,6 +5,7 @@ import { useRevokeSession, useSessions } from "@/modules/auth";
 import { errorMessage } from "@/services/api";
 import { describeUserAgent, formatDate, formatRelative } from "@/utils/format";
 
+import { ApiTokens } from "../components/ApiTokens";
 import { TwoStepVerification } from "../components/TwoStepVerification";
 
 export default function SecurityPage() {
@@ -13,6 +14,7 @@ export default function SecurityPage() {
       <div className="space-y-5">
         <TwoStepVerification />
         <Sessions />
+        <ApiTokens />
       </div>
     </Page>
   );

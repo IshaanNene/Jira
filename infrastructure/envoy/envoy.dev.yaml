@@ -94,7 +94,7 @@ static_resources:
                       domains: ["*"]
                       routes:
                         # Credential endpoints: a much tighter bucket (brute-force damping).
-                        - match: { safe_regex: { regex: "^/api/v1/auth/(login|register)$" } }
+                        - match: { safe_regex: { regex: "^/api/v1/auth/(login|register|token/api)$" } }
                           route: { cluster: identity, timeout: 15s }
                           typed_per_filter_config:
                             envoy.filters.http.local_ratelimit:

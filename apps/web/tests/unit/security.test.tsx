@@ -88,4 +88,53 @@ describe("security settings", () => {
     expect(await screen.findByRole("button", { name: "Set up" })).toBeInTheDocument();
     expect(api.sent("POST", "/api/v1/auth/mfa/totp/disable")[0]!.body).toEqual({ password: "right-password", code: "AAAA-BBBB-CCCC" });
   });
+
+  it("creates an API token, shows the secret once, and revokes it", async () => {
+    signIn("member");
+    const SECRET = "mrd_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    let tokens: unknown[] = [];
+    const api = fakeApi({
+      "GET /api/v1/auth/sessions": SESSIONS,
+      "GET /api/v1/auth/mfa": { totp_enabled: false, enabled_at: null, recovery_codes_remaining: 0 },
+      "GET /api/v1/auth/api-tokens": () => ({ body: { items: tokens } }),
+      "POST /api/v1/auth/api-tokens": (call: Call) => {
+        const { name } = call.body as { name: string };
+        if (name === "taken") return { status: 409, body: { code: "conflict", detail: "You have 25 active API tokens. Revoke one first." } };
+        const token = { id: "t1", name, hint: SECRET.slice(0, 8), created_at: "2026-11-15T00:00:00Z", expires_at: "2026-12-15T00:00:00Z", last_used_at: null };
+        tokens = [token];
+        return { status: 201, body: { token, secret: SECRET } };
+      },
+      "DELETE /api/v1/auth/api-tokens/t1": () => {
+        tokens = [];
+        return { status: 204 };
+      },
+    });
+    renderAt(<SecurityPage />, "/settings/security", "/settings/security");
+
+    expect(await screen.findByText("No API tokens")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    let dialog = await screen.findByRole("dialog", { name: "Create an API token" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "taken");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByText("You have 25 active API tokens. Revoke one first.")).toBeInTheDocument();
+    await userEvent.clear(within(dialog).getByLabelText("Name"));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Release script");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    dialog = await screen.findByRole("dialog", { name: "Copy your new token" });
+    expect(within(dialog).getByLabelText("New API token")).toHaveTextContent(SECRET);
+    expect(api.sent("POST", "/api/v1/auth/api-tokens").at(-1)!.body).toEqual({ name: "Release script", expires_in_days: 30 });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+
+    // The list never shows the secret, only its first characters.
+    const list = await screen.findByRole("list", { name: "API tokens" });
+    expect(within(list).getByText("Release script")).toBeInTheDocument();
+    expect(within(list).getByText("Never used", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+
+    await userEvent.click(within(list).getByRole("button", { name: "Revoke Release script" }));
+    dialog = await screen.findByRole("dialog", { name: 'Revoke "Release script"?' });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+    expect(await screen.findByText("No API tokens")).toBeInTheDocument();
+  });
 });
