@@ -30,6 +30,10 @@ Totals are counted up to 1000.
 Operators: `= != < <= > >= ~ !~ IN (…) NOT IN (…) IS [NOT] EMPTY`, with `AND`, `OR`, `NOT` and parentheses;
 `ORDER BY created|updated|resolved|priority|key [ASC|DESC]` (keys sort by number, priorities by rank).
 
+`GET /api/v1/search/issues/ids?mql&project` answers the same query with ids only: the issues of one project that
+match and that the caller can see, at most 5000 (`truncated` says when more match), in no order (`ORDER BY` is
+ignored). The board and backlog use it to filter the cards they already hold.
+
 The query is lexed, parsed and compiled here into an OpenSearch query; typed values only become term values,
 analysed match text or date math assembled from validated parts, so nothing a person types is interpreted by
 OpenSearch as syntax. The compiled query always sits inside the tenant and visible-project filters. Limits:

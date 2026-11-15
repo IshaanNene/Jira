@@ -17,6 +17,7 @@ import {
   toast,
 } from "@/components/ui";
 import { useProjectStatuses } from "@/modules/issues";
+import { MqlFilterButton, MqlFilterPanel, useMqlFilter } from "@/modules/search";
 import type { BacklogView, Board, BoardCard, Sprint } from "@/services/api";
 import { useUi } from "@/state/ui";
 import { formatDate, titleCase } from "@/utils/format";
@@ -30,10 +31,11 @@ import { BACKLOG, formatPoints, totalPoints, type Move } from "../model";
 
 type SprintAction = { kind: "create" } | { kind: "edit" | "start" | "complete"; sprint: Sprint };
 
-function Summary({ issues }: { issues: BoardCard[] }) {
+function Summary({ issues, shown }: { issues: BoardCard[]; shown: BoardCard[] }) {
+  const count = shown.length === issues.length ? `${issues.length}` : `${shown.length} of ${issues.length}`;
   return (
     <span className="text-sm text-ink-subtle">
-      {issues.length} {issues.length === 1 ? "issue" : "issues"} · {formatPoints(totalPoints(issues))} pts
+      {count} {issues.length === 1 ? "issue" : "issues"} · {formatPoints(totalPoints(issues))} pts
     </span>
   );
 }
@@ -48,6 +50,8 @@ function BacklogBody({ board }: { board: Board }) {
   const openCreateIssue = useUi((s) => s.openCreateIssue);
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [action, setAction] = useState<SprintAction | null>(null);
+  const mql = useMqlFilter(board.project_id);
+  const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
 
   if (backlog.isPending) return <div className="space-y-3 px-6" aria-busy><Skeleton className="h-32" /><Skeleton className="h-64" /></div>;
   if (backlog.isError) return <ErrorState className="py-16" error={backlog.error} onRetry={() => void backlog.refetch()} />;
@@ -90,11 +94,16 @@ function BacklogBody({ board }: { board: Board }) {
     );
   };
 
+  // While a filter hides issues, ranking by drag would place issues among ones nobody can
+  // see, so it pauses; the row menus still move issues between sprints and the backlog.
+  const filtering = mql.matches !== null;
+  const shown = (issues: BoardCard[]) => (mql.matches ? issues.filter((i) => mql.matches!.has(i.id)) : issues);
   const rows = (issues: BoardCard[], list: string, empty: string) => (
     <DropList list={list} className="min-h-12 overflow-hidden rounded border border-line bg-surface">
       {issues.length === 0 && <p className="px-3 py-3 text-sm text-ink-subtle">{empty}</p>}
-      {issues.map((card) => (
-        <DraggableCard key={card.id} card={card} list={list} disabled={!permissions.move_issues}>
+      {issues.length > 0 && shown(issues).length === 0 && <p className="px-3 py-3 text-sm text-ink-subtle">No issues here match the filter.</p>}
+      {shown(issues).map((card) => (
+        <DraggableCard key={card.id} card={card} list={list} disabled={!permissions.move_issues || filtering}>
           <CardRow card={card} statusName={statusName(card.status)} menu={menu(card, list)} />
         </DraggableCard>
       ))}
@@ -106,6 +115,13 @@ function BacklogBody({ board }: { board: Board }) {
 
   return (
     <div className="h-full overflow-y-auto px-6 pb-8">
+      <div className="mb-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
+          {filtering && permissions.move_issues && <span className="text-sm text-ink-subtle">Clear the filter to rank issues by dragging.</span>}
+        </div>
+        {mqlOpen && <MqlFilterPanel filter={mql} label="backlog" onClose={() => setMqlOpen(false)} />}
+      </div>
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <div className="space-y-6">
           {data.sprints.map(({ sprint, issues }) => {
@@ -116,7 +132,7 @@ function BacklogBody({ board }: { board: Board }) {
                   <h2 className="text-base font-semibold text-ink">{sprint.name}</h2>
                   {sprint.state === "active" && <Badge tone="accent">Active</Badge>}
                   {sprint.start_date && sprint.end_date && <span className="text-sm text-ink-subtle">{formatDate(sprint.start_date)} – {formatDate(sprint.end_date)}</span>}
-                  <Summary issues={issues} />
+                  <Summary issues={issues} shown={shown(issues)} />
                   {permissions.manage_sprints && (
                     <span className="ml-auto flex items-center gap-1">
                       {sprint.state === "active" ? (
@@ -159,7 +175,7 @@ function BacklogBody({ board }: { board: Board }) {
           <section aria-label="Backlog">
             <header className="mb-2 flex flex-wrap items-center gap-3">
               <h2 className="text-base font-semibold text-ink">Backlog</h2>
-              <Summary issues={data.backlog} />
+              <Summary issues={data.backlog} shown={shown(data.backlog)} />
               {scrum && permissions.manage_sprints && (
                 <Button size="sm" className="ml-auto" onClick={() => setAction({ kind: "create" })}><Plus className="h-3.5 w-3.5" /> Create sprint</Button>
               )}

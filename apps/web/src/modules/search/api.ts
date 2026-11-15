@@ -5,6 +5,7 @@ import {
   api,
   ApiError,
   type CreateSavedFilter,
+  type MatchingIds,
   type SavedFilter,
   type SavedFilterList,
   type SearchResults,
@@ -15,6 +16,7 @@ import { useSession } from "@/state/session";
 const PATH = "/api/v1/search/issues";
 const MQL_PATH = "/api/v1/search/issues/query";
 const FILTERS_PATH = "/api/v1/search/filters";
+const IDS_PATH = "/api/v1/search/issues/ids";
 
 export interface SearchParams {
   q: string;
@@ -27,6 +29,7 @@ export const searchKeys = {
   all: (orgId: string | undefined) => ["org", orgId, "search"] as const,
   query: (orgId: string | undefined, params: SearchParams, limit: number) => ["org", orgId, "search", params, limit] as const,
   mql: (orgId: string | undefined, mql: string) => ["org", orgId, "search", "mql", mql] as const,
+  ids: (orgId: string | undefined, projectId: string, mql: string) => ["org", orgId, "search", "ids", projectId, mql] as const,
   filters: (orgId: string | undefined) => ["org", orgId, "search-filters"] as const,
   filter: (orgId: string | undefined, id: string) => ["org", orgId, "search-filters", id] as const,
 };
@@ -78,6 +81,19 @@ export function useMqlSearch(mql: string, enabled = true) {
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: Boolean(orgId) && enabled,
     retry: (count, error) => !(error instanceof ApiError && error.status === 422) && count < 2,
+  });
+}
+
+/** Ids of the project's issues that match an MQL query, for filtering a board or backlog.
+ * Nothing is fetched for an empty query. */
+export function useMatchingIds(projectId: string, mql: string) {
+  const orgId = useSession((s) => s.organization?.id);
+  return useQuery({
+    queryKey: searchKeys.ids(orgId, projectId, mql),
+    queryFn: ({ signal }) => api.get<MatchingIds>(IDS_PATH, { query: { mql, project: projectId }, signal }),
+    enabled: Boolean(orgId) && mql.trim() !== "",
+    retry: (count, error) => !(error instanceof ApiError && error.status === 422) && count < 2,
+    placeholderData: keepPreviousData,
   });
 }
 

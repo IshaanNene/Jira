@@ -232,6 +232,56 @@ fn mql_error(e: MqlError) -> ApiError {
     ApiError::Validation(vec![FieldError::new("mql", "invalid_query", e.message).at(e.start, e.end)])
 }
 
+/// Parse and compile MQL for the caller. Naming people by email or name needs the member
+/// directory, which guests cannot see.
+async fn compile(state: &AppState, ctx: &OrgContext, text: &str) -> ApiResult<mql::Compiled> {
+    let parsed = mql::parse(text).map_err(mql_error)?;
+    let people = if ctx.require(OrgPermission::ViewMembers).is_ok() {
+        let terms = mql::person_terms(&parsed);
+        Some(if terms.is_empty() { HashMap::new() } else { state.people.find(ctx.tenant_id, &terms).await? })
+    } else {
+        None
+    };
+    mql::compile(&parsed, &mql::Context { current_user: ctx.user_id, people: people.as_ref() }).map_err(mql_error)
+}
+
+/// Most issue ids returned for one project; a board shows at most this many issues.
+pub const MAX_IDS: u32 = 5000;
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct IdsQuery {
+    /// An MQL query; `ORDER BY` is ignored.
+    pub mql: String,
+    /// The project the board or backlog belongs to.
+    pub project: Uuid,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchingIds {
+    /// Issues of the project that match and that the caller can see, in no particular order.
+    pub ids: Vec<Uuid>,
+    /// More than `MAX_IDS` issues match; only that many are listed.
+    pub truncated: bool,
+}
+
+#[utoipa::path(get, path = "/api/v1/search/issues/ids", params(IdsQuery), security(("bearer" = [])),
+    responses((status = 200, body = MatchingIds),
+        (status = 422, description = "The query is invalid; `errors[0].span` is the [start, end) character range at fault"),
+        (status = 503)))]
+pub async fn matching_ids(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Query(q): Query<IdsQuery>,
+) -> ApiResult<Json<MatchingIds>> {
+    let compiled = compile(&state, &ctx, &q.mql).await?;
+    let Some(projects) = visible(&state, &ctx, Some(q.project)).await? else {
+        return Ok(Json(MatchingIds { ids: vec![], truncated: false }));
+    };
+    let filters = Filters { projects, ..Filters::default() };
+    let (ids, truncated) = state.index.matching_ids(ctx.tenant_id, &compiled, &filters, MAX_IDS).await?;
+    Ok(Json(MatchingIds { ids, truncated }))
+}
+
 #[utoipa::path(get, path = "/api/v1/search/issues/query", params(MqlQuery), security(("bearer" = [])),
     responses((status = 200, body = SearchResults),
         (status = 422, description = "The query is invalid; `errors[0].span` is the [start, end) character range at fault"),
@@ -241,16 +291,7 @@ pub async fn query_issues(
     ctx: OrgContext,
     Query(q): Query<MqlQuery>,
 ) -> ApiResult<Json<SearchResults>> {
-    let parsed = mql::parse(&q.mql).map_err(mql_error)?;
-    // Naming people by email or name needs the member directory, which guests cannot see.
-    let people = if ctx.require(OrgPermission::ViewMembers).is_ok() {
-        let terms = mql::person_terms(&parsed);
-        Some(if terms.is_empty() { HashMap::new() } else { state.people.find(ctx.tenant_id, &terms).await? })
-    } else {
-        None
-    };
-    let compiled =
-        mql::compile(&parsed, &mql::Context { current_user: ctx.user_id, people: people.as_ref() }).map_err(mql_error)?;
+    let compiled = compile(&state, &ctx, &q.mql).await?;
 
     let invalid_cursor = || ApiError::invalid("cursor", "invalid_cursor", "Not a valid cursor for this query.");
     let after: Option<Value> = match q.cursor.as_deref() {
@@ -287,9 +328,19 @@ pub async fn query_issues(
         version = "1.0.0",
         description = "Full-text and MQL search over the issues the caller can browse."
     ),
-    paths(search_issues, query_issues, filters::list, filters::create, filters::get_one, filters::update, filters::delete),
+    paths(
+        search_issues,
+        query_issues,
+        matching_ids,
+        filters::list,
+        filters::create,
+        filters::get_one,
+        filters::update,
+        filters::delete
+    ),
     components(schemas(
         SearchResults,
+        MatchingIds,
         SearchHit,
         Snippet,
         TextPart,
@@ -305,6 +356,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/search/issues", get(search_issues))
         .route("/search/issues/query", get(query_issues))
+        .route("/search/issues/ids", get(matching_ids))
         .route("/search/filters", get(filters::list).post(filters::create))
         .route("/search/filters/{id}", get(filters::get_one).patch(filters::update).delete(filters::delete));
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();

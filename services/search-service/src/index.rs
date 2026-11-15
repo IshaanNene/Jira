@@ -356,6 +356,40 @@ impl Index {
         self.execute(tenant_id, body).await
     }
 
+    /// The ids of up to `limit` issues matching an MQL query, and whether more match. Only ids
+    /// are read, so this suits filtering a set the caller already holds (a board).
+    pub async fn matching_ids(
+        &self,
+        tenant_id: Uuid,
+        compiled: &crate::mql::Compiled,
+        filters: &Filters,
+        limit: u32,
+    ) -> ApiResult<(Vec<Uuid>, bool)> {
+        let mut body = body(tenant_id, filters, json!([compiled.query]), json!(["_doc"]), limit, None);
+        let object = body.as_object_mut().expect("a JSON object");
+        object.remove("highlight");
+        object.insert("_source".into(), json!(["tenant_id", "issue_id"]));
+        object.insert("track_total_hits".into(), json!(limit + 1));
+        let url = format!("{}?routing={tenant_id}", self.url("/_search"));
+        let reply = Self::checked(self.http.post(url).json(&body).send().await).await?;
+        let total = reply["hits"]["total"]["value"].as_u64().unwrap_or(0);
+        #[derive(Deserialize)]
+        struct Ids {
+            tenant_id: Uuid,
+            issue_id: Uuid,
+        }
+        let ids = reply["hits"]["hits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|raw| serde_json::from_value::<Ids>(raw["_source"].clone()).ok())
+            // Defence in depth: the filter already guarantees this.
+            .filter(|d| d.tenant_id == tenant_id)
+            .map(|d| d.issue_id)
+            .collect();
+        Ok((ids, total > u64::from(limit)))
+    }
+
     async fn execute(&self, tenant_id: Uuid, body: Value) -> ApiResult<Hits> {
         let url = format!("{}?routing={tenant_id}", self.url("/_search"));
         let reply = Self::checked(self.http.post(url).json(&body).send().await).await?;

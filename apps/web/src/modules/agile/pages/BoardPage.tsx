@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Button, EmptyState, ErrorState, Input, Skeleton, toast } from "@/components/ui";
+import { MqlFilterButton, MqlFilterPanel, useMqlFilter } from "@/modules/search";
 import type { Board, BoardCard } from "@/services/api";
 import { useSession } from "@/state/session";
 import { cn } from "@/utils/cn";
@@ -26,12 +27,17 @@ function BoardBody({ board }: { board: Board }) {
   const [mine, setMine] = useState(false);
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [completing, setCompleting] = useState(false);
+  const mql = useMqlFilter(board.project_id);
+  const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
+  const matches = mql.matches;
 
   const visible = useMemo(() => {
     const text = search.trim().toLowerCase();
     return (card: BoardCard) =>
-      (!mine || card.assignee_id === userId) && (!text || card.summary.toLowerCase().includes(text) || card.key.toLowerCase().includes(text));
-  }, [search, mine, userId]);
+      (!mine || card.assignee_id === userId) &&
+      (!matches || matches.has(card.id)) &&
+      (!text || card.summary.toLowerCase().includes(text) || card.key.toLowerCase().includes(text));
+  }, [search, mine, userId, matches]);
 
   if (view.isPending) {
     return <div className="flex gap-3 px-6" aria-busy>{[0, 1, 2].map((i) => <Skeleton key={i} className="h-72 w-72" />)}</div>;
@@ -84,6 +90,7 @@ function BoardBody({ board }: { board: Board }) {
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this board" aria-label="Search this board" className="h-8 pl-8 text-sm" />
         </div>
         <Button size="sm" variant={mine ? "primary" : "secondary"} aria-pressed={mine} onClick={() => setMine((v) => !v)}>Only my issues</Button>
+        <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
         {sprint && (
           <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-muted">
             <span className="font-medium text-ink">{sprint.name}</span>
@@ -97,6 +104,11 @@ function BoardBody({ board }: { board: Board }) {
           </div>
         )}
       </div>
+      {mqlOpen && (
+        <div className="px-6 pb-3">
+          <MqlFilterPanel filter={mql} label="board" onClose={() => setMqlOpen(false)} />
+        </div>
+      )}
       {(unmapped.length > 0 || truncated) && (
         <p className="mx-6 mb-3 rounded border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning" role="status">
           {unmapped.length > 0 && `${unmapped.length} ${unmapped.length === 1 ? "issue is" : "issues are"} in a status that no column shows (${[...new Set(unmapped.map((c) => c.status))].join(", ")}). `}

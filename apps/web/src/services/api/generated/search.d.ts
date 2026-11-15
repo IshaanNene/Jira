@@ -52,6 +52,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/search/issues/ids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["matching_ids"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/search/issues/query": {
         parameters: {
             query?: never;
@@ -76,6 +92,12 @@ export interface components {
             name: string;
             query: string;
             shared?: boolean;
+        };
+        MatchingIds: {
+            /** @description Issues of the project that match and that the caller can see, in no particular order. */
+            ids: string[];
+            /** @description More than `MAX_IDS` issues match; only that many are listed. */
+            truncated: boolean;
         };
         SavedFilter: {
             /** @description The caller may rename, change or delete it. */
@@ -335,6 +357,43 @@ export interface operations {
                     "application/json": components["schemas"]["SearchResults"];
                 };
             };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    matching_ids: {
+        parameters: {
+            query: {
+                /** @description An MQL query; `ORDER BY` is ignored. */
+                mql: string;
+                /** @description The project the board or backlog belongs to. */
+                project: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchingIds"];
+                };
+            };
+            /** @description The query is invalid; `errors[0].span` is the [start, end) character range at fault */
             422: {
                 headers: {
                     [name: string]: unknown;

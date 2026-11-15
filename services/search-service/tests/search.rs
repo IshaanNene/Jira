@@ -380,8 +380,12 @@ async fn mql_queries_stay_inside_the_tenant_and_visible_projects() {
         (t, doc("HR-1", hr, "bug", ("todo", "todo"), "high", Some(maya), &[], "2026-11-03", "Payroll export")),
         (other_tenant, doc("PAY-1", pay, "bug", ("todo", "todo"), "high", Some(maya), &["backend"], "2026-11-01", "Refunds")),
     ];
+    let mut ids: HashMap<String, Uuid> = HashMap::new();
     for (tenant, d) in docs {
         let id = Uuid::parse_str(&d.id).unwrap();
+        if tenant == t {
+            ids.insert(d.key.clone(), id);
+        }
         h.issues.0.lock().unwrap().insert((tenant, id), d);
         h.changed(tenant, id).await;
     }
@@ -427,6 +431,30 @@ async fn mql_queries_stay_inside_the_tenant_and_visible_projects() {
     assert_eq!(body["errors"][0]["span"], json!([0, 6]));
     let (_, body) = h.mql(&owner, "assignee = nobody@example.com", "").await;
     assert_eq!(body["errors"][0]["span"], json!([11, 29]));
+
+    // A board's filter: ids only, within one project, inside tenancy and visibility.
+    let matching = |token: String, mql: &'static str, project: Uuid| {
+        let h = &h;
+        async move {
+            let (status, body) =
+                h.get(&token, &format!("/api/v1/search/issues/ids?mql={}&project={project}", url_escape(mql))).await;
+            let mut found: Vec<String> =
+                body["ids"].as_array().map_or_else(Vec::new, |a| a.iter().map(|v| v.as_str().unwrap().to_owned()).collect());
+            found.sort();
+            (status, found, body)
+        }
+    };
+    let id = |key: &str| ids[key].to_string();
+    let (status, found, body) = matching(owner.clone(), "type = bug ORDER BY key", pay).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(found, [id("PAY-1")], "HR-1 is a bug too, but not in the project; the other tenant's PAY-1 is not ours");
+    assert_eq!(body["truncated"], false);
+    let mut open = vec![id("PAY-1"), id("PAY-2")];
+    open.sort();
+    assert_eq!(matching(owner.clone(), "statusCategory != done", pay).await.1, open);
+    assert_eq!(matching(pay_only.clone(), "type = bug", hr).await.1, Vec::<String>::new(), "a project the viewer cannot see");
+    let (status, _, body) = matching(owner.clone(), "stauts = done", pay).await;
+    assert_eq!((status, &body["errors"][0]["span"]), (422, &json!([0, 6])));
 
     // Guests cannot look people up by email or name.
     let guest = Uuid::now_v7();

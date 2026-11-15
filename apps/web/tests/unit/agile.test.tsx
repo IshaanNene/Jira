@@ -19,7 +19,7 @@ import BacklogPage from "@/modules/agile/pages/BacklogPage";
 import BoardPage from "@/modules/agile/pages/BoardPage";
 import type { BacklogView, Board, BoardCard, BoardColumn, BoardView, IssueTransition, Sprint } from "@/services/api";
 
-import { fakeApi, project, renderAt, signIn, STATUSES } from "./harness";
+import { fakeApi, project, renderAt, signIn, STATUSES, type Call } from "./harness";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -248,3 +248,72 @@ describe("board page", () => {
     expect(screen.getByText("PAY Sprint 1")).toBeInTheDocument();
   });
 });
+
+describe("filtering the board and backlog with MQL", () => {
+  const IDS = "/api/v1/search/issues/ids";
+
+  it("keeps only matching cards on the board, with the query in the URL", async () => {
+    signIn();
+    const running = sprint({ state: "active" });
+    const api = fakeApi(
+      agileRoutes({
+        "GET /api/v1/projects": { items: [project()], next_cursor: null },
+        "GET /api/v1/boards/b1/view": {
+          board: board(), sprint: running, truncated: false, unmapped: [],
+          columns: [
+            { ...COLUMNS[0], issues: [card(1), card(2)] },
+            { ...COLUMNS[1], issues: [card(3, { status: "in_progress", status_category: "in_progress" })] },
+            { ...COLUMNS[2], issues: [] },
+          ],
+        },
+        [`GET ${IDS}`]: { ids: ["c1", "c3", "elsewhere"], truncated: false },
+      }),
+    );
+    renderAt(<BoardPage />, "/projects/:projectKey/board", "/projects/PAY/board?mql=type%20%3D%20story");
+
+    const todo = await screen.findByRole("region", { name: /^To Do/ });
+    await waitFor(() => expect(within(todo).queryByText("PAY-2")).not.toBeInTheDocument());
+    expect(within(todo).getByText("PAY-1")).toBeInTheDocument();
+    expect(within(todo).getByText("1 of 2")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: /^In Progress/ })).getByText("PAY-3")).toBeInTheDocument();
+    const sent = api.sent("GET", IDS)[0]!;
+    expect(sent.query.get("mql")).toBe("type = story");
+    expect(sent.query.get("project")).toBe(board().project_id);
+    expect(screen.getByRole("button", { name: "MQL filter on" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(within(todo).getByText("PAY-2")).toBeInTheDocument());
+  });
+
+  it("filters the backlog, pauses ranking by drag, and shows a bad query's mistake", async () => {
+    signIn();
+    fakeApi(
+      agileRoutes({
+        "GET /api/v1/projects": { items: [project()], next_cursor: null },
+        "GET /api/v1/boards/b1/backlog": backlogView(),
+        [`GET ${IDS}`]: (call: Call) =>
+          call.query.get("mql")?.startsWith("stauts")
+            ? { status: 422, body: { code: "validation_failed", detail: "Invalid", errors: [{ field: "mql", code: "invalid_query", message: 'Unknown field "stauts".', span: [0, 6] }] } }
+            : { body: { ids: ["c3"], truncated: false } },
+      }),
+    );
+    renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog");
+    const backlog = await screen.findByRole("region", { name: "Backlog" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Filter with MQL" }));
+    const editor = await screen.findByRole("combobox", { name: "MQL query" });
+    await userEvent.type(editor, "stauts = done{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent('Unknown field "stauts".');
+    expect(within(backlog).getAllByText(/^PAY-[345]$/)).toHaveLength(3);
+
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "assignee is EMPTY{Enter}");
+    await waitFor(() => expect(within(backlog).queryByText("PAY-4")).not.toBeInTheDocument());
+    expect(within(backlog).getByText("PAY-3")).toBeInTheDocument();
+    expect(within(backlog).getByText(/1 of 3 issues/)).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "PAY Sprint 1" })).getByText("No issues here match the filter.")).toBeInTheDocument();
+    expect(screen.getByText("Clear the filter to rank issues by dragging.")).toBeInTheDocument();
+    expect(within(backlog).getByRole("button", { name: "Move PAY-3" })).toBeInTheDocument();
+  });
+});
+
