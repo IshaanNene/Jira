@@ -208,7 +208,7 @@ pub struct SprintResult {
 }
 
 /// The numbers behind a chart.
-#[derive(Debug, Serialize, ToSchema, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WidgetData {
     CreatedVsResolved {

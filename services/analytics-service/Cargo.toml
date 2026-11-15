@@ -29,6 +29,9 @@ validator.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+redis.workspace = true
+sha2.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 test-utilities.workspace = true

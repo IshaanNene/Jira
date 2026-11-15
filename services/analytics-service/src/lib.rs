@@ -4,6 +4,7 @@
 //! ClickHouse holds nothing of record: drop the database, reset the consumer group's
 //! offsets, and the ingester rebuilds it from the topics.
 
+pub mod cache;
 pub mod clickhouse;
 pub mod http;
 pub mod ingest;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub reader: ClickHouse,
     pub verifier: Arc<TokenVerifier>,
     pub policy: Arc<PolicyClient>,
+    /// Chart answers, reused until the tenant's data changes.
+    pub cache: cache::ChartCache,
     pub allowed_origins: Arc<Vec<String>>,
 }
 
@@ -73,8 +76,14 @@ pub async fn migrate() -> anyhow::Result<()> {
 pub async fn rebuild(tenant_id: uuid::Uuid) -> anyhow::Result<()> {
     let secret = config::required("INTERNAL_SERVICE_SECRET")?;
     let issue = config::or("ISSUE_SERVICE_GRPC_URL", "http://127.0.0.1:9105");
-    let ingester =
-        ingest::Ingester { store: clickhouse_user("WRITER")?, source: Arc::new(source::GrpcSource::new(&issue, &secret)?) };
+    let ingester = ingest::Ingester {
+        store: clickhouse_user("WRITER")?,
+        source: Arc::new(source::GrpcSource::new(&issue, &secret)?),
+        cache: match std::env::var("REDIS_URL") {
+            Ok(url) => cache::ChartCache::new(RedisHandle::connect_in_background(&url)?),
+            Err(_) => cache::ChartCache::default(),
+        },
+    };
     let done = ingester.rebuild(tenant_id).await?;
     println!("rebuilt {} issues for tenant {tenant_id}; marked {} deleted", done.written, done.removed);
     Ok(())
@@ -93,6 +102,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     ));
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
     let policy = Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis.clone()));
+    let charts = cache::ChartCache::new(redis.clone());
     let reader = clickhouse_user("READER")?;
 
     match KafkaSettings::from_env(SERVICE_NAME) {
@@ -100,6 +110,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
             let handler = Arc::new(ingest::Ingester {
                 store: clickhouse_user("WRITER")?,
                 source: Arc::new(source::GrpcSource::new(&issue, &secret)?),
+                cache: charts.clone(),
             });
             // Batches, because ClickHouse makes one data part per insert: up to 500 events, and an
             // event waits at most 250 ms for others to join it.
@@ -121,6 +132,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
             TokenVerifier::remote(config::required("TOKEN_ISSUER")?, config::required("JWKS_URL")?)?.with_revocations(redis),
         ),
         policy,
+        cache: charts,
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
     let health = server::health_router(move || {

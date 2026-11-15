@@ -528,7 +528,14 @@ pub async fn query(State(state): State<AppState>, ctx: OrgContext, Json(q): Json
         VisibleProjects::All => None,
         VisibleProjects::Only(ids) => Some(ids),
     };
-    Ok(Json(widgets::run(&state.reader, ctx.tenant_id, &q, visible.as_deref()).await?))
+    q.validate()?;
+    let answer = state
+        .cache
+        .get_or_compute(ctx.tenant_id, &q, visible.as_deref(), || {
+            widgets::run(&state.reader, ctx.tenant_id, &q, visible.as_deref())
+        })
+        .await?;
+    Ok(Json(answer))
 }
 
 pub fn router(state: AppState) -> Router {

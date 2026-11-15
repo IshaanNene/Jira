@@ -7,6 +7,7 @@ use std::{
 };
 
 use analytics_service::{
+    cache::ChartCache,
     clickhouse::{self, ClickHouse, Params},
     http,
     ingest::Ingester,
@@ -90,6 +91,24 @@ fn ts(t: OffsetDateTime) -> String {
 }
 
 async fn harness() -> Harness {
+    harness_with(ChartCache::default()).await
+}
+
+/// With chart answers cached in the Compose Redis.
+async fn cached_harness() -> Harness {
+    let url = std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:63790".to_owned());
+    let redis = RedisHandle::connect_in_background(&url).unwrap();
+    for _ in 0..50 {
+        if redis.is_connected() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(redis.is_connected(), "Redis reachable (make infra)");
+    harness_with(ChartCache::new(redis)).await
+}
+
+async fn harness_with(cache: ChartCache) -> Harness {
     let database = format!("test_analytics_{}", Uuid::now_v7().simple());
     let admin = user("default", "analytics_owner");
     admin.execute(&format!("CREATE DATABASE {database}")).await.expect("ClickHouse reachable (make infra)");
@@ -105,11 +124,12 @@ async fn harness() -> Harness {
         reader: user(&database, "analytics_reader"),
         verifier: Arc::clone(&auth.verifier),
         policy: Arc::new(PolicyClient::new(roles.clone(), RedisHandle::default())),
+        cache: cache.clone(),
         allowed_origins: Arc::new(vec![]),
     };
     Harness {
         app: http::router(state),
-        ingester: Ingester { store: user(&database, "analytics_writer"), source: issues.clone() },
+        ingester: Ingester { store: user(&database, "analytics_writer"), source: issues.clone(), cache },
         issues,
         roles,
         auth,
@@ -667,5 +687,45 @@ async fn a_tenant_is_rebuilt_from_issue_service() {
 
     // Running it again changes nothing.
     assert_eq!(h.ingester.rebuild(tenant).await.unwrap(), analytics_service::ingest::Rebuilt { written: 4, removed: 0 });
+    h.cleanup().await;
+}
+
+#[tokio::test]
+async fn chart_answers_are_reused_until_the_tenants_data_changes() {
+    let h = cached_harness().await;
+    let (tenant, project) = (Uuid::now_v7(), Uuid::now_v7());
+    let org = Uuid::now_v7();
+    let (admin, member) = (Uuid::now_v7(), Uuid::now_v7());
+    let admin_token = h.auth.org_token(admin, "a@example.com", tenant, org, "admin").unwrap();
+    let member_token = h.auth.org_token(member, "m@example.com", tenant, org, "member").unwrap();
+    let total = |body: &Value| body["total"].as_u64().unwrap();
+    let query = json!({ "kind": "breakdown", "group_by": "type" });
+    let created = |id: Uuid| json!({ "issue_id": id, "key": "X-1", "project_id": project, "issue_type": "task", "summary": "s", "reporter_id": Uuid::now_v7(), "assignee_id": null });
+
+    let first = Uuid::now_v7();
+    h.put(tenant, first, project, "todo", "todo", "task", OffsetDateTime::now_utc(), None, 1);
+    h.event(tenant, topics::ISSUE, "issue.created", OffsetDateTime::now_utc(), created(first)).await;
+    assert_eq!(total(&h.chart(&admin_token, query.clone()).await), 1);
+
+    // A row written behind the ingester's back is not seen: the answer comes from the cache.
+    h.owner
+        .command(
+            "INSERT INTO issue_state (tenant_id, issue_id, project_id, type, status_category, created_at, updated_at, version, is_deleted) \
+             VALUES ({tenant:UUID}, generateUUIDv7(), {project:UUID}, 'task', 'todo', now64(3), now64(3), 1, 0)",
+            &Params::new().add("tenant", tenant).add("project", project),
+        )
+        .await
+        .unwrap();
+    assert_eq!(total(&h.chart(&admin_token, query.clone()).await), 1, "served from the cache");
+
+    // Someone who sees different projects never gets that answer.
+    h.roles.0.lock().unwrap().insert((tenant, member), HashMap::from([(project, ProjectRole::Member)]));
+    assert_eq!(total(&h.chart(&member_token, query.clone()).await), 2, "computed for the member's own scope");
+
+    // An ingested event marks the tenant's cached answers stale.
+    let second = Uuid::now_v7();
+    h.put(tenant, second, project, "todo", "todo", "task", OffsetDateTime::now_utc(), None, 1);
+    h.event(tenant, topics::ISSUE, "issue.created", OffsetDateTime::now_utc(), created(second)).await;
+    assert_eq!(total(&h.chart(&admin_token, query).await), 3);
     h.cleanup().await;
 }

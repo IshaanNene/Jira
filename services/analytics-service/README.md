@@ -66,6 +66,13 @@ state (versioned, so a newer event still wins) and marks deleted any issue the s
 longer lists and that was not touched while the rebuild ran. Running it again changes nothing. It needs the same
 settings as the consumer.
 
+**Caching.** Chart answers are kept in Redis for up to 5 minutes. The key holds the tenant, a SHA-256 digest of
+the query and of the projects the viewer can see, the UTC day, and the tenant's data generation
+(`analytics:generation:<tenant>`), which the ingester and `rebuild` increment after every write. A new event
+therefore makes every cached chart of its tenant miss at once, and two viewers share an answer only when they see the
+same projects. Redis is optional: when it is down or slower than 100 ms, charts are computed. Answers over 1 MiB are
+not cached.
+
 **Health.** `/health/live`, `/health/ready` (PostgreSQL and ClickHouse), `/metrics`.
 
 **Tests:** `cargo test -p analytics-service` (needs PostgreSQL and ClickHouse from `make infra`; each test uses its

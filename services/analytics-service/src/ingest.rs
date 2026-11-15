@@ -16,6 +16,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{
+    cache::ChartCache,
     clickhouse::{ClickHouse, Params},
     source::Source,
 };
@@ -27,6 +28,8 @@ const ID_PAGE: u32 = 1000;
 pub struct Ingester {
     pub store: ClickHouse,
     pub source: Arc<dyn Source>,
+    /// Told after every write, so cached charts of the tenant are not served again.
+    pub cache: ChartCache,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -313,6 +316,8 @@ impl Ingester {
         let states: Vec<StateRow> = states.into_values().collect();
         self.store.insert("issue_state", &states).await?;
         self.store.insert("issue_events", &rows).await?;
+        let mut changed: HashSet<Uuid> = states.iter().map(|s| s.tenant_id).chain(rows.iter().map(|r| r.tenant_id)).collect();
+        changed.extend(projects.iter().map(|(tenant_id, _)| *tenant_id));
         // After this batch's state rows, so none of them can outlive the project.
         for (tenant_id, project_id) in projects {
             let sql = "INSERT INTO issue_state \
@@ -321,6 +326,9 @@ impl Ingester {
                 FROM issue_state FINAL WHERE tenant_id = {tenant:UUID} AND project_id = {project:UUID}";
             let params = Params::new().add("tenant", tenant_id).add("project", project_id);
             self.store.command(sql, &params).await?;
+        }
+        for tenant_id in changed {
+            self.cache.invalidate(tenant_id).await;
         }
         Ok(rejected)
     }
@@ -388,6 +396,7 @@ impl Ingester {
             .map(|l| StateRow::deleted(tenant_id, l.issue_id, l.project_id))
             .collect();
         self.store.insert("issue_state", &gone).await?;
+        self.cache.invalidate(tenant_id).await;
         tracing::info!(%tenant_id, written, removed = gone.len(), "analytics rebuild finished");
         Ok(Rebuilt { written, removed: gone.len() })
     }
