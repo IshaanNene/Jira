@@ -238,12 +238,29 @@ async fn activity_notifies_the_right_people_once_and_only_while_they_can_see_the
         }
     }
 
+    // A description edit that adds mentions tells only the people it mentions (not followers),
+    // and still nobody without access.
+    h.deliver(
+        t,
+        "issue.mentioned",
+        watcher,
+        json!({ "issue_id": issue, "key": "PAY-7", "project_id": project, "mentioned_user_ids": [reporter, outsider] }),
+    )
+    .await;
+    let (_, inbox) = h.call("GET", "/api/v1/notifications", &h.token(t, reporter)).await;
+    assert_eq!(inbox["items"][0]["kind"], "mentioned");
+    assert_eq!(inbox["items"][0]["detail"], json!({ "in": "description" }));
+    let (_, inbox) = h.call("GET", "/api/v1/notifications", &h.token(t, outsider)).await;
+    assert!(inbox["items"].as_array().unwrap().is_empty());
+    let (_, inbox) = h.call("GET", "/api/v1/notifications", &h.token(t, author)).await;
+    assert_eq!(inbox["items"].as_array().unwrap().len(), 1, "the assignee is not told about mentions of others");
+
     // Each notification announced itself for the live channel.
     let announced: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE event_type = 'notification.created'")
         .fetch_one(&h.db.owner)
         .await
         .unwrap();
-    assert_eq!(announced, 4);
+    assert_eq!(announced, 5);
     h.db.cleanup().await;
 }
 

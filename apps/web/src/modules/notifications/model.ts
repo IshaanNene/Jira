@@ -8,7 +8,7 @@ export function describe(n: Pick<AppNotification, "kind" | "actor_name" | "detai
     case "assigned":
       return `${who} assigned this to you`;
     case "mentioned":
-      return `${who} mentioned you in a comment`;
+      return (n.detail as { in?: unknown }).in === "description" ? `${who} mentioned you in the description` : `${who} mentioned you in a comment`;
     case "commented":
       return `${who} commented`;
     case "status_changed": {

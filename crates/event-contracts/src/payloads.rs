@@ -213,6 +213,20 @@ pub struct CommentDeletedV1 {
 }
 payload!(CommentDeletedV1, "comment.deleted", 1, topics::ISSUE, "issue");
 
+/// People newly mentioned in a description (on create or edit) or in an edited comment.
+/// A new comment's mentions travel in `comment.created` instead.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueMentionedV1 {
+    pub issue_id: Uuid,
+    pub key: String,
+    pub project_id: Uuid,
+    /// The edited comment; absent for a description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_id: Option<Uuid>,
+    pub mentioned_user_ids: Vec<Uuid>,
+}
+payload!(IssueMentionedV1, "issue.mentioned", 1, topics::ISSUE, "issue");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowPublishedV1 {
     pub workflow_id: Uuid,

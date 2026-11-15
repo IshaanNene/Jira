@@ -636,6 +636,54 @@ async fn comments_belong_to_their_authors() {
 }
 
 #[tokio::test]
+async fn mentions_added_later_are_announced_once() {
+    let h = harness().await;
+    let pay = h.project("PAY");
+    let (_, ada) = h.user(&[(pay, ProjectRole::Member)]);
+    let (bob, _) = h.user(&[(pay, ProjectRole::Member)]);
+    let (carol, _) = h.user(&[(pay, ProjectRole::Member)]);
+    let doc = |ids: &[Uuid]| {
+        let mut content = vec![json!({ "type": "text", "text": "cc " })];
+        content.extend(ids.iter().map(|id| json!({ "type": "mention", "attrs": { "id": id, "label": "x" } })));
+        json!({ "type": "doc", "content": [{ "type": "paragraph", "content": content }] })
+    };
+    let announced = || async {
+        let rows: Vec<(Value,)> =
+            sqlx::query_as("SELECT payload->'payload' FROM outbox WHERE event_type = 'issue.mentioned' ORDER BY created_at, id")
+                .fetch_all(&h.db.owner)
+                .await
+                .unwrap();
+        rows.into_iter().map(|(p,)| (p["mentioned_user_ids"].clone(), p.get("comment_id").cloned())).collect::<Vec<_>>()
+    };
+
+    // Mentioned in the description of a new issue.
+    let created =
+        h.create(&ada, json!({ "project_key": "PAY", "type": "task", "summary": "Plan", "description": doc(&[bob]) })).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let key = created.body["key"].as_str().unwrap().to_owned();
+    assert_eq!(announced().await, [(json!([bob]), None)]);
+
+    // An edit tells only whom it adds; saving the same text again tells nobody.
+    let path = format!("/api/v1/issues/{key}");
+    let edit = h.call(Method::PATCH, &path, &ada, Some(json!({ "description": doc(&[bob, carol]) })), Some(1)).await;
+    assert_eq!(edit.status, StatusCode::OK, "{}", edit.body);
+    let again = h.call(Method::PATCH, &path, &ada, Some(json!({ "description": doc(&[carol, bob]) })), Some(2)).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(announced().await.len(), 2);
+    assert_eq!(announced().await[1], (json!([carol]), None));
+
+    // A new comment's mentions go out with `comment.created`; an edit that adds someone is announced.
+    let base = format!("{path}/comments");
+    let comment = h.call(Method::POST, &base, &ada, Some(json!({ "body": doc(&[bob]) })), None).await.body["id"].clone();
+    let comment_path = format!("{base}/{}", comment.as_str().unwrap());
+    assert_eq!(announced().await.len(), 2);
+    let edited = h.call(Method::PATCH, &comment_path, &ada, Some(json!({ "body": doc(&[bob, carol]) })), None).await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(announced().await[2], (json!([carol]), Some(comment)));
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn links_respect_project_visibility() {
     let h = harness().await;
     let (pay, secret) = (h.project("PAY"), h.project("SEC"));

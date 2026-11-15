@@ -22,7 +22,7 @@ hierarchy (epic → issue → subtask), comments, links, change history, watcher
   executables and markup refused; downloads proxied, authorized and always served as attachments.
 
 **Database.** Owns `issue_db`: `custom_fields`, `attachments`, `issues`, `project_issue_counters`, `comments`, `issue_links`, `issue_history`,
-`watchers` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted`,
+`watchers` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted|mentioned`,
 `comment.created|deleted`.
 
 **Temporary.** Statuses and transitions are a fixed workflow in `domain.rs` until workflow-service (Phase 3).

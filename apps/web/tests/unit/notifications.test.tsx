@@ -18,6 +18,7 @@ describe("notification wording", () => {
   it("says who did what", () => {
     expect(describeNotification(note())).toBe("Maya Patel assigned this to you");
     expect(describeNotification(note({ kind: "mentioned" }))).toBe("Maya Patel mentioned you in a comment");
+    expect(describeNotification(note({ kind: "mentioned", detail: { in: "description" } as never }))).toBe("Maya Patel mentioned you in the description");
     expect(describeNotification(note({ kind: "status_changed", detail: { to_status: "in_review" } as never }))).toBe(
       "Maya Patel changed the status to In review",
     );

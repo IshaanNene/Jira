@@ -8,6 +8,7 @@ In-app notifications for issue activity, delivered live through realtime-service
 |---|---|
 | `issue.assigned` | the new assignee (`assigned`) |
 | `comment.created` | people mentioned (`mentioned`); reporter, assignee and watchers (`commented`) |
+| `issue.mentioned` | people newly mentioned in a description or an edited comment (`mentioned`) only |
 | `issue.transitioned` | reporter, assignee and watchers (`status_changed`) |
 
 Never the person who acted, and only active workspace members who can still browse the project (their policy

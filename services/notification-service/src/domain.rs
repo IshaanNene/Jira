@@ -1,7 +1,7 @@
 //! Who is told about what. Pure functions over an event and the issue's audience.
 
 use event_bus::{Event, HandlerError};
-use event_contracts::payloads::{CommentCreatedV1, IssueAssignedV1, IssueCreatedV1, IssueTransitionedV1};
+use event_contracts::payloads::{CommentCreatedV1, IssueAssignedV1, IssueCreatedV1, IssueMentionedV1, IssueTransitionedV1};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -41,8 +41,19 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum What {
     Assigned(Uuid),
-    Commented { comment_id: Uuid, mentioned: Vec<Uuid> },
-    Transitioned { from: String, to: String },
+    Commented {
+        comment_id: Uuid,
+        mentioned: Vec<Uuid>,
+    },
+    /// Mentioned in a description, or added to an existing comment.
+    Mentioned {
+        comment_id: Option<Uuid>,
+        mentioned: Vec<Uuid>,
+    },
+    Transitioned {
+        from: String,
+        to: String,
+    },
 }
 
 /// An event that can cause notifications.
@@ -58,6 +69,8 @@ impl Trigger {
         match &self.what {
             What::Assigned(_) => json!({}),
             What::Commented { comment_id, .. } => json!({ "comment_id": comment_id }),
+            What::Mentioned { comment_id: Some(comment_id), .. } => json!({ "comment_id": comment_id }),
+            What::Mentioned { comment_id: None, .. } => json!({ "in": "description" }),
             What::Transitioned { from, to } => json!({ "from_status": from, "to_status": to }),
         }
     }
@@ -85,6 +98,10 @@ pub fn trigger(event: &Event) -> Result<Option<Trigger>, HandlerError> {
         "comment.created" => {
             let p: CommentCreatedV1 = event.payload()?;
             make(p.issue_id, What::Commented { comment_id: p.comment_id, mentioned: p.mentioned_user_ids })
+        }
+        "issue.mentioned" => {
+            let p: IssueMentionedV1 = event.payload()?;
+            make(p.issue_id, What::Mentioned { comment_id: p.comment_id, mentioned: p.mentioned_user_ids })
         }
         "issue.transitioned" => {
             let p: IssueTransitionedV1 = event.payload()?;
@@ -124,6 +141,11 @@ pub fn recipients(trigger: &Trigger, audience: &Audience) -> Vec<(Uuid, Kind)> {
             }
             for user in followers() {
                 add(user, Kind::Commented);
+            }
+        }
+        What::Mentioned { mentioned, .. } => {
+            for user in mentioned {
+                add(*user, Kind::Mentioned);
             }
         }
         What::Transitioned { .. } => {
@@ -184,5 +206,15 @@ mod tests {
             vec![(Uuid::from_u128(1), Kind::StatusChanged), (Uuid::from_u128(2), Kind::StatusChanged)]
         );
         assert_eq!(t.detail()["to_status"], "done");
+    }
+
+    #[test]
+    fn later_mentions_reach_only_the_people_mentioned_and_not_followers() {
+        let a = audience();
+        let t = trig(1, What::Mentioned { comment_id: None, mentioned: vec![Uuid::from_u128(1), Uuid::from_u128(9)] });
+        assert_eq!(recipients(&t, &a), vec![(Uuid::from_u128(9), Kind::Mentioned)]);
+        assert_eq!(t.detail(), json!({ "in": "description" }));
+        let c = Uuid::now_v7();
+        assert_eq!(trig(1, What::Mentioned { comment_id: Some(c), mentioned: vec![] }).detail(), json!({ "comment_id": c }));
     }
 }

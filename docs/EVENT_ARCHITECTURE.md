@@ -39,7 +39,7 @@ One topic per aggregate type, so that all events of one aggregate are totally or
 | `platform.tenant.v1` | `tenant.provisioned`, `tenant.placement_changed`, `tenant.suspended` | `tenant_id` | tenant |
 | `platform.organization.v1` | `organization.created`, `organization.updated`, `organization.two_step_changed`, `user.invited`, `membership.changed`, `team.changed` | `tenant_id` | user |
 | `platform.project.v1` | `project.created`, `project.updated`, `project.archived`, `version.released` | `tenant_id:project_id` | project |
-| `platform.issue.v1` | `issue.created`, `issue.updated`, `issue.deleted`, `issue.assigned`, `issue.transitioned`, `comment.created`, `comment.updated`, `comment.deleted` | `tenant_id:issue_id` | issue |
+| `platform.issue.v1` | `issue.created`, `issue.updated`, `issue.deleted`, `issue.assigned`, `issue.transitioned`, `issue.mentioned`, `comment.created`, `comment.updated`, `comment.deleted` | `tenant_id:issue_id` | issue |
 | `platform.workflow.v1` | `workflow.updated`, `workflow.published` | `tenant_id:workflow_id` | workflow |
 | `platform.agile.v1` | `sprint.created`, `sprint.started`, `sprint.completed`, `board.updated`, `issue.ranked` | `tenant_id:board_id` | agile |
 | `platform.permission.v1` | `permission.updated` | `tenant_id` | permission |

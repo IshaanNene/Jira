@@ -15,7 +15,8 @@ use event_contracts::{
     envelope::EventPayload,
     outbox,
     payloads::{
-        CommentCreatedV1, CommentDeletedV1, IssueAssignedV1, IssueCreatedV1, IssueDeletedV1, IssueTransitionedV1, IssueUpdatedV1,
+        CommentCreatedV1, CommentDeletedV1, IssueAssignedV1, IssueCreatedV1, IssueDeletedV1, IssueMentionedV1,
+        IssueTransitionedV1, IssueUpdatedV1,
     },
     Actor, EventEnvelope,
 };
@@ -284,9 +285,10 @@ pub async fn create(
     let labels = normalize_labels(body.labels)?;
     validate_points(body.story_points)?;
     validate_dates(body.start_date, body.due_date)?;
-    if let Some(doc) = &body.description {
-        richtext::validate("description", doc)?;
-    }
+    let description_mentions = match &body.description {
+        Some(doc) => richtext::validate("description", doc)?,
+        None => Vec::new(),
+    };
 
     let project = state.directory.project(ctx.tenant_id, &body.project_key.trim().to_uppercase(), false).await?;
     state.policy.snapshot(&ctx).await?.require(&ctx, project.id, ProjectPermission::CreateIssue)?;
@@ -367,6 +369,16 @@ pub async fn create(
         },
     )
     .await?;
+    if !description_mentions.is_empty() {
+        let mentioned = IssueMentionedV1 {
+            issue_id: id,
+            key: issue.key(),
+            project_id: project.id,
+            comment_id: None,
+            mentioned_user_ids: description_mentions,
+        };
+        emit(&mut tx, &ctx, id, 1, mentioned).await?;
+    }
     tx.commit().await?;
     Ok((StatusCode::CREATED, etag(issue.version), Json(dto(&state, &ctx, issue, true).await)))
 }
@@ -502,9 +514,10 @@ pub async fn update(
         next.summary = validate_summary(summary)?;
         changes.record("summary", &current.summary, &next.summary);
     }
+    let mut newly_mentioned = Vec::new();
     if let Some(description) = body.description {
         if let Some(doc) = &description {
-            richtext::validate("description", doc)?;
+            newly_mentioned = richtext::newly_mentioned(richtext::validate("description", doc)?, current.description.as_ref());
         }
         if current.description != description {
             // Bodies can be large; history records that it changed, not both versions.
@@ -695,6 +708,16 @@ pub async fn update(
         IssueUpdatedV1 { issue_id, key: issue_key.clone(), project_id, changed_fields: changes.fields() },
     )
     .await?;
+    if !newly_mentioned.is_empty() {
+        let mentioned = IssueMentionedV1 {
+            issue_id,
+            key: issue_key.clone(),
+            project_id,
+            comment_id: None,
+            mentioned_user_ids: newly_mentioned,
+        };
+        emit(&mut tx, &ctx, issue_id, version, mentioned).await?;
+    }
     if status_changed {
         emit(
             &mut tx,
@@ -848,7 +871,7 @@ pub async fn edit_comment(
     Path((key, id)): Path<(String, Uuid)>,
     Json(body): Json<CommentRequest>,
 ) -> ApiResult<Json<CommentDto>> {
-    richtext::validate("body", &body.body)?;
+    let mentions = richtext::validate("body", &body.body)?;
     if !has_text(&body.body) {
         return Err(ApiError::invalid("body", "empty_comment", "A comment cannot be empty."));
     }
@@ -859,6 +882,18 @@ pub async fn edit_comment(
         return Err(ApiError::Forbidden);
     }
     let updated = store::update_comment(tx.conn(), ctx.tenant_id, id, &body.body).await?;
+    // Only people the edit adds are told; those already mentioned heard when they were.
+    let added = richtext::newly_mentioned(mentions, Some(&comment.body));
+    if !added.is_empty() {
+        let mentioned = IssueMentionedV1 {
+            issue_id: issue.id,
+            key: issue.key(),
+            project_id: issue.project_id,
+            comment_id: Some(id),
+            mentioned_user_ids: added,
+        };
+        emit(&mut tx, &ctx, issue.id, issue.version, mentioned).await?;
+    }
     tx.commit().await?;
     Ok(Json(updated.into()))
 }

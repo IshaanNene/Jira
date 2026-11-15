@@ -11,7 +11,7 @@ type KindKey = Exclude<keyof NotificationPreferences, "email_enabled">;
 
 const KINDS: { key: KindKey; label: string; description: string }[] = [
   { key: "email_assigned", label: "Assigned to me", description: "Someone makes you the assignee of an issue." },
-  { key: "email_mentioned", label: "Mentions", description: "Someone @mentions you in a comment." },
+  { key: "email_mentioned", label: "Mentions", description: "Someone @mentions you in a comment or description." },
   { key: "email_commented", label: "Comments", description: "A comment on an issue you reported, are assigned or watch." },
   { key: "email_status_changed", label: "Status changes", description: "An issue you reported, are assigned or watch changes status." },
   { key: "email_filter_digest", label: "Saved filter subscriptions", description: "The scheduled results of saved filters you subscribed to." },

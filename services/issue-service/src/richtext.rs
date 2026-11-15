@@ -97,6 +97,31 @@ fn safe_href(href: &str) -> bool {
         && (lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:"))
 }
 
+/// The people a stored document mentions (already validated, so nothing is checked here).
+pub fn mentioned(doc: &Value) -> Vec<Uuid> {
+    fn walk(value: &Value, out: &mut Vec<Uuid>) {
+        if value.get("type").and_then(Value::as_str) == Some("mention") {
+            if let Some(id) = value.pointer("/attrs/id").and_then(Value::as_str).and_then(|s| Uuid::parse_str(s).ok()) {
+                out.push(id);
+            }
+        }
+        for child in value.get("content").and_then(Value::as_array).into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(doc, &mut out);
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Who `now` mentions that `before` did not.
+pub fn newly_mentioned(now: Vec<Uuid>, before: Option<&Value>) -> Vec<Uuid> {
+    let before = before.map(mentioned).unwrap_or_default();
+    now.into_iter().filter(|id| !before.contains(id)).collect()
+}
+
 /// The visible text of a document, blocks separated by newlines (for search). Mentions
 /// contribute their label; anything else without text contributes nothing.
 pub fn plain_text(doc: &Value) -> String {
@@ -201,5 +226,16 @@ mod tests {
         ]});
         assert_eq!(super::plain_text(&doc), "Card declined\n@Maya please look");
         assert_eq!(super::plain_text(&serde_json::json!({"type":"doc"})), "");
+    }
+
+    #[test]
+    fn newly_mentioned_is_who_the_new_text_adds() {
+        let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+        let mention = |id: Uuid| json!({ "type": "mention", "attrs": { "id": id, "label": "x" } });
+        let before = doc(json!({ "type": "paragraph", "content": [mention(a), mention(a)] }));
+        assert_eq!(mentioned(&before), vec![a]);
+        assert_eq!(newly_mentioned(vec![a, b], Some(&before)), vec![b]);
+        assert_eq!(newly_mentioned(vec![a], None), vec![a]);
+        assert!(newly_mentioned(vec![a], Some(&before)).is_empty());
     }
 }
