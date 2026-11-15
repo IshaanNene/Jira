@@ -57,6 +57,12 @@ cannot see a dashboard gets 404. Limits: 200 dashboards per owner, 30 charts per
 (as the owner). The ClickHouse users themselves are created by `infrastructure/clickhouse/init/01-users.sql` in
 development; elsewhere they are provisioned the same way.
 
+`analytics-service rebuild <tenant-id>` restores one tenant's current issue state (`issue_state`) straight from
+issue-service, as the writer, without replaying topics: it pages through every issue id, writes each issue's current
+state (versioned, so a newer event still wins) and marks deleted any issue the store holds that issue-service no
+longer lists and that was not touched while the rebuild ran. Running it again changes nothing. It needs the same
+settings as the consumer.
+
 **Health.** `/health/live`, `/health/ready` (PostgreSQL and ClickHouse), `/metrics`.
 
 **Tests:** `cargo test -p analytics-service` (needs PostgreSQL and ClickHouse from `make infra`; each test uses its
@@ -64,5 +70,5 @@ own ClickHouse database).
 
 **Not built yet.** Cumulative flow, control chart, time in status and other chart kinds; charts filtered by MQL;
 history-aware created/resolved (a reopened issue loses its earlier resolution); time zones other than UTC;
-materialized views or rollups; a rebuild command that reads from issue-service instead of the topics;
-`If-Match` on dashboards; sharing with specific people or groups.
+materialized views or rollups; a rebuild of the event history (`rebuild` restores current state only);
+sharing with specific people or groups.

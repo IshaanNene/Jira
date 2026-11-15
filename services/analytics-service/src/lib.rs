@@ -69,6 +69,17 @@ pub async fn migrate() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Rewrite one tenant's issue state from issue-service (see [`ingest::Ingester::rebuild`]).
+pub async fn rebuild(tenant_id: uuid::Uuid) -> anyhow::Result<()> {
+    let secret = config::required("INTERNAL_SERVICE_SECRET")?;
+    let issue = config::or("ISSUE_SERVICE_GRPC_URL", "http://127.0.0.1:9105");
+    let ingester =
+        ingest::Ingester { store: clickhouse_user("WRITER")?, source: Arc::new(source::GrpcSource::new(&issue, &secret)?) };
+    let done = ingester.rebuild(tenant_id).await?;
+    println!("rebuilt {} issues for tenant {tenant_id}; marked {} deleted", done.written, done.removed);
+    Ok(())
+}
+
 pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let http_addr: SocketAddr = config::or("HTTP_ADDR", "127.0.0.1:8113").parse()?;
     let secret = config::required("INTERNAL_SERVICE_SECRET")?;

@@ -50,6 +50,14 @@ impl Source for Issues {
     async fn document(&self, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Option<Document>> {
         Ok(self.0.lock().unwrap().get(&(tenant_id, issue_id)).cloned())
     }
+
+    async fn issue_ids(&self, tenant_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>> {
+        let mut ids: Vec<Uuid> =
+            self.0.lock().unwrap().keys().filter(|(t, id)| *t == tenant_id && Some(*id) > after).map(|(_, id)| *id).collect();
+        ids.sort();
+        ids.truncate(limit as usize);
+        Ok(ids)
+    }
 }
 
 #[derive(Default)]
@@ -554,5 +562,66 @@ async fn a_batch_is_written_with_one_insert_per_table() {
     h.ingester.handle_batch(&events).await.unwrap();
     assert_eq!(count("SELECT count() AS n FROM issue_events FINAL WHERE event_type = 'issue.created'").await, 200);
     assert_eq!(count("SELECT count() AS n FROM issue_state FINAL WHERE is_deleted = 0").await, 199);
+    h.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_tenant_is_rebuilt_from_issue_service() {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        issue_id: Uuid,
+        status: String,
+        is_deleted: u8,
+    }
+    let h = harness().await;
+    let (tenant, other, project) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let long_ago = OffsetDateTime::now_utc() - Duration::days(30);
+
+    // The store knows three issues; then events are lost: one issue changed, one was deleted,
+    // and two were created without the store hearing of it.
+    let (changed, deleted, kept) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    for id in [changed, deleted, kept] {
+        h.put(tenant, id, project, "todo", "todo", "task", long_ago, None, 1);
+        h.event(tenant, topics::ISSUE, "issue.created", long_ago, json!({ "issue_id": id, "project_id": project })).await;
+    }
+    h.put(tenant, changed, project, "done", "done", "task", long_ago, Some(long_ago), 2);
+    h.issues.0.lock().unwrap().remove(&(tenant, deleted));
+    let created: Vec<Uuid> = (0..2).map(|_| Uuid::now_v7()).collect();
+    for id in &created {
+        h.put(tenant, *id, project, "todo", "todo", "bug", long_ago, None, 1);
+    }
+    // Another tenant is left alone.
+    h.put(other, Uuid::now_v7(), project, "todo", "todo", "task", long_ago, None, 1);
+
+    let before: Vec<Row> =
+        h.owner.query(tenant, "SELECT issue_id, status, is_deleted FROM issue_state FINAL", &Params::new()).await.unwrap();
+    assert!(before.iter().any(|r| r.issue_id == deleted && r.is_deleted == 0), "the store still lists the deleted issue");
+
+    let done = h.ingester.rebuild(tenant).await.unwrap();
+    assert_eq!(done, analytics_service::ingest::Rebuilt { written: 4, removed: 1 });
+    let rows: Vec<Row> = h
+        .owner
+        .query(tenant, "SELECT issue_id, status, is_deleted FROM issue_state FINAL ORDER BY issue_id", &Params::new())
+        .await
+        .unwrap();
+    let state = |id: Uuid| rows.iter().find(|r| r.issue_id == id).map(|r| (r.status.as_str(), r.is_deleted));
+    assert_eq!(state(changed), Some(("done", 0)));
+    assert_eq!(state(deleted), None, "a deletion leaves FINAL");
+    assert_eq!(state(kept), Some(("todo", 0)));
+    assert!(created.iter().all(|id| state(*id) == Some(("todo", 0))));
+    assert!(rows.iter().all(|r| r.issue_id != Uuid::nil()));
+    let others: Vec<Row> = h
+        .owner
+        .query(
+            other,
+            "SELECT issue_id, status, is_deleted FROM issue_state FINAL WHERE tenant_id = {tenant:UUID}",
+            &Params::new(),
+        )
+        .await
+        .unwrap();
+    assert!(others.is_empty(), "nothing written for a tenant that was not rebuilt");
+
+    // Running it again changes nothing.
+    assert_eq!(h.ingester.rebuild(tenant).await.unwrap(), analytics_service::ingest::Rebuilt { written: 4, removed: 0 });
     h.cleanup().await;
 }

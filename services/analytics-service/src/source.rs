@@ -1,7 +1,7 @@
 //! Current issue state comes from issue-service, the owner of the data. Events say which
 //! issue changed; the snapshot written to ClickHouse is always read fresh.
 
-use api_contracts::issue::v1::{issues_client::IssuesClient, Document, GetDocumentsRequest};
+use api_contracts::issue::v1::{issues_client::IssuesClient, Document, GetDocumentsRequest, ListIssueIdsRequest};
 use async_trait::async_trait;
 use auth_middleware::service_auth::{is_transient, lazy_channel, ServiceClientAuth};
 use error_handling::{from_status, ApiResult};
@@ -22,6 +22,9 @@ pub trait Source: Send + Sync {
         }
         Ok(found)
     }
+
+    /// One page of the tenant's issue ids in id order, after `after` (rebuilds only).
+    async fn issue_ids(&self, tenant_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>>;
 }
 
 /// `GetDocuments` serves at most this many issues per call.
@@ -71,5 +74,21 @@ impl Source for GrpcSource {
             found.extend(reply.documents);
         }
         Ok(found)
+    }
+
+    async fn issue_ids(&self, tenant_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>> {
+        let reply = retry(RetryPolicy::default(), is_transient, || {
+            let mut client = self.issues.clone();
+            let req = ListIssueIdsRequest {
+                tenant_id: tenant_id.to_string(),
+                after_id: after.map(|a| a.to_string()).unwrap_or_default(),
+                limit,
+            };
+            async move { client.list_issue_ids(req).await }
+        })
+        .await
+        .map_err(|s| from_status(&s, "issue-service"))?
+        .into_inner();
+        Ok(reply.ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect())
     }
 }

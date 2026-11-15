@@ -3,7 +3,7 @@
 //! replaying a topic from the start are both safe.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use event_bus::{BatchHandler, Event, Handler, HandlerError};
 use event_contracts::payloads::{IssueTransitionedV1, SprintCompletedV1, SprintStartedV1};
 use serde::{Deserialize, Serialize};
-use time::format_description::well_known::Rfc3339;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{
@@ -21,6 +21,8 @@ use crate::{
 };
 
 pub const CONSUMER: &str = "analytics-service";
+/// Issue ids listed per page when rebuilding a tenant (issue-service allows 1000).
+const ID_PAGE: u32 = 1000;
 
 pub struct Ingester {
     pub store: ClickHouse,
@@ -321,6 +323,73 @@ impl Ingester {
             self.store.command(sql, &params).await?;
         }
         Ok(rejected)
+    }
+}
+
+/// What a rebuild did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Rebuilt {
+    /// Issues whose current state was written.
+    pub written: usize,
+    /// Issues the store still showed that no longer exist, now marked deleted.
+    pub removed: usize,
+}
+
+impl Ingester {
+    /// Rewrite one tenant's issue state from issue-service, for when events were lost (a topic
+    /// past its retention, a consumer reset) or the store was dropped. Safe to run while the
+    /// consumer is running: rows are versioned, so an event newer than the rebuild still wins.
+    ///
+    /// Only current state can be rebuilt this way. The transition history behind cycle time
+    /// exists only in the topics, so it is restored by replaying them, not by this.
+    pub async fn rebuild(&self, tenant_id: Uuid) -> anyhow::Result<Rebuilt> {
+        // Issues not touched since before the rebuild began and not listed now are gone. Anything
+        // newer may have been created after its page was listed, so it is left to the events.
+        let started = (OffsetDateTime::now_utc() - time::Duration::seconds(1)).format(&Rfc3339)?;
+        let (mut seen, mut written, mut after) = (HashSet::new(), 0, None);
+        loop {
+            let ids = self.source.issue_ids(tenant_id, after, ID_PAGE).await?;
+            let Some(last) = ids.last().copied() else { break };
+            let rows: Vec<StateRow> = self
+                .source
+                .documents(tenant_id, &ids)
+                .await?
+                .into_iter()
+                .filter_map(|d| StateRow::from_document(tenant_id, d))
+                .collect();
+            seen.extend(rows.iter().map(|r| r.issue_id));
+            self.store.insert("issue_state", &rows).await?;
+            written += rows.len();
+            tracing::info!(%tenant_id, written, "rebuilding analytics");
+            after = Some(last);
+            if ids.len() < ID_PAGE as usize {
+                break;
+            }
+        }
+
+        #[derive(Deserialize)]
+        struct Live {
+            issue_id: Uuid,
+            project_id: Uuid,
+        }
+        let live: Vec<Live> = self
+            .store
+            .query(
+                tenant_id,
+                "SELECT issue_id, project_id FROM issue_state FINAL \
+                 WHERE tenant_id = {tenant:UUID} AND is_deleted = 0 \
+                   AND updated_at < parseDateTime64BestEffort({started:String}, 3, 'UTC')",
+                &Params::new().add("started", &started),
+            )
+            .await?;
+        let gone: Vec<StateRow> = live
+            .into_iter()
+            .filter(|l| !seen.contains(&l.issue_id))
+            .map(|l| StateRow::deleted(tenant_id, l.issue_id, l.project_id))
+            .collect();
+        self.store.insert("issue_state", &gone).await?;
+        tracing::info!(%tenant_id, written, removed = gone.len(), "analytics rebuild finished");
+        Ok(Rebuilt { written, removed: gone.len() })
     }
 }
 
