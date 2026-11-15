@@ -176,6 +176,19 @@ export interface components {
             /** Format: uuid */
             sprint_id: string;
         };
+        StatusTime: {
+            /** Format: double */
+            mean_days: number;
+            /** Format: double */
+            median_days: number;
+            /** @description Status key. */
+            status: string;
+            /**
+             * Format: int64
+             * @description Stays that ended in the period.
+             */
+            stays: number;
+        };
         UpdateDashboard: {
             description?: string | null;
             name?: string | null;
@@ -227,6 +240,10 @@ export interface components {
             kind: "cumulative_flow";
         } | {
             /** @enum {string} */
+            kind: "time_in_status";
+            statuses: components["schemas"]["StatusTime"][];
+        } | {
+            /** @enum {string} */
             kind: "velocity";
             sprints: components["schemas"]["SprintResult"][];
         };
@@ -256,6 +273,15 @@ export interface components {
             /** @enum {string} */
             kind: "breakdown";
             projects?: string[];
+        } | {
+            /** @enum {string} */
+            kind: "time_in_status";
+            projects?: string[];
+            /**
+             * Format: int32
+             * @description 4 to 52.
+             */
+            weeks: number;
         } | {
             /**
              * Format: int32

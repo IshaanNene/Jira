@@ -69,7 +69,11 @@ export function WidgetView({ query, title, height = 260 }: { query: WidgetQuery 
   if (!answer || isEmpty(answer)) {
     return (
       <p className="flex items-center justify-center px-4 text-center text-sm text-ink-subtle" style={{ height }}>
-        {answer?.kind === "velocity" ? "Nothing yet: velocity appears once a sprint is completed." : "No issues match in this period."}
+        {answer?.kind === "velocity"
+          ? "Nothing yet: velocity appears once a sprint is completed."
+          : answer?.kind === "time_in_status"
+            ? "No issue moved on from a status in this period."
+            : "No issues match in this period."}
       </p>
     );
   }

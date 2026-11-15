@@ -39,6 +39,14 @@ pub enum WidgetQuery {
         #[serde(default)]
         include_done: bool,
     },
+    /// Days issues spent in each status, for stays that ended (the issue moved on) in the
+    /// last weeks.
+    TimeInStatus {
+        #[serde(default)]
+        projects: Vec<Uuid>,
+        /// 4 to 52.
+        weeks: u16,
+    },
     /// Issues in each status category at the end of each day: a cumulative flow diagram.
     CumulativeFlow {
         #[serde(default)]
@@ -101,6 +109,7 @@ impl WidgetQuery {
             WidgetQuery::CreatedVsResolved { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::CycleTime { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::Breakdown { projects: p, .. } => projects(p),
+            WidgetQuery::TimeInStatus { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::CumulativeFlow { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::Velocity { sprints, .. } => range("sprints", *sprints, 3, 20),
         }
@@ -111,7 +120,8 @@ impl WidgetQuery {
             WidgetQuery::CreatedVsResolved { projects, .. }
             | WidgetQuery::CycleTime { projects, .. }
             | WidgetQuery::Breakdown { projects, .. }
-            | WidgetQuery::CumulativeFlow { projects, .. } => projects.clone(),
+            | WidgetQuery::CumulativeFlow { projects, .. }
+            | WidgetQuery::TimeInStatus { projects, .. } => projects.clone(),
             WidgetQuery::Velocity { project, .. } => vec![*project],
         }
     }
@@ -151,6 +161,16 @@ pub struct DayFlow {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct StatusTime {
+    /// Status key.
+    pub status: String,
+    pub median_days: f64,
+    pub mean_days: f64,
+    /// Stays that ended in the period.
+    pub stays: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct SprintResult {
     pub sprint_id: Uuid,
     pub name: String,
@@ -168,6 +188,7 @@ pub enum WidgetData {
     CycleTime { weeks: Vec<WeekCycleTime> },
     Breakdown { group_by: GroupBy, groups: Vec<Group>, total: u64 },
     CumulativeFlow { days: Vec<DayFlow> },
+    TimeInStatus { statuses: Vec<StatusTime> },
     Velocity { sprints: Vec<SprintResult> },
 }
 
@@ -183,6 +204,7 @@ impl WidgetData {
             WidgetQuery::CumulativeFlow { days, .. } => {
                 WidgetData::CumulativeFlow { days: flow(&BTreeMap::new(), &BTreeMap::new(), today, *days) }
             }
+            WidgetQuery::TimeInStatus { .. } => WidgetData::TimeInStatus { statuses: vec![] },
             WidgetQuery::Velocity { .. } => WidgetData::Velocity { sprints: vec![] },
         }
     }
@@ -405,6 +427,35 @@ pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible:
                 }
             }
             Ok(WidgetData::CumulativeFlow { days: flow(&current, &changes, today, *days) })
+        }
+        WidgetQuery::TimeInStatus { weeks, .. } => {
+            let from = today - Duration::weeks(i64::from(*weeks)) + Duration::days(1);
+            // A stay in a status ends when the issue leaves it, and began at the move before
+            // (or when the issue was created). Earlier moves are read too, so a stay that began
+            // before the period still has its start.
+            let sql = format!(
+                "SELECT status, round(quantileExact(0.5)(days), 1) AS median_days, round(avg(days), 1) AS mean_days, \
+                        count() AS stays \
+                 FROM ( \
+                   SELECT t.from_status AS status, \
+                          dateDiff('second', if(t.n = 1, l.created_at, t.prev), t.occurred_at) / 86400 AS days \
+                   FROM ( \
+                     SELECT issue_id, from_status, occurred_at, \
+                            row_number() OVER w AS n, lagInFrame(occurred_at) OVER w AS prev \
+                     FROM issue_events FINAL \
+                     WHERE tenant_id = {{tenant:UUID}} AND event_type = 'issue.transitioned' \
+                     WINDOW w AS (PARTITION BY issue_id ORDER BY occurred_at, event_id \
+                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) \
+                   ) AS t \
+                   INNER JOIN ( \
+                     SELECT issue_id, created_at FROM issue_state FINAL WHERE tenant_id = {{tenant:UUID}}{filter} \
+                   ) AS l ON t.issue_id = l.issue_id \
+                   WHERE t.from_status != '' AND toDate(t.occurred_at) >= {{from:Date}} \
+                 ) WHERE days >= 0 \
+                 GROUP BY status ORDER BY median_days DESC, status LIMIT 50"
+            );
+            let statuses = store.query(tenant, &sql, &params.add("from", day_string(from))).await.map_err(unavailable)?;
+            Ok(WidgetData::TimeInStatus { statuses })
         }
         WidgetQuery::Velocity { project, sprints } => {
             let sql = "SELECT sprint_id, any(name) AS name, any(completed) AS completed, any(incomplete) AS incomplete, \

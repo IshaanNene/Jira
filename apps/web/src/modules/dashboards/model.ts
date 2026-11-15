@@ -9,6 +9,7 @@ export const KIND_LABEL: Record<WidgetKind, string> = {
   cycle_time: "Cycle time",
   breakdown: "Issue breakdown",
   cumulative_flow: "Cumulative flow",
+  time_in_status: "Time in status",
   velocity: "Sprint velocity",
 };
 
@@ -17,6 +18,7 @@ export const KIND_DESCRIPTION: Record<WidgetKind, string> = {
   cycle_time: "Days from first start to done, per week the issues were finished.",
   breakdown: "Open issues counted by a field.",
   cumulative_flow: "Issues to do, in progress and done at the end of each day.",
+  time_in_status: "Median days issues stayed in each status before moving on.",
   velocity: "Issues completed and left over in each completed sprint.",
 };
 
@@ -33,6 +35,7 @@ export const PERIODS = {
   created_vs_resolved: [7, 14, 30, 90, 180, 365],
   cycle_time: [4, 8, 12, 26, 52],
   cumulative_flow: [14, 30, 90, 180, 365],
+  time_in_status: [4, 8, 12, 26, 52],
   velocity: [3, 5, 7, 10, 20],
 } as const;
 
@@ -47,6 +50,8 @@ export function defaultQuery(kind: WidgetKind, projects: string[], firstProject?
       return { kind, projects, group_by: "status_category", include_done: false };
     case "cumulative_flow":
       return { kind, projects, days: 30 };
+    case "time_in_status":
+      return { kind, projects, weeks: 12 };
     case "velocity":
       return { kind, project: projects[0] ?? firstProject ?? "", sprints: 7 };
   }
@@ -75,6 +80,8 @@ export function describeQuery(query: WidgetQuery, projectName: (id: string) => s
       return `${scope} · ${query.include_done ? "all issues" : "open issues"}`;
     case "cumulative_flow":
       return `${scope} · last ${query.days} days`;
+    case "time_in_status":
+      return `${scope} · stays ended in the last ${query.weeks} weeks`;
     case "velocity":
       return `${scope} · last ${query.sprints} sprints`;
   }
@@ -126,6 +133,8 @@ export function isEmpty(data: WidgetData): boolean {
       return data.total === 0;
     case "cumulative_flow":
       return data.days.every((d) => d.todo + d.in_progress + d.done === 0);
+    case "time_in_status":
+      return data.statuses.length === 0;
     case "velocity":
       return data.sprints.length === 0;
   }
@@ -164,6 +173,14 @@ export function tableOf(data: WidgetData, names: Names): Table {
       return {
         columns: [{ label: "Day" }, { label: "To do", numeric: true }, { label: "In progress", numeric: true }, { label: "Done", numeric: true }],
         rows: [...data.days].reverse().map((d) => ({ key: d.date, cells: [formatDay(d.date), String(d.todo), String(d.in_progress), String(d.done)] })),
+      };
+    case "time_in_status":
+      return {
+        columns: [{ label: "Status" }, { label: "Stays", numeric: true }, { label: "Median days", numeric: true }, { label: "Mean days", numeric: true }],
+        rows: data.statuses.map((s) => ({
+          key: s.status,
+          cells: [titleCase(s.status), String(s.stays), formatDays(s.median_days), formatDays(s.mean_days)],
+        })),
       };
     case "velocity":
       return {

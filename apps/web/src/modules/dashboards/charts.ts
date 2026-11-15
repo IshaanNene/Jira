@@ -6,6 +6,7 @@ import type { EChartsCoreOption } from "echarts/core";
 import type { ChartTheme } from "@/components/charts/Chart";
 import { bar, categoryAxis, chrome, line, valueAxis } from "@/components/charts/options";
 import type { WidgetData } from "@/services/api";
+import { titleCase } from "@/utils/format";
 
 import { CATEGORY_LABEL, formatDays, formatShortDay, GROUP_LABEL, groupLabel, type Names } from "./model";
 
@@ -66,6 +67,25 @@ export function chartOption(data: WidgetData, theme: ChartTheme, names: Names): 
             name: "Issues",
             barMaxWidth: 20,
             label: { show: true, position: "right", color: theme.ink },
+          },
+        ],
+      };
+    }
+    case "time_in_status": {
+      // One series, sideways bars like the breakdown: the title names it, so no legend.
+      const base = chrome(theme, formatDays);
+      return {
+        ...base,
+        legend: { show: false },
+        grid: { ...base.grid, top: 24, right: 40 },
+        tooltip: { ...base.tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
+        xAxis: { ...valueAxis(theme, "Median days", false), nameLocation: "end" },
+        yAxis: { ...categoryAxis(theme, data.statuses.map((s) => titleCase(s.status))), inverse: true, axisLabel: { color: theme.ink, width: 140, overflow: "truncate" } },
+        series: [
+          {
+            ...bar("Median days", theme.series[0], data.statuses.map((s) => s.median_days), [0, 4, 4, 0]),
+            barMaxWidth: 20,
+            label: { show: true, position: "right", color: theme.ink, formatter: (p: { value: number }) => formatDays(p.value) },
           },
         ],
       };

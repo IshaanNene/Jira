@@ -70,6 +70,24 @@ describe("dashboard model", () => {
     expect(lines.series[0].symbolSize).toBeGreaterThanOrEqual(8);
   });
 
+  it("charts time in status as sideways bars of median days", () => {
+    const data: WidgetData = {
+      kind: "time_in_status",
+      statuses: [
+        { status: "in_review", median_days: 2.5, mean_days: 3.25, stays: 4 },
+        { status: "todo", median_days: 1, mean_days: 1, stays: 2 },
+      ],
+    };
+    const option = chartOption(data, theme, names) as Record<string, any>;
+    expect(option.legend.show).toBe(false);
+    expect(option.yAxis.data).toEqual(["In review", "Todo"]);
+    expect(option.series).toHaveLength(1);
+    expect(option.series[0].data).toEqual([2.5, 1]);
+    expect(option.series[0].label.formatter({ value: 2.5 })).toBe("2.5");
+    expect(describeQuery({ kind: "time_in_status", projects: [], weeks: 12 }, names.project)).toBe("All projects · stays ended in the last 12 weeks");
+    expect(tableOf(data, names).rows[0]!.cells).toEqual(["In review", "4", "2.5", "3.3"]);
+  });
+
   it("stacks cumulative flow with done at the bottom, in one hue stronger towards done", () => {
     const flow: WidgetData = {
       kind: "cumulative_flow",

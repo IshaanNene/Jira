@@ -325,6 +325,18 @@ async fn charts_count_only_the_viewers_tenant_and_projects() {
     assert_eq!(back(6), (1, 0, 0));
     assert_eq!(back(10), (1, 0, 0));
     assert_eq!(back(11), (0, 0, 0));
+    // Time in status: `done` spent 5 days in todo and 3 in progress; `doing` 1 day in todo.
+    // Its current stay in progress has not ended, so it is not counted.
+    let tis = h.chart(&admin_token, json!({ "kind": "time_in_status", "weeks": 4 })).await;
+    let stay = |status: &str| {
+        let s = tis["statuses"].as_array().unwrap().iter().find(|s| s["status"] == status).unwrap_or_else(|| panic!("{tis}"));
+        (s["stays"].as_u64().unwrap(), s["mean_days"].as_f64().unwrap())
+    };
+    assert_eq!(tis["statuses"].as_array().unwrap().len(), 2, "{tis}");
+    assert_eq!(stay("todo"), (2, 3.0));
+    assert_eq!(stay("in_progress"), (1, 3.0));
+    let none = h.chart(&member_token, json!({ "kind": "time_in_status", "projects": [hr], "weeks": 4 })).await;
+    assert_eq!(none["statuses"], json!([]));
     let pay_member = h.chart(&member_token, json!({ "kind": "cumulative_flow", "days": 7 })).await;
     assert_eq!(pay_member["days"][6], json!({ "date": cvr["days"][13]["date"], "todo": 0, "in_progress": 1, "done": 1 }));
 
