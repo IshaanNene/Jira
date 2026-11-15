@@ -80,6 +80,10 @@ impl People for Directory {
         let all = self.0.lock().unwrap();
         Ok(terms.iter().filter_map(|t| all.get(t).map(|ids| (t.clone(), ids.clone()))).collect())
     }
+
+    async fn active_role(&self, _tenant_id: Uuid, _user_id: Uuid) -> ApiResult<Option<auth_middleware::OrgRole>> {
+        Ok(Some(auth_middleware::OrgRole::Member))
+    }
 }
 
 struct Harness {

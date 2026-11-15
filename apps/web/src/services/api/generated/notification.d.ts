@@ -146,6 +146,8 @@ export interface components {
             email_commented: boolean;
             /** @description Master switch for email. */
             email_enabled: boolean;
+            /** @description Scheduled emails of saved filters the person subscribed to. On when left out. */
+            email_filter_digest?: boolean;
             email_mentioned: boolean;
             email_status_changed: boolean;
         };

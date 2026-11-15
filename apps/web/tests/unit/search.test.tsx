@@ -249,4 +249,58 @@ describe("MQL search", () => {
     expect(await screen.findByRole("button", { name: "Save filter" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "High priority" })).toBeNull();
   });
+
+  it("subscribes to a filter by email, changes the schedule and unsubscribes", async () => {
+    signIn();
+    const at = "2026-11-15T00:00:00Z";
+    const filter = { id: "f1", name: "My bugs", query: "type = bug", owner_id: "00000000-0000-7000-8000-000000000001", shared: false, editable: true, updated_at: at };
+    let sub: Record<string, unknown> | null = null;
+    const api = fakeApi({
+      "GET /api/v1/projects": { items: [], next_cursor: null },
+      "GET /api/v1/organizations/current/members": MEMBERS,
+      "GET /api/v1/search/issues/query": { items: [hit()], total: 1, total_is_lower_bound: false, next_cursor: null },
+      "GET /api/v1/search/filters": { items: [filter] },
+      "GET /api/v1/search/filters/f1": filter,
+      "GET /api/v1/search/filters/f1/subscription": () => (sub ? { body: sub } : { status: 404, body: { code: "not_found", detail: "subscription not found" } }),
+      "PUT /api/v1/search/filters/f1/subscription": (call: Call) => {
+        sub = { filter_id: "f1", ...(call.body as object), next_run_at: "2026-11-16T09:00:00Z", last_sent_at: null };
+        return { body: sub };
+      },
+      "DELETE /api/v1/search/filters/f1/subscription": () => {
+        sub = null;
+        return { status: 204 };
+      },
+    });
+    renderAt(<SearchPage />, "/search", "/search?mode=mql&filter=f1");
+    expect(await screen.findByRole("heading", { name: "My bugs" })).toBeInTheDocument();
+
+    const open = async () => {
+      await userEvent.click(screen.getByRole("button", { name: "Filter actions" }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: "Email subscription…" }));
+      return screen.findByRole("dialog", { name: "Email subscription" });
+    };
+    let dialog = await open();
+    expect(within(dialog).queryByRole("button", { name: "Unsubscribe" })).toBeNull();
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Subscribe" }));
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/search/filters/f1/subscription")).toHaveLength(1));
+    expect(api.sent("PUT", "/api/v1/search/filters/f1/subscription")[0]!.body).toEqual({ frequency: "daily", hour: 9, weekday: null });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Weekly on a chosen day.
+    dialog = await open();
+    expect(await within(dialog).findByText(/Next email/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "How often" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Every week" }));
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Day" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Friday" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/search/filters/f1/subscription")).toHaveLength(2));
+    expect(api.sent("PUT", "/api/v1/search/filters/f1/subscription")[1]!.body).toEqual({ frequency: "weekly", hour: 9, weekday: 5 });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    dialog = await open();
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Unsubscribe" }));
+    await waitFor(() => expect(api.sent("DELETE", "/api/v1/search/filters/f1/subscription")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
 });

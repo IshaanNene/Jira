@@ -6,7 +6,7 @@ set -euo pipefail
 
 BOOTSTRAP="${1:-localhost:9092}"
 PARTITIONS="${PARTITIONS:-6}"
-TOPICS="identity tenant organization project issue workflow agile permission automation notification audit"
+TOPICS="identity tenant organization project issue workflow agile permission automation notification audit search"
 
 for name in $TOPICS; do
   topic="platform.${name}.v1"

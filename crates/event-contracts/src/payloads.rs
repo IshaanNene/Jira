@@ -352,3 +352,32 @@ mod tests {
         assert_eq!(env.aggregate_version, 4);
     }
 }
+
+/// One issue in a filter digest, as the recipient could see it when the filter ran.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DigestIssueV1 {
+    pub issue_id: Uuid,
+    pub key: String,
+    pub summary: String,
+    /// Status key.
+    pub status: String,
+}
+
+/// A subscribed saved filter ran for its subscriber; notification-service emails the result.
+/// The issues are only those the recipient could see, and at most `MAX_DIGEST_ISSUES`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilterDigestV1 {
+    pub subscription_id: Uuid,
+    pub filter_id: Uuid,
+    pub recipient_id: Uuid,
+    pub filter_name: String,
+    pub query: String,
+    pub total: u64,
+    /// The real total is at least `total`.
+    pub total_is_lower_bound: bool,
+    pub issues: Vec<DigestIssueV1>,
+}
+payload!(FilterDigestV1, "filter.digest", 1, topics::SEARCH, "filter_subscription");
+
+/// Most issues listed in one digest.
+pub const MAX_DIGEST_ISSUES: usize = 20;

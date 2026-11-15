@@ -14,6 +14,7 @@ const KINDS: { key: KindKey; label: string; description: string }[] = [
   { key: "email_mentioned", label: "Mentions", description: "Someone @mentions you in a comment." },
   { key: "email_commented", label: "Comments", description: "A comment on an issue you reported, are assigned or watch." },
   { key: "email_status_changed", label: "Status changes", description: "An issue you reported, are assigned or watch changes status." },
+  { key: "email_filter_digest", label: "Saved filter subscriptions", description: "The scheduled results of saved filters you subscribed to." },
 ];
 
 function Toggle({ id, checked, disabled, onChange, label }: { id: string; checked: boolean; disabled?: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -73,7 +74,7 @@ export default function NotificationSettingsPage() {
                   <span className="block text-sm text-ink">{k.label}</span>
                   <span className="block text-xs text-ink-muted">{k.description}</span>
                 </label>
-                <Toggle id={k.key} label={k.label} checked={prefs.data[k.key]} disabled={!prefs.data.email_enabled} onChange={(v) => change({ [k.key]: v })} />
+                <Toggle id={k.key} label={k.label} checked={prefs.data[k.key] ?? true} disabled={!prefs.data.email_enabled} onChange={(v) => change({ [k.key]: v })} />
               </li>
             ))}
           </ul>

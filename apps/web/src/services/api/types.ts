@@ -117,6 +117,8 @@ export type MatchingIds = SearchApi["MatchingIds"];
 export type SavedFilterList = SearchApi["SavedFilterList"];
 export type CreateSavedFilter = SearchApi["CreateSavedFilter"];
 export type UpdateSavedFilter = SearchApi["UpdateSavedFilter"];
+export type FilterSubscription = SearchApi["Subscription"];
+export type PutFilterSubscription = SearchApi["PutSubscription"];
 /** A rich-text document in the editor's JSON format. */
 type AnalyticsApi = AnalyticsComponents["schemas"];
 export type DashboardSummary = AnalyticsApi["DashboardSummary"];

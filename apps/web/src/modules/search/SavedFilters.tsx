@@ -16,12 +16,21 @@ import {
   DropdownMenuTrigger,
   Field,
   Input,
+  Select,
   toast,
 } from "@/components/ui";
-import { ApiError, errorMessage, type SavedFilter } from "@/services/api";
+import { ApiError, errorMessage, type FilterSubscription, type PutFilterSubscription, type SavedFilter } from "@/services/api";
 import { useSession } from "@/state/session";
 
-import { useCreateSavedFilter, useDeleteSavedFilter, useSavedFilters, useUpdateSavedFilter } from "./api";
+import {
+  useCreateSavedFilter,
+  useDeleteFilterSubscription,
+  useDeleteSavedFilter,
+  useFilterSubscription,
+  useSaveFilterSubscription,
+  useSavedFilters,
+  useUpdateSavedFilter,
+} from "./api";
 
 function nameError(error: unknown): string | undefined {
   if (error instanceof ApiError) return error.fieldErrors.find((e) => e.field === "name")?.message;
@@ -52,7 +61,7 @@ export function SavedFilters({
   const me = useSession((s) => s.account?.id);
   const filters = useSavedFilters();
   const update = useUpdateSavedFilter();
-  const [dialog, setDialog] = useState<"create" | "rename" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "rename" | "delete" | "subscribe" | null>(null);
   const close = () => setDialog(null);
 
   const own = filters.data?.items.filter((f) => f.owner_id === me) ?? [];
@@ -135,6 +144,7 @@ export function SavedFilters({
                 <DropdownMenuItem disabled={!query} onSelect={() => setDialog("create")}>
                   Save as new filter
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setDialog("subscribe")}>Email subscription…</DropdownMenuItem>
                 {current.editable && <DropdownMenuItem onSelect={() => setDialog("rename")}>Rename</DropdownMenuItem>}
                 {owner && (
                   <DropdownMenuItem onSelect={() => save({ shared: !current.shared }, current.shared ? "Only you can see this filter now" : "Filter shared with the workspace")}>
@@ -165,6 +175,9 @@ export function SavedFilters({
       </Dialog>
       <Dialog open={dialog === "rename"} onOpenChange={(open) => !open && close()}>
         {dialog === "rename" && current && <RenameDialog filter={current} onDone={(f) => { close(); onOpen(f); }} />}
+      </Dialog>
+      <Dialog open={dialog === "subscribe"} onOpenChange={(open) => !open && close()}>
+        {dialog === "subscribe" && current && <SubscribeDialog filter={current} onDone={close} />}
       </Dialog>
       <Dialog open={dialog === "delete"} onOpenChange={(open) => !open && close()}>
         {dialog === "delete" && current && <DeleteDialog filter={current} onCancel={close} onDone={() => { close(); onClose(); }} />}
@@ -250,5 +263,90 @@ function DeleteDialog({ filter, onCancel, onDone }: { filter: SavedFilter; onCan
         </Button>
       </DialogFooter>
     </DialogContent>
+  );
+}
+
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const HOURS = Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${String(h).padStart(2, "0")}:00 UTC` }));
+
+/** Email the filter's results to oneself every day or week, at a UTC hour. */
+function SubscribeDialog({ filter, onDone }: { filter: SavedFilter; onDone: () => void }) {
+  const current = useFilterSubscription(filter.id);
+  return (
+    <DialogContent
+      title="Email subscription"
+      description={`Get "${filter.name}" by email: the issues it matches that you can see, at most 20 listed.`}
+    >
+      {current.isPending ? (
+        <p className="text-sm text-ink-subtle">Loading…</p>
+      ) : current.isError ? (
+        <p role="alert" className="text-sm text-danger">{errorMessage(current.error)}</p>
+      ) : (
+        <SubscribeForm filterId={filter.id} initial={current.data} onDone={onDone} />
+      )}
+    </DialogContent>
+  );
+}
+
+function SubscribeForm({
+  filterId,
+  initial,
+  onDone,
+}: {
+  filterId: string;
+  initial: FilterSubscription | null;
+  onDone: () => void;
+}) {
+  const save = useSaveFilterSubscription(filterId);
+  const remove = useDeleteFilterSubscription(filterId);
+  const [frequency, setFrequency] = useState<"daily" | "weekly">(initial?.frequency ?? "daily");
+  const [hour, setHour] = useState(String(initial?.hour ?? 9));
+  const [weekday, setWeekday] = useState(String(initial?.weekday ?? 1));
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const body: PutFilterSubscription = { frequency, hour: Number(hour), weekday: frequency === "weekly" ? Number(weekday) : null };
+    save.mutate(body, {
+      onSuccess: (sub) => {
+        toast.success(initial ? "Subscription updated" : "Subscribed", `Next email ${new Date(sub.next_run_at).toLocaleString()}.`);
+        onDone();
+      },
+    });
+  };
+  const error = save.error ?? remove.error;
+  return (
+    <form noValidate onSubmit={submit} className="space-y-4">
+      {error && <p role="alert" className="text-sm text-danger">{errorMessage(error)}</p>}
+      <Field label="How often">
+        <Select
+          value={frequency}
+          onValueChange={(v) => setFrequency(v as "daily" | "weekly")}
+          options={[{ value: "daily", label: "Every day" }, { value: "weekly", label: "Every week" }]}
+        />
+      </Field>
+      {frequency === "weekly" && (
+        <Field label="Day">
+          <Select value={weekday} onValueChange={setWeekday} options={WEEKDAYS.map((d, i) => ({ value: String(i + 1), label: d }))} />
+        </Field>
+      )}
+      <Field label="Time">
+        <Select value={hour} onValueChange={setHour} options={HOURS} />
+      </Field>
+      {initial && <p className="text-sm text-ink-subtle">Next email {new Date(initial.next_run_at).toLocaleString()}.</p>}
+      <DialogFooter>
+        {initial && (
+          <Button
+            type="button"
+            variant="danger"
+            loading={remove.isPending}
+            onClick={() => remove.mutate(undefined, { onSuccess: () => { toast.success("Unsubscribed"); onDone(); } })}
+          >
+            Unsubscribe
+          </Button>
+        )}
+        <Button type="submit" variant="primary" loading={save.isPending}>
+          {initial ? "Save" : "Subscribe"}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }

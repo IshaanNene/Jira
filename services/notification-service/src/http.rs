@@ -60,6 +60,13 @@ pub struct NotificationPreferences {
     pub email_mentioned: bool,
     pub email_commented: bool,
     pub email_status_changed: bool,
+    /// Scheduled emails of saved filters the person subscribed to. On when left out.
+    #[serde(default = "on")]
+    pub email_filter_digest: bool,
+}
+
+fn on() -> bool {
+    true
 }
 
 impl From<store::Preferences> for NotificationPreferences {
@@ -71,6 +78,7 @@ impl From<store::Preferences> for NotificationPreferences {
             email_mentioned: on("mentioned"),
             email_commented: on("commented"),
             email_status_changed: on("status_changed"),
+            email_filter_digest: on("filter_digest"),
         }
     }
 }
@@ -82,6 +90,7 @@ impl From<&NotificationPreferences> for store::Preferences {
             ("mentioned", p.email_mentioned),
             ("commented", p.email_commented),
             ("status_changed", p.email_status_changed),
+            ("filter_digest", p.email_filter_digest),
         ];
         Self {
             email_enabled: p.email_enabled,

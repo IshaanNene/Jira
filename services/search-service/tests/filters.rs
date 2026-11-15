@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use auth_middleware::{PolicyClient, PolicySnapshot, PolicySource, RedisHandle};
+use auth_middleware::{OrgRole, PolicyClient, PolicySnapshot, PolicySource, RedisHandle};
 use axum::{
     body::Body,
     http::{Method, Request},
@@ -33,6 +33,10 @@ struct NoPeople;
 impl People for NoPeople {
     async fn find(&self, _tenant_id: Uuid, _terms: &[String]) -> ApiResult<HashMap<String, Vec<Uuid>>> {
         Ok(HashMap::new())
+    }
+
+    async fn active_role(&self, _tenant_id: Uuid, _user_id: Uuid) -> ApiResult<Option<OrgRole>> {
+        Ok(None)
     }
 }
 

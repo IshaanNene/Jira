@@ -2,7 +2,7 @@
 
 In-app notifications for issue activity, delivered live through realtime-service.
 
-**What creates one.** Consumes the issue topic:
+**What creates one.** Consumes the issue topic (and the search topic, for filter digests):
 
 | Event | Who hears about it |
 |---|---|
@@ -26,6 +26,13 @@ retried after 1, 2, 4, 8 and 16 minutes; permanent ones (5xx, invalid address) a
 are deleted after 7 days. All names and summaries are HTML-escaped and flattened to one line in the subject; links
 are built only from keys of the form `ABC-123` under `APP_URL`. Addresses are never logged. Locally, Mailpit
 catches everything (inbox at http://localhost:58025).
+
+**Filter digests.** The consumer also reads `platform.search.v1`: a `filter.digest` from search-service (a
+subscribed saved filter ran) becomes one email to the subscriber listing the issues it matched, at most 20, with
+the total and a link to the filter. search-service has already limited the issues to what the subscriber can see.
+There is no in-app notification; the email is skipped if the person is inactive, has no address, or has turned off
+`filter_digest` (the "Saved filter subscriptions" preference, on unless turned off), and is not delayed. The event
+id keys the delivery, so redelivery sends nothing twice; digests older than 24 hours are dropped.
 
 **Unsubscribe.** Every email carries a signed link (HMAC-SHA256 over workspace, person, kind and issue time, key
 derived from `INTERNAL_SERVICE_SECRET` with a purpose label, valid 90 days) in its footer and in
@@ -61,5 +68,5 @@ see now (losing access hides them):
 
 **Tests:** `cargo test -p notification-service` (PostgreSQL and Mailpit from `make infra`).
 
-**Not built yet.** Digests (one email per notification today); the comment text in comment emails; bounce and complaint handling from the
+**Not built yet.** Digests of several notifications in one email (one email per notification today); the comment text in comment emails; bounce and complaint handling from the
 mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications.

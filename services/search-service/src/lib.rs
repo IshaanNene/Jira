@@ -10,6 +10,7 @@ pub mod indexer;
 pub mod mql;
 pub mod people;
 pub mod source;
+pub mod subscriptions;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -104,6 +105,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         None => tracing::warn!("KAFKA_BROKERS is not set: the index will not follow changes"),
     }
 
+    let people: Arc<dyn people::People> = Arc::new(people::GrpcPeople::new(&user, &secret)?);
     let state = AppState {
         index: index.clone(),
         db: Arc::clone(&db),
@@ -111,9 +113,12 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
             TokenVerifier::remote(config::required("TOKEN_ISSUER")?, config::required("JWKS_URL")?)?.with_revocations(redis),
         ),
         policy,
-        people: Arc::new(people::GrpcPeople::new(&user, &secret)?),
+        people,
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
+    // Subscribed filters run on schedule; their digests leave through the outbox.
+    subscriptions::spawn(state.clone(), db.pools());
+    event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
     let health = server::health_router(move || {
         let (index, db) = (index.clone(), Arc::clone(&db));
         async move {

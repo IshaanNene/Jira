@@ -91,7 +91,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
                 email,
             });
             tokio::spawn(async move {
-                if let Err(error) = run_consumer(&settings, notifier::CONSUMER, &[topics::ISSUE], handler).await {
+                if let Err(error) = run_consumer(&settings, notifier::CONSUMER, &[topics::ISSUE, topics::SEARCH], handler).await {
                     tracing::error!(%error, "notification consumer stopped");
                 }
             });

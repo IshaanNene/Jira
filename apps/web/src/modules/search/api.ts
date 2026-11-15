@@ -5,7 +5,9 @@ import {
   api,
   ApiError,
   type CreateSavedFilter,
+  type FilterSubscription,
   type MatchingIds,
+  type PutFilterSubscription,
   type SavedFilter,
   type SavedFilterList,
   type SearchResults,
@@ -32,6 +34,7 @@ export const searchKeys = {
   ids: (orgId: string | undefined, projectId: string, mql: string) => ["org", orgId, "search", "ids", projectId, mql] as const,
   filters: (orgId: string | undefined) => ["org", orgId, "search-filters"] as const,
   filter: (orgId: string | undefined, id: string) => ["org", orgId, "search-filters", id] as const,
+  subscription: (orgId: string | undefined, id: string) => ["org", orgId, "search-filters", id, "subscription"] as const,
 };
 
 /** `value`, once it has stopped changing for `ms`. */
@@ -139,4 +142,39 @@ export function useUpdateSavedFilter() {
 export function useDeleteSavedFilter() {
   const refresh = useRefreshFilters();
   return useMutation({ mutationFn: (id: string) => api.delete(`${FILTERS_PATH}/${id}`), onSettled: refresh });
+}
+
+/** The caller's email subscription to a saved filter; `null` when there is none. */
+export function useFilterSubscription(filterId: string) {
+  const orgId = useSession((s) => s.organization?.id);
+  return useQuery({
+    queryKey: searchKeys.subscription(orgId, filterId),
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.get<FilterSubscription>(`${FILTERS_PATH}/${filterId}/subscription`, { signal });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled: Boolean(orgId),
+  });
+}
+
+export function useSaveFilterSubscription(filterId: string) {
+  const orgId = useSession((s) => s.organization?.id);
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: PutFilterSubscription) => api.put<FilterSubscription>(`${FILTERS_PATH}/${filterId}/subscription`, input),
+    onSuccess: (sub) => queryClient.setQueryData(searchKeys.subscription(orgId, filterId), sub),
+  });
+}
+
+export function useDeleteFilterSubscription(filterId: string) {
+  const orgId = useSession((s) => s.organization?.id);
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete(`${FILTERS_PATH}/${filterId}/subscription`),
+    onSuccess: () => queryClient.setQueryData(searchKeys.subscription(orgId, filterId), null),
+  });
 }

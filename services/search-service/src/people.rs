@@ -4,9 +4,12 @@
 
 use std::collections::HashMap;
 
-use api_contracts::user::v1::{membership_client::MembershipClient, FindMembersRequest};
+use api_contracts::user::v1::{membership_client::MembershipClient, FindMembersRequest, GetMembersRequest};
 use async_trait::async_trait;
-use auth_middleware::service_auth::{is_transient, lazy_channel, ServiceClientAuth};
+use auth_middleware::{
+    service_auth::{is_transient, lazy_channel, ServiceClientAuth},
+    OrgRole,
+};
 use error_handling::{from_status, ApiResult};
 use platform_common::resilience::{retry, RetryPolicy};
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
@@ -18,6 +21,8 @@ use crate::mql::person_key;
 pub trait People: Send + Sync {
     /// For each term (as given by [`crate::mql::person_terms`]), the members it names.
     async fn find(&self, tenant_id: Uuid, terms: &[String]) -> ApiResult<HashMap<String, Vec<Uuid>>>;
+    /// The person's workspace role while they are an active member; `None` otherwise.
+    async fn active_role(&self, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Option<OrgRole>>;
 }
 
 pub struct GrpcPeople {
@@ -62,5 +67,21 @@ impl People for GrpcPeople {
             }
         }
         Ok(found)
+    }
+
+    async fn active_role(&self, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Option<OrgRole>> {
+        let reply = retry(RetryPolicy::default(), is_transient, || {
+            let mut client = self.members.clone();
+            let req = GetMembersRequest { tenant_id: tenant_id.to_string(), user_ids: vec![user_id.to_string()] };
+            async move { client.get_members(req).await }
+        })
+        .await
+        .map_err(|s| from_status(&s, "user-service"))?
+        .into_inner();
+        Ok(reply
+            .members
+            .into_iter()
+            .find(|m| m.user_id == user_id.to_string() && m.status == "active")
+            .and_then(|m| OrgRole::parse(&m.org_role)))
     }
 }

@@ -13,6 +13,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
+    domain::Kind,
     mailer::{Mailer, Outgoing, SendError},
     store,
 };
@@ -55,7 +56,9 @@ async fn still_wanted(pool: &PgPool, c: &Claimed) -> sqlx::Result<bool> {
     let prefs =
         store::preferences(&mut tx, c.tenant_id, c.recipient_id).await.map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     tx.commit().await?;
-    Ok(unread == Some(true) && prefs.wants_email(&c.kind))
+    // A digest has no in-app notification to read first.
+    let pending = if c.kind == Kind::FilterDigest.as_str() { true } else { unread == Some(true) };
+    Ok(pending && prefs.wants_email(&c.kind))
 }
 
 async fn finish(pool: &PgPool, id: Uuid, status: &str, error: Option<&str>) -> sqlx::Result<()> {

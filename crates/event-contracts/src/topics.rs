@@ -13,3 +13,4 @@ pub const AUDIT: &str = "platform.audit.v1";
 pub fn dead_letter(topic: &str) -> String {
     format!("{topic}.dlq")
 }
+pub const SEARCH: &str = "platform.search.v1";

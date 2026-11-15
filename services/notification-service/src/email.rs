@@ -24,6 +24,7 @@ pub fn kind_label(kind: Kind) -> &'static str {
         Kind::Mentioned => "mentions",
         Kind::Commented => "comments",
         Kind::StatusChanged => "status changes",
+        Kind::FilterDigest => "saved filter subscriptions",
     }
 }
 
@@ -91,6 +92,7 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
             Some(to) => format!("changed the status to {} on", status_label(&one_line(to, 40))),
             None => "changed the status of".to_owned(),
         },
+        Kind::FilterDigest => "updated".to_owned(),
     };
     let issue_url = project_key(&key).map(|p| format!("{}/projects/{p}/issues/{key}", input.app_url));
     let settings_url = format!("{}/settings/notifications", input.app_url);
@@ -140,6 +142,119 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
     Rendered { subject, text, html }
 }
 
+/// One issue line of a filter digest.
+#[derive(Debug, Clone)]
+pub struct DigestLine<'a> {
+    pub key: &'a str,
+    pub summary: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct DigestInput<'a> {
+    pub filter_name: &'a str,
+    pub filter_id: uuid::Uuid,
+    pub total: u64,
+    pub total_is_lower_bound: bool,
+    pub issues: &'a [DigestLine<'a>],
+    pub app_url: &'a str,
+    pub unsubscribe_url: Option<&'a str>,
+}
+
+/// The scheduled email of a subscribed saved filter.
+pub fn render_digest(input: &DigestInput<'_>) -> Rendered {
+    let name = one_line(input.filter_name, 100);
+    let filter_url = format!("{}/search?mode=mql&filter={}", input.app_url, input.filter_id);
+    let settings_url = format!("{}/settings/notifications", input.app_url);
+    let plus = if input.total_is_lower_bound { "+" } else { "" };
+    let count = match (input.total, plus) {
+        (1, "") => "1 issue".to_owned(),
+        (n, plus) => format!("{n}{plus} issues"),
+    };
+    let subject = format!("[{name}] {count}");
+    let shown = input.issues.len() as u64;
+    let more = (input.total > shown).then(|| format!("and {} more", input.total - shown));
+
+    let lines: Vec<(String, String, String, Option<String>)> = input
+        .issues
+        .iter()
+        .map(|i| {
+            let key = one_line(i.key, 40);
+            let url = project_key(&key).map(|p| format!("{}/projects/{p}/issues/{key}", input.app_url));
+            (key, one_line(i.summary, 150), status_label(&one_line(i.status, 40)), url)
+        })
+        .collect();
+
+    let mut text = format!("Your saved filter \"{name}\" matches {count}.\n\n");
+    if lines.is_empty() {
+        text.push_str("Nothing matches it right now.\n");
+    }
+    for (key, summary, status, url) in &lines {
+        text.push_str(&format!("{key}  {summary}  [{status}]\n"));
+        if let Some(url) = url {
+            text.push_str(&format!("    {url}\n"));
+        }
+    }
+    if let Some(more) = &more {
+        text.push_str(&format!("…{more}\n"));
+    }
+    text.push_str(&format!("\nOpen the filter: {filter_url}\n"));
+    text.push_str(&format!(
+        "\n--\nYou are receiving this because you subscribed to this filter.\nChoose which emails you get: {settings_url}\n"
+    ));
+    if let Some(url) = input.unsubscribe_url {
+        text.push_str(&format!("Stop emails about {}: {url}\n", kind_label(Kind::FilterDigest)));
+    }
+
+    let rows: String = lines
+        .iter()
+        .map(|(key, summary, status, url)| {
+            let key_html = match url {
+                Some(u) => format!(r#"<a href="{}" style="color:#0c66e4;text-decoration:none">{}</a>"#, escape_html(u), escape_html(key)),
+                None => escape_html(key),
+            };
+            format!(
+                r#"<tr><td style="padding:6px 8px 6px 0;white-space:nowrap;font-size:13px">{key_html}</td><td style="padding:6px 8px;font-size:13px">{}</td><td style="padding:6px 0;font-size:12px;color:#44546f;white-space:nowrap">{}</td></tr>"#,
+                escape_html(summary),
+                escape_html(status)
+            )
+        })
+        .collect();
+    let empty = if lines.is_empty() {
+        r#"<p style="margin:0;font-size:13px;color:#626f86">Nothing matches it right now.</p>"#.to_owned()
+    } else {
+        String::new()
+    };
+    let more_html = more
+        .map(|m| format!(r#"<p style="margin:8px 0 0;font-size:13px;color:#626f86">…{}</p>"#, escape_html(&m)))
+        .unwrap_or_default();
+    let unsubscribe = input
+        .unsubscribe_url
+        .map(|u| {
+            format!(
+                r#" · <a href="{}" style="color:#0c66e4">Stop emails about {}</a>"#,
+                escape_html(u),
+                kind_label(Kind::FilterDigest)
+            )
+        })
+        .unwrap_or_default();
+    let html = format!(
+        r#"<!doctype html><html><body style="margin:0;padding:24px;background:#f7f8f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#172b4d">
+<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #dcdfe4;border-radius:6px;padding:24px">
+<p style="margin:0 0 16px;font-size:14px">Your saved filter <strong>{name}</strong> matches {count}.</p>
+<table style="border-collapse:collapse;width:100%">{rows}</table>{empty}{more_html}
+<p style="margin:24px 0"><a href="{filter}" style="background:#0c66e4;color:#ffffff;padding:8px 14px;border-radius:3px;text-decoration:none;font-weight:600">Open filter</a></p>
+<hr style="border:none;border-top:1px solid #dcdfe4;margin:24px 0 12px">
+<p style="margin:0;font-size:12px;color:#626f86">You are receiving this because you subscribed to this filter. <a href="{settings}" style="color:#0c66e4">Choose which emails you get</a>{unsubscribe}.</p>
+</div></body></html>"#,
+        name = escape_html(&name),
+        count = escape_html(&count),
+        filter = escape_html(&filter_url),
+        settings = escape_html(&settings_url),
+    );
+    Rendered { subject, text, html }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +293,34 @@ mod tests {
         assert!(!r.text.contains("View the issue"), "no link for a key of the wrong shape");
         let long = "x".repeat(400);
         assert!(render(&EmailInput { issue_summary: &long, ..input(Kind::Assigned) }).subject.chars().count() < 170);
+    }
+
+    #[test]
+    fn digests_list_the_issues_escaped() {
+        let issues = [
+            DigestLine { key: "PAY-1", summary: "Refunds <img src=x>", status: "in_review" },
+            DigestLine { key: "PAY-2", summary: "Second", status: "todo" },
+        ];
+        let input = DigestInput {
+            filter_name: "Mine\r\nBcc: x@example.com",
+            filter_id: uuid::Uuid::nil(),
+            total: 25,
+            total_is_lower_bound: false,
+            issues: &issues,
+            app_url: "https://app.example.com",
+            unsubscribe_url: Some("https://app.example.com/unsubscribe?token=t"),
+        };
+        let r = render_digest(&input);
+        assert_eq!(r.subject, "[Mine Bcc: x@example.com] 25 issues");
+        assert!(r.text.contains("PAY-1  Refunds <img src=x>  [In review]"));
+        assert!(r.text.contains("https://app.example.com/projects/PAY/issues/PAY-1"));
+        assert!(r.text.contains("…and 23 more"));
+        assert!(r.text.contains("Stop emails about saved filter subscriptions: https://app.example.com/unsubscribe?token=t"));
+        assert!(r.html.contains("Refunds &lt;img src=x&gt;") && !r.html.contains("<img"));
+        let none = render_digest(&DigestInput { total: 0, issues: &[], total_is_lower_bound: false, ..input.clone() });
+        assert!(none.subject.ends_with("0 issues") && none.text.contains("Nothing matches"));
+        let one = render_digest(&DigestInput { total: 1, issues: &issues[..1], ..input.clone() });
+        assert!(one.subject.ends_with("] 1 issue"));
+        assert!(render_digest(&DigestInput { total_is_lower_bound: true, ..input }).subject.ends_with("25+ issues"));
     }
 }

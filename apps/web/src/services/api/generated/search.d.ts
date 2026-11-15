@@ -36,6 +36,22 @@ export interface paths {
         patch: operations["update"];
         trace?: never;
     };
+    "/api/v1/search/filters/{id}/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_subscription"];
+        put: operations["put_subscription"];
+        post?: never;
+        delete: operations["delete_subscription"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/search/issues": {
         parameters: {
             query?: never;
@@ -93,11 +109,26 @@ export interface components {
             query: string;
             shared?: boolean;
         };
+        /** @enum {string} */
+        Frequency: "daily" | "weekly";
         MatchingIds: {
             /** @description Issues of the project that match and that the caller can see, in no particular order. */
             ids: string[];
             /** @description More than `MAX_IDS` issues match; only that many are listed. */
             truncated: boolean;
+        };
+        PutSubscription: {
+            frequency: components["schemas"]["Frequency"];
+            /**
+             * Format: int32
+             * @description UTC hour, 0 to 23.
+             */
+            hour: number;
+            /**
+             * Format: int32
+             * @description ISO weekday (1 = Monday) for weekly subscriptions; must be absent for daily ones.
+             */
+            weekday?: number | null;
         };
         SavedFilter: {
             /** @description The caller may rename, change or delete it. */
@@ -149,6 +180,19 @@ export interface components {
             /** @description description | comments */
             field: string;
             parts: components["schemas"]["TextPart"][];
+        };
+        Subscription: {
+            /** Format: uuid */
+            filter_id: string;
+            frequency: components["schemas"]["Frequency"];
+            /** Format: int32 */
+            hour: number;
+            /** Format: date-time */
+            last_sent_at?: string | null;
+            /** Format: date-time */
+            next_run_at: string;
+            /** Format: int32 */
+            weekday?: number | null;
         };
         /** @description A run of text, `matched` when it matched the query. */
         TextPart: {
@@ -320,6 +364,103 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
+            };
+            /** @description No such filter, or not subscribed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutSubscription"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many subscriptions */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

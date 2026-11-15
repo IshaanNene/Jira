@@ -357,7 +357,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
         (status, prefs["email_enabled"].as_bool(), prefs["email_status_changed"].as_bool()),
         (200, Some(true), Some(true))
     );
-    let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": false });
+    let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": false, "email_filter_digest": true });
     assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, rae), off.clone()).await, (200, off));
 
     h.deliver(
@@ -563,5 +563,89 @@ async fn emails_carry_one_click_unsubscribe_links_that_only_turn_email_off() {
     );
     assert_eq!(h.anonymous("POST", &format!("/api/v1/notifications/unsubscribe?token={foreign}"), "text/plain", "").await.0, 404);
     assert_eq!(h.anonymous("POST", "/api/v1/notifications/unsubscribe", "text/plain", "").await.0, 400);
+    h.db.cleanup().await;
+}
+
+/// A `filter.digest` event from search-service, as the relay publishes it.
+async fn deliver_digest(h: &Harness, tenant: Uuid, recipient: Uuid, total: u64, age: time::Duration) -> Uuid {
+    let event_id = Uuid::now_v7();
+    let subscription = Uuid::now_v7();
+    let raw = json!({
+        "event_id": event_id, "event_type": "filter.digest", "schema_version": 1, "tenant_id": tenant,
+        "aggregate_type": "filter_subscription", "aggregate_id": subscription, "aggregate_version": 1,
+        "occurred_at": (time::OffsetDateTime::now_utc() - age).format(&time::format_description::well_known::Rfc3339).unwrap(),
+        "correlation_id": null, "causation_id": null, "actor": {"type": "system", "id": "search-service"},
+        "payload": {
+            "subscription_id": subscription, "filter_id": Uuid::nil(), "recipient_id": recipient,
+            "filter_name": "My <i>bugs</i>", "query": "assignee = currentUser()", "total": total, "total_is_lower_bound": false,
+            "issues": [
+                { "issue_id": Uuid::now_v7(), "key": "PAY-1", "summary": "Refunds <script>x</script>", "status": "in_review" },
+                { "issue_id": Uuid::now_v7(), "key": "PAY-2", "summary": "Payouts", "status": "todo" }
+            ]
+        }
+    });
+    let event = Event::parse(topics::SEARCH, &serde_json::to_vec(&raw).unwrap()).unwrap();
+    h.notifier.handle(&event).await.unwrap();
+    h.notifier.handle(&event).await.unwrap();
+    event_id
+}
+
+#[tokio::test]
+async fn filter_digests_are_emailed_to_active_subscribers_who_want_them() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let ada = h.person(t, "Ada Admin", None, true);
+    let bob = h.person(t, "Bob Builder", None, true);
+    let carol = h.person(t, "Carol Gone", None, false);
+    let address = |id: Uuid| h.world.people.lock().unwrap()[&(t, id)].email.clone();
+
+    // Bob turns digests off; an older client that leaves the field out keeps them on.
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, bob)).await;
+    assert_eq!(prefs["email_filter_digest"], true);
+    let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": true, "email_filter_digest": false });
+    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, bob), off.clone()).await, (200, off));
+    let legacy = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": true });
+    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, ada), legacy).await.1["email_filter_digest"], true);
+
+    deliver_digest(&h, t, ada, 3, time::Duration::ZERO).await;
+    deliver_digest(&h, t, bob, 3, time::Duration::ZERO).await;
+    deliver_digest(&h, t, carol, 3, time::Duration::ZERO).await;
+    deliver_digest(&h, t, ada, 3, time::Duration::days(2)).await;
+    assert_eq!(h.deliveries().await, vec![(ada, "pending".to_owned())], "one email, to Ada only, not the stale one");
+
+    // No in-app notification exists for a digest, and it is sent all the same.
+    let (_, inbox) = h.call("GET", "/api/v1/notifications", &h.token(t, ada)).await;
+    assert_eq!(inbox["items"].as_array().unwrap().len(), 0);
+    let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
+    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    assert_eq!(h.deliveries().await, vec![(ada, "sent".to_owned())]);
+
+    let mails = inbox_of(&address(ada)).await;
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0]["Subject"], "[My <i>bugs</i>] 3 issues");
+    let id = mails[0]["ID"].as_str().unwrap();
+    let full: Value = reqwest::get(format!("{}/api/v1/message/{id}", mailpit_api())).await.unwrap().json().await.unwrap();
+    let html = full["HTML"].as_str().unwrap();
+    assert!(html.contains("Refunds &lt;script&gt;") && !html.contains("<script>") && !html.contains("<i>bugs"), "escaped");
+    let text = full["Text"].as_str().unwrap();
+    assert!(text.contains("PAY-1  Refunds <script>x</script>  [In review]") && text.contains("…and 1 more"), "{text}");
+    assert!(text.contains("https://app.example.com/search?mode=mql&filter="));
+
+    // Its unsubscribe link names digests, and turns only them off.
+    let one_click: String = sqlx::query_scalar("SELECT unsubscribe_url FROM email_deliveries WHERE recipient_id = $1")
+        .bind(ada)
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    let path = one_click.trim_start_matches("https://app.example.com");
+    let (status, link) = h.anonymous("GET", path, "text/plain", "").await;
+    assert_eq!((status, link), (200, json!({ "kind": "filter_digest", "kind_label": "saved filter subscriptions" })));
+    assert_eq!(h.anonymous("POST", path, "text/plain", "").await.0, 204);
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, ada)).await;
+    assert_eq!((prefs["email_filter_digest"].as_bool(), prefs["email_assigned"].as_bool()), (Some(false), Some(true)));
+    deliver_digest(&h, t, ada, 3, time::Duration::ZERO).await;
+    assert_eq!(h.deliveries().await.len(), 1);
     h.db.cleanup().await;
 }

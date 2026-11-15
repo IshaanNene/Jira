@@ -1,12 +1,16 @@
 //! Consumer: turns issue events into notifications for the people who should hear about
-//! them and can still see the issue.
+//! them and can still see the issue, and emails the digests of subscribed saved filters.
 
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use auth_middleware::{OrgContext, PolicyClient};
 use event_bus::{inbox, Event, Handler, HandlerError};
-use event_contracts::{outbox, payloads::NotificationCreatedV1, Actor, EventEnvelope};
+use event_contracts::{
+    outbox,
+    payloads::{FilterDigestV1, NotificationCreatedV1, MAX_DIGEST_ISSUES},
+    Actor, EventEnvelope,
+};
 use tenant_context::DbRouter;
 use uuid::Uuid;
 
@@ -48,13 +52,81 @@ impl Notifier {
         let snapshot = self.policy.snapshot(&ctx).await?;
         Ok(snapshot.project_role(&ctx, project_id).is_some())
     }
+
+    /// A subscribed saved filter ran: email its result to the subscriber. search-service
+    /// already limited the issues to what they can see; there is no in-app notification.
+    async fn digest(&self, event: &Event) -> Result<(), HandlerError> {
+        let Some(email) = &self.email else { return Ok(()) };
+        let tenant_id = event.tenant_id()?;
+        let p: FilterDigestV1 = event.payload()?;
+        let people = self.directory.people(tenant_id, &[p.recipient_id]).await?;
+        let Some(person) = people.into_iter().find(|x| x.user_id == p.recipient_id && x.active) else { return Ok(()) };
+        if person.email.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.db.begin(tenant_id).await?;
+        if !inbox::claim(tx.conn(), CONSUMER, event.event_id()).await? {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        let kind = domain::Kind::FilterDigest;
+        let prefs = store::preferences(tx.conn(), tenant_id, person.user_id).await?;
+        if prefs.wants_email(kind.as_str()) {
+            let token = email.unsubscribe.issue(&crate::unsubscribe::Claims {
+                tenant_id,
+                user_id: person.user_id,
+                kind: kind.as_str().into(),
+                issued_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+            });
+            let page = format!("{}/unsubscribe?token={token}", email.app_url);
+            let one_click = format!("{}/api/v1/notifications/unsubscribe?token={token}", email.app_url);
+            let lines: Vec<crate::email::DigestLine<'_>> = p
+                .issues
+                .iter()
+                .take(MAX_DIGEST_ISSUES)
+                .map(|i| crate::email::DigestLine { key: &i.key, summary: &i.summary, status: &i.status })
+                .collect();
+            let rendered = crate::email::render_digest(&crate::email::DigestInput {
+                filter_name: &p.filter_name,
+                filter_id: p.filter_id,
+                total: p.total.max(lines.len() as u64),
+                total_is_lower_bound: p.total_is_lower_bound,
+                issues: &lines,
+                app_url: &email.app_url,
+                unsubscribe_url: Some(&page),
+            });
+            store::enqueue_email(
+                tx.conn(),
+                tenant_id,
+                &store::NewDelivery {
+                    // One email per digest event, so redelivery cannot send it twice.
+                    notification_id: event.event_id(),
+                    recipient_id: person.user_id,
+                    kind: kind.as_str(),
+                    to_address: &person.email,
+                    subject: &rendered.subject,
+                    text_body: &rendered.text,
+                    html_body: &rendered.html,
+                    unsubscribe_url: Some(&one_click),
+                    send_after: time::OffsetDateTime::now_utc(),
+                },
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Handler for Notifier {
     async fn handle(&self, event: &Event) -> Result<(), HandlerError> {
-        let Some(trigger) = domain::trigger(event)? else { return Ok(()) };
         let age = time::OffsetDateTime::now_utc() - event.envelope.occurred_at;
+        if event.event_type() == "filter.digest" {
+            return if age > STALE_AFTER { Ok(()) } else { self.digest(event).await };
+        }
+        let Some(trigger) = domain::trigger(event)? else { return Ok(()) };
         if age > STALE_AFTER {
             return Ok(());
         }

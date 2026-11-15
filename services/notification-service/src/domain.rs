@@ -11,6 +11,8 @@ pub enum Kind {
     Commented,
     Mentioned,
     StatusChanged,
+    /// The scheduled email of a saved filter someone subscribed to. Email only.
+    FilterDigest,
 }
 
 impl Kind {
@@ -20,6 +22,7 @@ impl Kind {
             "commented" => Self::Commented,
             "mentioned" => Self::Mentioned,
             "status_changed" => Self::StatusChanged,
+            "filter_digest" => Self::FilterDigest,
             _ => return None,
         })
     }
@@ -30,6 +33,7 @@ impl Kind {
             Self::Commented => "commented",
             Self::Mentioned => "mentioned",
             Self::StatusChanged => "status_changed",
+            Self::FilterDigest => "filter_digest",
         }
     }
 }

@@ -46,13 +46,22 @@ People are named by `currentUser()`, a user id, or an exact email address or dis
 Guests, who cannot see the member directory, can only use `currentUser()` and ids. `!=` and `NOT IN` include
 issues where the field is empty.
 
+**Subscriptions.** `GET/PUT/DELETE /api/v1/search/filters/{id}/subscription` subscribes the caller to a saved
+filter they can see: `{frequency: daily|weekly, hour (UTC, 0–23), weekday (1 = Monday, weekly only)}`; at most 20
+per person. Each instance runs a scheduler per database that leases due rows of `subscription_schedule` (not
+row-secured, holding only ids and times; `FOR UPDATE SKIP LOCKED`, 5-minute lease) and runs the filter as the
+subscriber, with their current workspace role and project access, limited to 20 issues. The result leaves as
+`filter.digest` on `platform.search.v1` through the outbox, and notification-service emails it. A subscriber who is
+no longer an active member, or who can no longer see the filter (unshared, or deleted: the rows cascade), loses the
+subscription; a query that no longer compiles is skipped until the next run.
+
 **Reindex.** `search-service reindex <tenant-id>` pages through `ListIssueIds`, rewrites every document, then
 deletes the tenant's documents that were not rewritten (issues that no longer exist). Safe while the consumer runs.
 
 | Variable | Required | Default |
 |---|---|---|
 | `OPENSEARCH_URL`, `REDIS_URL`, `TOKEN_ISSUER`, `JWKS_URL`, `INTERNAL_SERVICE_SECRET` | yes | |
-| `KAFKA_BROKERS` | no | unset: the index does not follow changes |
+| `KAFKA_BROKERS` | no | unset: the index does not follow changes and digests wait in the outbox |
 | `SEARCH_INDEX`, `SEARCH_INDEX_SHARDS`, `SEARCH_INDEX_REPLICAS` | no | `issues-v1`, 1, 0 |
 | `PERMISSION_SERVICE_GRPC_URL`, `ISSUE_SERVICE_GRPC_URL`, `USER_SERVICE_GRPC_URL` | no | local ports 9108 / 9105 / 9103 |
 | `ALLOWED_ORIGINS`, `HTTP_ADDR` | no | –, `127.0.0.1:8111` |
@@ -63,7 +72,7 @@ deletes the tenant's documents that were not rewritten (issues that no longer ex
 existing mapping at start-up; documents indexed earlier lack them until rewritten, so run `reindex` for each
 tenant after upgrading.
 
-**Not built yet.** Saved filters and subscriptions; custom fields, components, versions, sprints and parents in
+**Not built yet.** Subscriptions in the subscriber's own time zone, or for other people and groups; custom fields, components, versions, sprints and parents in
 the index (and so in MQL); functions beyond `currentUser()` and date functions (`membersOf()`, `openSprints()`);
 history operators (`WAS`, `CHANGED`); time zones other than UTC;
 reindexing every tenant in one command; index aliases for zero-downtime mapping changes; per-tenant or dedicated

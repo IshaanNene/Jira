@@ -192,7 +192,7 @@ pub async fn search_issues(
 /// The projects a search may cover: `Some(None)` = all of the tenant's, `Some(Some(ids))`
 /// = only these, `None` = nothing at all. Never wider than what the caller may browse; a
 /// project they cannot see simply has no results (indistinguishable from an empty one).
-async fn visible(state: &AppState, ctx: &OrgContext, project: Option<Uuid>) -> ApiResult<Option<Option<Vec<Uuid>>>> {
+pub(crate) async fn visible(state: &AppState, ctx: &OrgContext, project: Option<Uuid>) -> ApiResult<Option<Option<Vec<Uuid>>>> {
     let projects = match (state.policy.snapshot(ctx).await?.visible_projects(ctx), project) {
         (VisibleProjects::All, None) => None,
         (VisibleProjects::All, Some(p)) => Some(vec![p]),
@@ -234,7 +234,7 @@ fn mql_error(e: MqlError) -> ApiError {
 
 /// Parse and compile MQL for the caller. Naming people by email or name needs the member
 /// directory, which guests cannot see.
-async fn compile(state: &AppState, ctx: &OrgContext, text: &str) -> ApiResult<mql::Compiled> {
+pub(crate) async fn compile(state: &AppState, ctx: &OrgContext, text: &str) -> ApiResult<mql::Compiled> {
     let parsed = mql::parse(text).map_err(mql_error)?;
     let people = if ctx.require(OrgPermission::ViewMembers).is_ok() {
         let terms = mql::person_terms(&parsed);
@@ -331,6 +331,9 @@ pub async fn query_issues(
     paths(
         search_issues,
         query_issues,
+        crate::subscriptions::get_subscription,
+        crate::subscriptions::put_subscription,
+        crate::subscriptions::delete_subscription,
         matching_ids,
         filters::list,
         filters::create,
@@ -341,6 +344,9 @@ pub async fn query_issues(
     components(schemas(
         SearchResults,
         MatchingIds,
+        crate::subscriptions::Subscription,
+        crate::subscriptions::PutSubscription,
+        crate::subscriptions::Frequency,
         SearchHit,
         Snippet,
         TextPart,
@@ -358,11 +364,17 @@ pub fn router(state: AppState) -> Router {
         .route("/search/issues/query", get(query_issues))
         .route("/search/issues/ids", get(matching_ids))
         .route("/search/filters", get(filters::list).post(filters::create))
-        .route("/search/filters/{id}", get(filters::get_one).patch(filters::update).delete(filters::delete));
+        .route("/search/filters/{id}", get(filters::get_one).patch(filters::update).delete(filters::delete))
+        .route(
+            "/search/filters/{id}/subscription",
+            get(crate::subscriptions::get_subscription)
+                .put(crate::subscriptions::put_subscription)
+                .delete(crate::subscriptions::delete_subscription),
+        );
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
     Router::new()
         .nest("/api/v1", api)

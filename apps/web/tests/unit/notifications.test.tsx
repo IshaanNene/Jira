@@ -96,11 +96,17 @@ describe("notification settings", () => {
     await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(1));
     expect(api.sent("PUT", "/api/v1/notifications/preferences")[0]!.body).toMatchObject({ email_enabled: true, email_commented: false });
     expect(comments).toHaveAttribute("aria-checked", "false");
+    // A server that leaves the digest setting out means it is on.
+    const digests = screen.getByRole("switch", { name: "Saved filter subscriptions" });
+    expect(digests).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(digests);
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(2));
+    expect(api.sent("PUT", "/api/v1/notifications/preferences")[1]!.body).toMatchObject({ email_filter_digest: false, email_commented: false });
 
     fail = true;
     const master = screen.getByRole("switch", { name: "Send me email notifications" });
     await userEvent.click(master);
-    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(2));
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(3));
     await waitFor(() => expect(master).toHaveAttribute("aria-checked", "true"));
     expect(await screen.findByText("Couldn't save your notification settings. Try again.")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Status changes" })).toBeEnabled();
