@@ -4,6 +4,8 @@
 //! access, so sharing a filter never shares issues the viewer could not already see. The owner
 //! edits it; a shared filter can also be edited or removed by a workspace admin.
 
+use std::cmp::Reverse;
+
 use auth_middleware::{OrgContext, OrgRole};
 use axum::{
     extract::{Path, State},
@@ -152,8 +154,8 @@ pub async fn list(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<J
     .await?;
     tx.commit().await?;
     let (mut own, mut others): (Vec<Row>, Vec<Row>) = rows.into_iter().partition(|r| r.owner_id == ctx.user_id);
-    own.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    others.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    own.sort_by_key(|r| Reverse(r.updated_at));
+    others.sort_by_key(|r| Reverse(r.updated_at));
     Ok(Json(SavedFilterList { items: own.into_iter().chain(others).map(|r| dto(&ctx, r)).collect() }))
 }
 
