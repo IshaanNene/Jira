@@ -111,6 +111,9 @@ export function WidgetView({ query, title, height = 260 }: { query: WidgetQuery 
           </table>
         </div>
       )}
+      {answer.kind === "control_chart" && answer.truncated && (
+        <p className="mt-1 text-xs text-ink-subtle">Showing the {answer.issues.length} most recently resolved issues.</p>
+      )}
     </div>
   );
 }

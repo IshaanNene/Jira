@@ -70,6 +70,36 @@ describe("dashboard model", () => {
     expect(lines.series[0].symbolSize).toBeGreaterThanOrEqual(8);
   });
 
+  it("plots each resolved issue on a control chart with its rolling average and the mean", () => {
+    const data: WidgetData = {
+      kind: "control_chart",
+      issues: [
+        { issue_id: "a", key: "PAY-1", resolved_at: "2026-11-02T10:00:00Z", days: 2, rolling_days: 2 },
+        { issue_id: "b", key: "<b>PAY-2</b>", resolved_at: "2026-11-04T10:00:00Z", days: 4, rolling_days: 3 },
+      ],
+      mean_days: 3,
+      truncated: false,
+    };
+    const option = chartOption(data, theme, names) as Record<string, any>;
+    expect(option.xAxis.type).toBe("time");
+    expect(Array.isArray(option.yAxis)).toBe(false);
+    expect(option.series.map((s: { name: string; type: string }) => [s.name, s.type])).toEqual([
+      ["Issues", "scatter"],
+      ["Rolling average", "line"],
+      ["Mean", "line"],
+    ]);
+    expect(option.series[0].data[1]).toEqual([Date.parse("2026-11-04T10:00:00Z"), 4]);
+    expect(option.series[0].symbolSize).toBeGreaterThanOrEqual(8);
+    expect(option.series[2].data.map((p: number[]) => p[1])).toEqual([3, 3]);
+    // Issue keys are escaped in the tooltip.
+    const tip = option.tooltip.formatter({ seriesName: "Issues", dataIndex: 1, value: [0, 4] });
+    expect(tip).toContain("&lt;b&gt;PAY-2&lt;/b&gt;");
+    expect(tip).toContain("4 days");
+    const table = tableOf(data, names);
+    expect(table.rows[0]!.cells[0]).toBe("<b>PAY-2</b>");
+    expect(table.rows[0]!.cells.slice(2)).toEqual(["4", "3"]);
+  });
+
   it("charts time in status as sideways bars of median days", () => {
     const data: WidgetData = {
       kind: "time_in_status",

@@ -59,6 +59,11 @@ function QueryFields({ query, onChange }: { query: WidgetQuery; onChange: (query
           <Select value={String(query.weeks)} onValueChange={(v) => onChange({ ...query, weeks: Number(v) })} options={periodOptions("time_in_status")} />
         </Field>
       )}
+      {query.kind === "control_chart" && (
+        <Field label="Period" hint="Issues resolved in this period.">
+          <Select value={String(query.weeks)} onValueChange={(v) => onChange({ ...query, weeks: Number(v) })} options={periodOptions("control_chart")} />
+        </Field>
+      )}
       {query.kind === "cycle_time" && (
         <Field label="Period">
           <Select value={String(query.weeks)} onValueChange={(v) => onChange({ ...query, weeks: Number(v) })} options={periodOptions("cycle_time")} />

@@ -88,6 +88,24 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ControlPoint: {
+            /**
+             * Format: double
+             * @description From the first move into an in-progress status until resolved.
+             */
+            days: number;
+            /** Format: uuid */
+            issue_id: string;
+            key: string;
+            /** @description RFC 3339, UTC. */
+            resolved_at: string;
+            /**
+             * Format: double
+             * @description Mean of this issue's cycle time and those of the issues resolved just before it
+             *     (ten in all).
+             */
+            rolling_days: number;
+        };
         CreateDashboard: {
             description?: string;
             name: string;
@@ -243,6 +261,15 @@ export interface components {
             kind: "time_in_status";
             statuses: components["schemas"]["StatusTime"][];
         } | {
+            /** @description Oldest resolution first. */
+            issues: components["schemas"]["ControlPoint"][];
+            /** @enum {string} */
+            kind: "control_chart";
+            /** Format: double */
+            mean_days: number;
+            /** @description More issues were resolved than are shown; these are the latest. */
+            truncated: boolean;
+        } | {
             /** @enum {string} */
             kind: "velocity";
             sprints: components["schemas"]["SprintResult"][];
@@ -276,6 +303,15 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "time_in_status";
+            projects?: string[];
+            /**
+             * Format: int32
+             * @description 4 to 52.
+             */
+            weeks: number;
+        } | {
+            /** @enum {string} */
+            kind: "control_chart";
             projects?: string[];
             /**
              * Format: int32

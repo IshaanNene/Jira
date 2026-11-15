@@ -26,6 +26,7 @@ so redelivery, replays and out-of-order events are harmless. Queries read with `
 | `breakdown` | `projects`, `group_by` (`status_category`, `status`, `type`, `priority`, `assignee`, `project`), `include_done` | counts per group (top 50) and the total |
 | `cumulative_flow` | `projects`, `days` (7–365) | issues to do, in progress and done at the end of each UTC day; today matches the current state and earlier days are worked back through moves recorded with both categories |
 | `time_in_status` | `projects`, `weeks` (4–52) | per status (top 50): median and mean days and the number of stays, for stays that ended in the period; a stay runs from the previous move (or creation) to the move out |
+| `control_chart` | `projects`, `weeks` (4–52) | every issue resolved in the period (the latest 2000, oldest first; `truncated` says when more exist) with its cycle time, the rolling average of it and the nine issues resolved before it, and the mean |
 | `velocity` | `project`, `sprints` (3–20) | completed and not-completed issues of the last completed sprints, oldest first |
 
 An empty `projects` means every project the caller can browse; listed projects are intersected with those, so a
@@ -70,7 +71,7 @@ settings as the consumer.
 **Tests:** `cargo test -p analytics-service` (needs PostgreSQL and ClickHouse from `make infra`; each test uses its
 own ClickHouse database).
 
-**Not built yet.** Control chart, time in a status an issue is still in and other chart kinds; charts filtered by MQL;
+**Not built yet.** Time in a status an issue is still in and other chart kinds; charts filtered by MQL;
 history-aware created/resolved (a reopened issue loses its earlier resolution); time zones other than UTC;
 materialized views or rollups; a rebuild of the event history (`rebuild` restores current state only);
 sharing with specific people or groups.

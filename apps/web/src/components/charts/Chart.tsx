@@ -1,4 +1,4 @@
-import { BarChart, LineChart } from "echarts/charts";
+import { BarChart, LineChart, ScatterChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { init, use as registerCharts, type EChartsCoreOption } from "echarts/core";
 import { SVGRenderer } from "echarts/renderers";
@@ -6,7 +6,7 @@ import { useEffect, useRef } from "react";
 
 import { useUi } from "@/state/ui";
 
-registerCharts([LineChart, BarChart, GridComponent, LegendComponent, TooltipComponent, SVGRenderer]);
+registerCharts([LineChart, BarChart, ScatterChart, GridComponent, LegendComponent, TooltipComponent, SVGRenderer]);
 
 /** Colours for chart chrome and series, in the current theme. */
 export interface ChartTheme {

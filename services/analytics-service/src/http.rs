@@ -51,6 +51,7 @@ const MAX_WIDGETS: i64 = 30;
         widgets::Group,
         widgets::DayFlow,
         widgets::StatusTime,
+        widgets::ControlPoint,
         widgets::SprintResult
     ))
 )]

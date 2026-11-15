@@ -47,6 +47,13 @@ pub enum WidgetQuery {
         /// 4 to 52.
         weeks: u16,
     },
+    /// Each issue resolved in the last weeks, with its cycle time, and a rolling average.
+    ControlChart {
+        #[serde(default)]
+        projects: Vec<Uuid>,
+        /// 4 to 52.
+        weeks: u16,
+    },
     /// Issues in each status category at the end of each day: a cumulative flow diagram.
     CumulativeFlow {
         #[serde(default)]
@@ -110,6 +117,7 @@ impl WidgetQuery {
             WidgetQuery::CycleTime { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::Breakdown { projects: p, .. } => projects(p),
             WidgetQuery::TimeInStatus { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
+            WidgetQuery::ControlChart { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::CumulativeFlow { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::Velocity { sprints, .. } => range("sprints", *sprints, 3, 20),
         }
@@ -121,7 +129,8 @@ impl WidgetQuery {
             | WidgetQuery::CycleTime { projects, .. }
             | WidgetQuery::Breakdown { projects, .. }
             | WidgetQuery::CumulativeFlow { projects, .. }
-            | WidgetQuery::TimeInStatus { projects, .. } => projects.clone(),
+            | WidgetQuery::TimeInStatus { projects, .. }
+            | WidgetQuery::ControlChart { projects, .. } => projects.clone(),
             WidgetQuery::Velocity { project, .. } => vec![*project],
         }
     }
@@ -171,6 +180,24 @@ pub struct StatusTime {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct ControlPoint {
+    pub issue_id: Uuid,
+    pub key: String,
+    /// RFC 3339, UTC.
+    pub resolved_at: String,
+    /// From the first move into an in-progress status until resolved.
+    pub days: f64,
+    /// Mean of this issue's cycle time and those of the issues resolved just before it
+    /// (ten in all).
+    pub rolling_days: f64,
+}
+
+/// Issues in the control chart's rolling average.
+pub const ROLLING: usize = 10;
+/// Most recently resolved issues shown on a control chart.
+const MAX_POINTS: usize = 2000;
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct SprintResult {
     pub sprint_id: Uuid,
     pub name: String,
@@ -184,12 +211,33 @@ pub struct SprintResult {
 #[derive(Debug, Serialize, ToSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WidgetData {
-    CreatedVsResolved { days: Vec<DayCounts> },
-    CycleTime { weeks: Vec<WeekCycleTime> },
-    Breakdown { group_by: GroupBy, groups: Vec<Group>, total: u64 },
-    CumulativeFlow { days: Vec<DayFlow> },
-    TimeInStatus { statuses: Vec<StatusTime> },
-    Velocity { sprints: Vec<SprintResult> },
+    CreatedVsResolved {
+        days: Vec<DayCounts>,
+    },
+    CycleTime {
+        weeks: Vec<WeekCycleTime>,
+    },
+    Breakdown {
+        group_by: GroupBy,
+        groups: Vec<Group>,
+        total: u64,
+    },
+    CumulativeFlow {
+        days: Vec<DayFlow>,
+    },
+    TimeInStatus {
+        statuses: Vec<StatusTime>,
+    },
+    ControlChart {
+        /// Oldest resolution first.
+        issues: Vec<ControlPoint>,
+        mean_days: f64,
+        /// More issues were resolved than are shown; these are the latest.
+        truncated: bool,
+    },
+    Velocity {
+        sprints: Vec<SprintResult>,
+    },
 }
 
 impl WidgetData {
@@ -205,6 +253,7 @@ impl WidgetData {
                 WidgetData::CumulativeFlow { days: flow(&BTreeMap::new(), &BTreeMap::new(), today, *days) }
             }
             WidgetQuery::TimeInStatus { .. } => WidgetData::TimeInStatus { statuses: vec![] },
+            WidgetQuery::ControlChart { .. } => WidgetData::ControlChart { issues: vec![], mean_days: 0.0, truncated: false },
             WidgetQuery::Velocity { .. } => WidgetData::Velocity { sprints: vec![] },
         }
     }
@@ -243,6 +292,20 @@ fn fill_days(found: BTreeMap<String, (u64, u64)>, today: Date, days: u16) -> Vec
             DayCounts { date, created, resolved }
         })
         .collect()
+}
+
+/// Fills each point's rolling average and returns the overall mean; points are oldest first.
+fn roll(points: &mut [ControlPoint]) -> f64 {
+    for i in 0..points.len() {
+        let window = &points[i.saturating_sub(ROLLING - 1)..=i];
+        let mean = window.iter().map(|p| p.days).sum::<f64>() / window.len() as f64;
+        points[i].rolling_days = (mean * 100.0).round() / 100.0;
+    }
+    if points.is_empty() {
+        return 0.0;
+    }
+    let mean = points.iter().map(|p| p.days).sum::<f64>() / points.len() as f64;
+    (mean * 100.0).round() / 100.0
 }
 
 /// Counts per category, in the order todo, in progress, done.
@@ -428,6 +491,36 @@ pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible:
             }
             Ok(WidgetData::CumulativeFlow { days: flow(&current, &changes, today, *days) })
         }
+        WidgetQuery::ControlChart { weeks, .. } => {
+            let from = today - Duration::weeks(i64::from(*weeks)) + Duration::days(1);
+            let sql = format!(
+                "SELECT s.issue_id AS issue_id, s.key AS key, \
+                        formatDateTime(s.resolved, '%Y-%m-%dT%H:%i:%SZ') AS resolved_at, \
+                        round(dateDiff('second', e.started, s.resolved) / 86400, 2) AS days, toFloat64(0) AS rolling_days \
+                 FROM ( \
+                   SELECT issue_id, key, assumeNotNull(resolved_at) AS resolved FROM issue_state FINAL \
+                   WHERE tenant_id = {{tenant:UUID}}{filter} AND resolved_at IS NOT NULL \
+                     AND toDate(assumeNotNull(resolved_at)) >= {{from:Date}} \
+                 ) AS s \
+                 INNER JOIN ( \
+                   SELECT issue_id, min(occurred_at) AS started FROM issue_events FINAL \
+                   WHERE tenant_id = {{tenant:UUID}} AND event_type = 'issue.transitioned' AND to_category = 'in_progress'{filter} \
+                   GROUP BY issue_id \
+                 ) AS e ON s.issue_id = e.issue_id \
+                 WHERE e.started <= s.resolved \
+                 ORDER BY s.resolved DESC, s.issue_id LIMIT {{limit:UInt32}}"
+            );
+            let limit = u32::try_from(MAX_POINTS + 1).unwrap_or(u32::MAX);
+            let mut issues: Vec<ControlPoint> = store
+                .query(tenant, &sql, &params.add("from", day_string(from)).add("limit", limit))
+                .await
+                .map_err(unavailable)?;
+            let truncated = issues.len() > MAX_POINTS;
+            issues.truncate(MAX_POINTS);
+            issues.reverse();
+            let mean_days = roll(&mut issues);
+            Ok(WidgetData::ControlChart { issues, mean_days, truncated })
+        }
         WidgetQuery::TimeInStatus { weeks, .. } => {
             let from = today - Duration::weeks(i64::from(*weeks)) + Duration::days(1);
             // A stay in a status ends when the issue leaves it, and began at the move before
@@ -507,6 +600,24 @@ mod tests {
         let days = fill_days(found, today, 3);
         assert_eq!(days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), ["2026-02-28", "2026-03-01", "2026-03-02"]);
         assert_eq!((days[0].created, days[0].resolved, days[2].created), (2, 1, 0));
+    }
+
+    #[test]
+    fn the_rolling_average_covers_the_last_issues() {
+        let point = |days: f64| ControlPoint {
+            issue_id: Uuid::nil(),
+            key: String::new(),
+            resolved_at: String::new(),
+            days,
+            rolling_days: 0.0,
+        };
+        let mut points: Vec<ControlPoint> = (1..=12).map(|d| point(f64::from(d))).collect();
+        assert_eq!(roll(&mut points), 6.5);
+        assert_eq!(points[0].rolling_days, 1.0);
+        assert_eq!(points[1].rolling_days, 1.5);
+        assert_eq!(points[9].rolling_days, 5.5);
+        assert_eq!(points[11].rolling_days, 7.5, "issues 3 to 12");
+        assert_eq!(roll(&mut []), 0.0);
     }
 
     #[test]

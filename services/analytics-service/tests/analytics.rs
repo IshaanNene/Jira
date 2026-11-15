@@ -325,6 +325,15 @@ async fn charts_count_only_the_viewers_tenant_and_projects() {
     assert_eq!(back(6), (1, 0, 0));
     assert_eq!(back(10), (1, 0, 0));
     assert_eq!(back(11), (0, 0, 0));
+    // Control chart: the one resolved issue, 3 days from start to done.
+    let control = h.chart(&admin_token, json!({ "kind": "control_chart", "weeks": 4 })).await;
+    assert_eq!(control["issues"].as_array().unwrap().len(), 1, "{control}");
+    assert_eq!(control["issues"][0]["issue_id"], done.to_string());
+    assert_eq!((control["issues"][0]["days"].as_f64(), control["mean_days"].as_f64()), (Some(3.0), Some(3.0)));
+    assert_eq!(control["truncated"], false);
+    let hidden = h.chart(&member_token, json!({ "kind": "control_chart", "projects": [hr], "weeks": 4 })).await;
+    assert_eq!(hidden["issues"], json!([]));
+
     // Time in status: `done` spent 5 days in todo and 3 in progress; `doing` 1 day in todo.
     // Its current stay in progress has not ended, so it is not counted.
     let tis = h.chart(&admin_token, json!({ "kind": "time_in_status", "weeks": 4 })).await;

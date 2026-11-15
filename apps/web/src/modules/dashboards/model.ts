@@ -1,6 +1,6 @@
 // What each kind of chart is called, its default options, and how its labels read.
 import type { GroupBy, WidgetData, WidgetQuery } from "@/services/api";
-import { titleCase } from "@/utils/format";
+import { formatDateTime, titleCase } from "@/utils/format";
 
 export type WidgetKind = WidgetQuery["kind"];
 
@@ -10,6 +10,7 @@ export const KIND_LABEL: Record<WidgetKind, string> = {
   breakdown: "Issue breakdown",
   cumulative_flow: "Cumulative flow",
   time_in_status: "Time in status",
+  control_chart: "Control chart",
   velocity: "Sprint velocity",
 };
 
@@ -19,6 +20,7 @@ export const KIND_DESCRIPTION: Record<WidgetKind, string> = {
   breakdown: "Open issues counted by a field.",
   cumulative_flow: "Issues to do, in progress and done at the end of each day.",
   time_in_status: "Median days issues stayed in each status before moving on.",
+  control_chart: "Each resolved issue's cycle time, with a rolling average of ten issues.",
   velocity: "Issues completed and left over in each completed sprint.",
 };
 
@@ -36,6 +38,7 @@ export const PERIODS = {
   cycle_time: [4, 8, 12, 26, 52],
   cumulative_flow: [14, 30, 90, 180, 365],
   time_in_status: [4, 8, 12, 26, 52],
+  control_chart: [4, 8, 12, 26, 52],
   velocity: [3, 5, 7, 10, 20],
 } as const;
 
@@ -51,6 +54,8 @@ export function defaultQuery(kind: WidgetKind, projects: string[], firstProject?
     case "cumulative_flow":
       return { kind, projects, days: 30 };
     case "time_in_status":
+      return { kind, projects, weeks: 12 };
+    case "control_chart":
       return { kind, projects, weeks: 12 };
     case "velocity":
       return { kind, project: projects[0] ?? firstProject ?? "", sprints: 7 };
@@ -82,6 +87,8 @@ export function describeQuery(query: WidgetQuery, projectName: (id: string) => s
       return `${scope} · last ${query.days} days`;
     case "time_in_status":
       return `${scope} · stays ended in the last ${query.weeks} weeks`;
+    case "control_chart":
+      return `${scope} · resolved in the last ${query.weeks} weeks`;
     case "velocity":
       return `${scope} · last ${query.sprints} sprints`;
   }
@@ -135,6 +142,8 @@ export function isEmpty(data: WidgetData): boolean {
       return data.days.every((d) => d.todo + d.in_progress + d.done === 0);
     case "time_in_status":
       return data.statuses.length === 0;
+    case "control_chart":
+      return data.issues.length === 0;
     case "velocity":
       return data.sprints.length === 0;
   }
@@ -180,6 +189,14 @@ export function tableOf(data: WidgetData, names: Names): Table {
         rows: data.statuses.map((s) => ({
           key: s.status,
           cells: [titleCase(s.status), String(s.stays), formatDays(s.median_days), formatDays(s.mean_days)],
+        })),
+      };
+    case "control_chart":
+      return {
+        columns: [{ label: "Issue" }, { label: "Resolved" }, { label: "Cycle time (days)", numeric: true }, { label: "Rolling average", numeric: true }],
+        rows: [...data.issues].reverse().map((i) => ({
+          key: i.issue_id,
+          cells: [i.key, formatDateTime(i.resolved_at), formatDays(i.days), formatDays(i.rolling_days)],
         })),
       };
     case "velocity":

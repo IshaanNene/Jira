@@ -8,7 +8,7 @@ import { bar, categoryAxis, chrome, line, valueAxis } from "@/components/charts/
 import type { WidgetData } from "@/services/api";
 import { titleCase } from "@/utils/format";
 
-import { CATEGORY_LABEL, formatDays, formatShortDay, GROUP_LABEL, groupLabel, type Names } from "./model";
+import { CATEGORY_LABEL, formatDay, formatDays, formatShortDay, GROUP_LABEL, groupLabel, type Names } from "./model";
 
 const axisTooltip = (theme: ChartTheme, format?: (value: number) => string) => {
   const base = chrome(theme, format);
@@ -21,6 +21,9 @@ const endLabel = (theme: ChartTheme, format: (value: number) => string = String)
   color: theme.ink,
   formatter: (p: { value: number | null }) => (p.value == null ? "" : format(p.value)),
 });
+
+const escapeHtml = (text: string) =>
+  text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 export function chartOption(data: WidgetData, theme: ChartTheme, names: Names): EChartsCoreOption {
   switch (data.kind) {
@@ -67,6 +70,51 @@ export function chartOption(data: WidgetData, theme: ChartTheme, names: Names): 
             name: "Issues",
             barMaxWidth: 20,
             label: { show: true, position: "right", color: theme.ink },
+          },
+        ],
+      };
+    }
+    case "control_chart": {
+      // Dots for issues, a line for the rolling average and a dashed reference for the mean.
+      // Time runs along the bottom, so issues resolved close together sit close together.
+      const base = chrome(theme, formatDays);
+      const at = (iso: string) => Date.parse(iso);
+      const first = data.issues[0]?.resolved_at;
+      const last = data.issues[data.issues.length - 1]?.resolved_at;
+      return {
+        ...base,
+        grid: { ...base.grid, right: 40 },
+        tooltip: {
+          ...base.tooltip,
+          trigger: "item",
+          formatter: (p: { seriesName: string; dataIndex: number; value: [number, number] }) => {
+            const issue = p.seriesName === "Issues" ? data.issues[p.dataIndex] : undefined;
+            if (issue) return `${escapeHtml(issue.key)}<br/>${formatDays(issue.days)} days · ${formatDay(issue.resolved_at.slice(0, 10))}`;
+            return `${escapeHtml(p.seriesName)}: ${formatDays(p.value[1])} days`;
+          },
+        },
+        xAxis: { type: "time", axisLine: { lineStyle: { color: theme.line } }, axisLabel: { color: theme.muted, hideOverlap: true }, splitLine: { show: false } },
+        yAxis: valueAxis(theme, "Days", false),
+        series: [
+          {
+            name: "Issues",
+            type: "scatter",
+            color: theme.series[0],
+            symbolSize: 8,
+            itemStyle: { borderColor: theme.surface, borderWidth: 2 },
+            data: data.issues.map((i) => [at(i.resolved_at), i.days]),
+          },
+          {
+            ...line("Rolling average", theme.series[1], data.issues.map((i) => [at(i.resolved_at), i.rolling_days]), theme),
+            showSymbol: false,
+          },
+          {
+            name: "Mean",
+            type: "line",
+            color: theme.reference,
+            symbol: "none",
+            lineStyle: { width: 2, type: "dashed" },
+            data: first && last ? [[at(first), data.mean_days], [at(last), data.mean_days]] : [],
           },
         ],
       };
