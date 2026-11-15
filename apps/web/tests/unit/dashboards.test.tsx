@@ -76,6 +76,7 @@ function dashboard(overrides: Partial<Dashboard> = {}): Dashboard {
     owner_id: USER_ID,
     shared: false,
     editable: true,
+    version: 3,
     updated_at: "2026-11-01T00:00:00Z",
     widgets: [{ id: "w1", title: "Issues by assignee", size: "half", query: { kind: "breakdown", projects: [PAY.id], group_by: "assignee", include_done: false } }],
     ...overrides,
@@ -129,7 +130,27 @@ describe("dashboards", () => {
 
     await user.click(screen.getByRole("button", { name: "Share" }));
     await waitFor(() => expect(api.sent("PATCH", "/api/v1/dashboards/d1")[0]?.body).toEqual({ shared: true }));
+    expect(api.sent("PATCH", "/api/v1/dashboards/d1")[0]!.headers["If-Match"]).toBe('"3"');
     expect(await screen.findByRole("button", { name: "Stop sharing" })).toBeInTheDocument();
+  });
+
+  it("shows the latest version instead of overwriting someone else's change", async () => {
+    signIn("member");
+    const theirs = dashboard({ name: "Delivery health", version: 4 });
+    fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards/d1": dashboard(),
+      "PATCH /api/v1/dashboards/d1": () => ({
+        status: 409,
+        body: { code: "version_conflict", detail: "The resource was changed by someone else. Review the latest version and retry.", current: theirs },
+      }),
+    });
+    const user = userEvent.setup();
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+    await user.click(await screen.findByRole("button", { name: "Share" }));
+    expect(await screen.findByRole("heading", { name: "Delivery health" })).toBeInTheDocument();
+    expect(await screen.findByText(/changed by someone else/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
   });
 
   it("is read-only for people who may only view it", async () => {
@@ -162,5 +183,6 @@ describe("dashboards", () => {
     await waitFor(() =>
       expect(api.sent("POST", "/api/v1/dashboards/d1/widgets")[0]?.body).toEqual({ title: "Created vs resolved", size: "half", query: { kind: "created_vs_resolved", projects: [], days: 30 } }),
     );
+    expect(api.sent("POST", "/api/v1/dashboards/d1/widgets")[0]!.headers["If-Match"]).toBe('"3"');
   });
 });

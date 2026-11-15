@@ -167,7 +167,21 @@ impl Harness {
     }
 
     async fn call(&self, method: Method, path: &str, token: &str, body: Option<Value>) -> (StatusCode, Value) {
+        self.send(method, path, token, body, None).await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: Option<Value>,
+        if_match: Option<i64>,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(path).header("authorization", format!("Bearer {token}"));
+        if let Some(version) = if_match {
+            req = req.header("if-match", format!("\"{version}\""));
+        }
         if body.is_some() {
             req = req.header("content-type", "application/json");
         }
@@ -176,6 +190,13 @@ impl Harness {
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// A write to a dashboard (or one of its charts), based on the version `token` can see now.
+    async fn write(&self, method: Method, path: &str, token: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let dashboard: String = path.split("/widgets").next().unwrap().to_owned();
+        let (_, current) = self.call(Method::GET, &dashboard, token, None).await;
+        self.send(method, path, token, body, current["version"].as_i64()).await
     }
 
     async fn chart(&self, token: &str, query: Value) -> Value {
@@ -359,11 +380,11 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
 
     let widgets = format!("{path}/widgets");
     let (status, _) = h
-        .call(Method::POST, &widgets, &ada_t, Some(json!({ "title": "Raw", "query": { "kind": "sql", "text": "SELECT 1" } })))
+        .write(Method::POST, &widgets, &ada_t, Some(json!({ "title": "Raw", "query": { "kind": "sql", "text": "SELECT 1" } })))
         .await;
     assert!(status.is_client_error());
     let (status, _) = h
-        .call(
+        .write(
             Method::POST,
             &widgets,
             &ada_t,
@@ -372,7 +393,7 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (_, first) = h
-        .call(
+        .write(
             Method::POST,
             &widgets,
             &ada_t,
@@ -382,7 +403,7 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
         )
         .await;
     let (_, second) = h
-        .call(
+        .write(
             Method::POST,
             &widgets,
             &ada_t,
@@ -392,25 +413,25 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
     let (first, second) = (first["id"].as_str().unwrap().to_owned(), second["id"].as_str().unwrap().to_owned());
 
     let (status, shared) =
-        h.call(Method::PATCH, &path, &ada_t, Some(json!({ "shared": true, "widget_order": [second, first] }))).await;
+        h.write(Method::PATCH, &path, &ada_t, Some(json!({ "shared": true, "widget_order": [second, first] }))).await;
     assert_eq!(status, StatusCode::OK, "{shared}");
     let titles: Vec<&str> = shared["widgets"].as_array().unwrap().iter().map(|w| w["title"].as_str().unwrap()).collect();
     assert_eq!(titles, ["Open by type", "Created vs resolved"]);
-    let (status, _) = h.call(Method::PATCH, &path, &ada_t, Some(json!({ "widget_order": [first] }))).await;
+    let (status, _) = h.write(Method::PATCH, &path, &ada_t, Some(json!({ "widget_order": [first] }))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "every widget, exactly once");
 
     // Shared: everyone sees it; a member who doesn't own it can't change it; an admin can,
     // but only the owner decides who sees it.
     let (status, seen) = h.call(Method::GET, &path, &ben_t, None).await;
     assert_eq!((status, seen["editable"].as_bool()), (StatusCode::OK, Some(false)));
-    assert_eq!(h.call(Method::PATCH, &path, &ben_t, Some(json!({ "name": "Mine now" }))).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(h.call(Method::DELETE, &format!("{widgets}/{first}"), &ben_t, None).await.0, StatusCode::FORBIDDEN);
-    let (status, renamed) = h.call(Method::PATCH, &path, &admin_t, Some(json!({ "name": "Delivery health" }))).await;
+    assert_eq!(h.write(Method::PATCH, &path, &ben_t, Some(json!({ "name": "Mine now" }))).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(h.write(Method::DELETE, &format!("{widgets}/{first}"), &ben_t, None).await.0, StatusCode::FORBIDDEN);
+    let (status, renamed) = h.write(Method::PATCH, &path, &admin_t, Some(json!({ "name": "Delivery health" }))).await;
     assert_eq!((status, renamed["name"].as_str()), (StatusCode::OK, Some("Delivery health")));
-    assert_eq!(h.call(Method::PATCH, &path, &admin_t, Some(json!({ "shared": false }))).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(h.write(Method::PATCH, &path, &admin_t, Some(json!({ "shared": false }))).await.0, StatusCode::FORBIDDEN);
 
     let (status, edited) = h
-        .call(
+        .write(
             Method::PATCH,
             &format!("{widgets}/{first}"),
             &ada_t,
@@ -418,13 +439,34 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
         )
         .await;
     assert_eq!((status, edited["query"]["days"].as_u64()), (StatusCode::OK, Some(90)));
-    assert_eq!(h.call(Method::DELETE, &format!("{widgets}/{first}"), &ada_t, None).await.0, StatusCode::NO_CONTENT);
-    assert_eq!(h.call(Method::DELETE, &format!("{widgets}/{first}"), &ada_t, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(h.write(Method::DELETE, &format!("{widgets}/{first}"), &ada_t, None).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(h.write(Method::DELETE, &format!("{widgets}/{first}"), &ada_t, None).await.0, StatusCode::NOT_FOUND);
+
+    // Optimistic concurrency: every write names the version it is based on; any change to the
+    // dashboard or its charts moves the version on.
+    let (_, now) = h.call(Method::GET, &path, &ada_t, None).await;
+    let v = now["version"].as_i64().unwrap();
+    assert_eq!(h.call(Method::PATCH, &path, &ada_t, Some(json!({ "name": "Blind" }))).await.0, StatusCode::PRECONDITION_REQUIRED);
+    let chart = json!({ "title": "More", "query": { "kind": "breakdown", "group_by": "priority" } });
+    assert_eq!(h.call(Method::POST, &widgets, &ada_t, Some(chart.clone())).await.0, StatusCode::PRECONDITION_REQUIRED);
+    let (status, ok) = h.send(Method::PATCH, &path, &ada_t, Some(json!({ "description": "Weekly" })), Some(v)).await;
+    assert_eq!((status, ok["version"].as_i64()), (StatusCode::OK, Some(v + 1)), "{ok}");
+    let (status, stale) = h.send(Method::PATCH, &path, &admin_t, Some(json!({ "name": "Stale" })), Some(v)).await;
+    assert_eq!((status, stale["code"].as_str()), (StatusCode::CONFLICT, Some("version_conflict")));
+    assert_eq!((stale["current"]["description"].as_str(), stale["current"]["version"].as_i64()), (Some("Weekly"), Some(v + 1)));
+    assert_eq!(h.send(Method::POST, &widgets, &ada_t, Some(chart.clone()), Some(v)).await.0, StatusCode::CONFLICT);
+    let (status, _) = h.send(Method::POST, &widgets, &ada_t, Some(chart), Some(v + 1)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, after) = h.call(Method::GET, &path, &ada_t, None).await;
+    assert_eq!(after["version"].as_i64(), Some(v + 2), "adding a chart is a change too");
+    let added = after["widgets"].as_array().unwrap().last().unwrap()["id"].as_str().unwrap().to_owned();
+    assert_eq!(h.send(Method::DELETE, &format!("{widgets}/{added}"), &ada_t, None, Some(v + 1)).await.0, StatusCode::CONFLICT);
+    assert_eq!(h.write(Method::DELETE, &format!("{widgets}/{added}"), &ada_t, None).await.0, StatusCode::NO_CONTENT);
 
     let (_, list) = h.call(Method::GET, "/api/v1/dashboards", &ben_t, None).await;
     assert_eq!((list["items"][0]["widget_count"].as_i64(), list["items"][0]["editable"].as_bool()), (Some(1), Some(false)));
-    assert_eq!(h.call(Method::DELETE, &path, &ben_t, None).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(h.call(Method::DELETE, &path, &ada_t, None).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(h.write(Method::DELETE, &path, &ben_t, None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(h.write(Method::DELETE, &path, &ada_t, None).await.0, StatusCode::NO_CONTENT);
     assert_eq!(h.call(Method::GET, &path, &ada_t, None).await.0, StatusCode::NOT_FOUND);
     h.cleanup().await;
 }

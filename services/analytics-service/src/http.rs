@@ -9,11 +9,11 @@
 use auth_middleware::{OrgContext, OrgRole, VisibleProjects};
 use axum::{
     extract::{Path, State},
-    http::{header, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     routing::{get, patch, post},
     Json, Router,
 };
-use error_handling::{ApiError, ApiResult};
+use error_handling::{require_if_match, ApiError, ApiResult};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
@@ -72,6 +72,8 @@ pub struct DashboardSummary {
     /// Whether the caller may change it.
     pub editable: bool,
     pub widget_count: i64,
+    /// Bumped by every change to the dashboard or its charts; send it as `If-Match`.
+    pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
@@ -98,6 +100,8 @@ pub struct Dashboard {
     pub shared: bool,
     pub editable: bool,
     pub widgets: Vec<Widget>,
+    /// Bumped by every change to the dashboard or its charts; send it as `If-Match`.
+    pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
@@ -150,7 +154,20 @@ struct DashboardRow {
     description: String,
     owner_id: Uuid,
     shared: bool,
+    version: i64,
     updated_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct SummaryRow {
+    id: Uuid,
+    name: String,
+    description: String,
+    owner_id: Uuid,
+    shared: bool,
+    version: i64,
+    updated_at: OffsetDateTime,
+    widget_count: i64,
 }
 
 #[derive(FromRow)]
@@ -184,7 +201,7 @@ fn description(value: &str) -> ApiResult<String> {
 /// The dashboard if the caller may see it (their own, or shared). Others are "not found".
 async fn visible_dashboard(conn: &mut PgConnection, ctx: &OrgContext, id: Uuid) -> ApiResult<DashboardRow> {
     sqlx::query_as::<_, DashboardRow>(
-        "SELECT id, name, description, owner_id, shared, updated_at FROM dashboards \
+        "SELECT id, name, description, owner_id, shared, version, updated_at FROM dashboards \
          WHERE tenant_id = $1 AND id = $2 AND (shared OR owner_id = $3) FOR UPDATE",
     )
     .bind(ctx.tenant_id)
@@ -203,9 +220,34 @@ async fn editable_dashboard(conn: &mut PgConnection, ctx: &OrgContext, id: Uuid)
     Ok(d)
 }
 
-async fn touch(conn: &mut PgConnection, id: Uuid) -> ApiResult<()> {
-    sqlx::query("UPDATE dashboards SET updated_at = now() WHERE id = $1").bind(id).execute(conn).await?;
-    Ok(())
+/// Record a change to the dashboard or one of its charts; returns the new version.
+async fn touch(conn: &mut PgConnection, id: Uuid) -> ApiResult<i64> {
+    let (version,): (i64,) =
+        sqlx::query_as("UPDATE dashboards SET updated_at = now(), version = version + 1 WHERE id = $1 RETURNING version")
+            .bind(id)
+            .fetch_one(conn)
+            .await?;
+    Ok(version)
+}
+
+fn etag(version: i64) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(&format!("\"{version}\"")) {
+        headers.insert(header::ETAG, value);
+    }
+    headers
+}
+
+/// The dashboard, if the caller may change it and their edit is based on its current version.
+/// A stale `If-Match` is a 409 carrying the dashboard as it is now.
+async fn writable_dashboard(conn: &mut PgConnection, ctx: &OrgContext, id: Uuid, headers: &HeaderMap) -> ApiResult<DashboardRow> {
+    let expected = require_if_match(headers)?;
+    let d = editable_dashboard(conn, ctx, id).await?;
+    if d.version != expected {
+        let current = serde_json::to_value(load(conn, ctx, d).await?).ok();
+        return Err(ApiError::VersionConflict { current });
+    }
+    Ok(d)
 }
 
 fn widget(row: WidgetRow) -> Option<Widget> {
@@ -230,6 +272,7 @@ async fn load(conn: &mut PgConnection, ctx: &OrgContext, d: DashboardRow) -> Api
         owner_id: d.owner_id,
         shared: d.shared,
         widgets: rows.into_iter().filter_map(widget).collect(),
+        version: d.version,
         updated_at: d.updated_at,
     })
 }
@@ -237,9 +280,9 @@ async fn load(conn: &mut PgConnection, ctx: &OrgContext, d: DashboardRow) -> Api
 #[utoipa::path(get, path = "/api/v1/dashboards", security(("bearer" = [])), responses((status = 200, body = DashboardList)))]
 pub async fn list(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<Json<DashboardList>> {
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    let rows: Vec<(Uuid, String, String, Uuid, bool, OffsetDateTime, i64)> = sqlx::query_as(
-        "SELECT d.id, d.name, d.description, d.owner_id, d.shared, d.updated_at, \
-                (SELECT count(*) FROM dashboard_widgets w WHERE w.dashboard_id = d.id) \
+    let rows: Vec<SummaryRow> = sqlx::query_as(
+        "SELECT d.id, d.name, d.description, d.owner_id, d.shared, d.version, d.updated_at, \
+                (SELECT count(*) FROM dashboard_widgets w WHERE w.dashboard_id = d.id) AS widget_count \
          FROM dashboards d WHERE d.tenant_id = $1 AND (d.shared OR d.owner_id = $2) \
          ORDER BY (d.owner_id = $2) DESC, d.updated_at DESC LIMIT 500",
     )
@@ -250,9 +293,19 @@ pub async fn list(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<J
     tx.commit().await?;
     let items = rows
         .into_iter()
-        .map(|(id, name, description, owner_id, shared, updated_at, widget_count)| {
-            let editable = owner_id == ctx.user_id || (shared && ctx.role >= OrgRole::Admin);
-            DashboardSummary { id, name, description, owner_id, shared, editable, widget_count, updated_at }
+        .map(|r| {
+            let editable = r.owner_id == ctx.user_id || (r.shared && ctx.role >= OrgRole::Admin);
+            DashboardSummary {
+                id: r.id,
+                name: r.name,
+                description: r.description,
+                owner_id: r.owner_id,
+                shared: r.shared,
+                editable,
+                widget_count: r.widget_count,
+                version: r.version,
+                updated_at: r.updated_at,
+            }
         })
         .collect();
     Ok(Json(DashboardList { items }))
@@ -264,7 +317,7 @@ pub async fn create(
     State(state): State<AppState>,
     ctx: OrgContext,
     Json(body): Json<CreateDashboard>,
-) -> ApiResult<(StatusCode, Json<Dashboard>)> {
+) -> ApiResult<(StatusCode, HeaderMap, Json<Dashboard>)> {
     let name = name("name", &body.name, "Name")?;
     let description = description(&body.description)?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
@@ -278,7 +331,7 @@ pub async fn create(
     }
     let row: DashboardRow = sqlx::query_as(
         "INSERT INTO dashboards (tenant_id, id, name, description, owner_id, shared) VALUES ($1, $2, $3, $4, $5, $6) \
-         RETURNING id, name, description, owner_id, shared, updated_at",
+         RETURNING id, name, description, owner_id, shared, version, updated_at",
     )
     .bind(ctx.tenant_id)
     .bind(platform_common::new_id())
@@ -290,29 +343,35 @@ pub async fn create(
     .await?;
     let dashboard = load(tx.conn(), &ctx, row).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(dashboard)))
+    Ok((StatusCode::CREATED, etag(dashboard.version), Json(dashboard)))
 }
 
 #[utoipa::path(get, path = "/api/v1/dashboards/{id}", security(("bearer" = [])), params(("id" = Uuid, Path)),
     responses((status = 200, body = Dashboard), (status = 404)))]
-pub async fn get_one(State(state): State<AppState>, ctx: OrgContext, Path(id): Path<Uuid>) -> ApiResult<Json<Dashboard>> {
+pub async fn get_one(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path(id): Path<Uuid>,
+) -> ApiResult<(HeaderMap, Json<Dashboard>)> {
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let row = visible_dashboard(tx.conn(), &ctx, id).await?;
     let dashboard = load(tx.conn(), &ctx, row).await?;
     tx.commit().await?;
-    Ok(Json(dashboard))
+    Ok((etag(dashboard.version), Json(dashboard)))
 }
 
 #[utoipa::path(patch, path = "/api/v1/dashboards/{id}", request_body = UpdateDashboard, security(("bearer" = [])),
-    params(("id" = Uuid, Path)), responses((status = 200, body = Dashboard), (status = 403), (status = 404), (status = 422)))]
+    params(("id" = Uuid, Path), ("If-Match" = String, Header, description = "Version the edit is based on")),
+    responses((status = 200, body = Dashboard), (status = 403), (status = 404), (status = 409, description = "Changed by someone else"), (status = 422), (status = 428)))]
 pub async fn update(
     State(state): State<AppState>,
     ctx: OrgContext,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
     Json(body): Json<UpdateDashboard>,
-) -> ApiResult<Json<Dashboard>> {
+) -> ApiResult<(HeaderMap, Json<Dashboard>)> {
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    let current = editable_dashboard(tx.conn(), &ctx, id).await?;
+    let current = writable_dashboard(tx.conn(), &ctx, id, &headers).await?;
     // Only the owner decides who else sees it.
     if body.shared.is_some_and(|s| s != current.shared) && current.owner_id != ctx.user_id {
         return Err(ApiError::Forbidden);
@@ -321,7 +380,7 @@ pub async fn update(
     let new_description = body.description.as_deref().map(description).transpose()?;
     sqlx::query(
         "UPDATE dashboards SET name = COALESCE($2, name), description = COALESCE($3, description), \
-                shared = COALESCE($4, shared), updated_at = now() WHERE id = $1",
+                shared = COALESCE($4, shared) WHERE id = $1",
     )
     .bind(id)
     .bind(new_name)
@@ -348,10 +407,11 @@ pub async fn update(
                 .await?;
         }
     }
+    touch(tx.conn(), id).await?;
     let row = visible_dashboard(tx.conn(), &ctx, id).await?;
     let dashboard = load(tx.conn(), &ctx, row).await?;
     tx.commit().await?;
-    Ok(Json(dashboard))
+    Ok((etag(dashboard.version), Json(dashboard)))
 }
 
 #[utoipa::path(delete, path = "/api/v1/dashboards/{id}", security(("bearer" = [])), params(("id" = Uuid, Path)),
@@ -370,12 +430,13 @@ pub async fn add_widget(
     State(state): State<AppState>,
     ctx: OrgContext,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
     Json(body): Json<CreateWidget>,
-) -> ApiResult<(StatusCode, Json<Widget>)> {
+) -> ApiResult<(StatusCode, HeaderMap, Json<Widget>)> {
     let title = name("title", &body.title, "Title")?;
     body.query.validate()?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    editable_dashboard(tx.conn(), &ctx, id).await?;
+    writable_dashboard(tx.conn(), &ctx, id, &headers).await?;
     let (count, next): (i64, i32) =
         sqlx::query_as("SELECT count(*), COALESCE(max(position) + 1, 0) FROM dashboard_widgets WHERE dashboard_id = $1")
             .bind(id)
@@ -397,9 +458,9 @@ pub async fn add_widget(
     .bind(next)
     .execute(tx.conn())
     .await?;
-    touch(tx.conn(), id).await?;
+    let version = touch(tx.conn(), id).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(Widget { id: widget_id, title, size: body.size, query: body.query })))
+    Ok((StatusCode::CREATED, etag(version), Json(Widget { id: widget_id, title, size: body.size, query: body.query })))
 }
 
 #[utoipa::path(patch, path = "/api/v1/dashboards/{id}/widgets/{widget_id}", request_body = UpdateWidget, security(("bearer" = [])),
@@ -408,14 +469,15 @@ pub async fn update_widget(
     State(state): State<AppState>,
     ctx: OrgContext,
     Path((id, widget_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
     Json(body): Json<UpdateWidget>,
-) -> ApiResult<Json<Widget>> {
+) -> ApiResult<(HeaderMap, Json<Widget>)> {
     let title = body.title.as_deref().map(|t| name("title", t, "Title")).transpose()?;
     if let Some(q) = &body.query {
         q.validate()?;
     }
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    editable_dashboard(tx.conn(), &ctx, id).await?;
+    writable_dashboard(tx.conn(), &ctx, id, &headers).await?;
     let row: Option<WidgetRow> = sqlx::query_as(
         "UPDATE dashboard_widgets SET title = COALESCE($3, title), size = COALESCE($4, size), query = COALESCE($5, query) \
          WHERE dashboard_id = $1 AND id = $2 RETURNING id, title, size, query",
@@ -428,9 +490,9 @@ pub async fn update_widget(
     .fetch_optional(tx.conn())
     .await?;
     let widget = row.and_then(widget).ok_or(ApiError::NotFound("widget"))?;
-    touch(tx.conn(), id).await?;
+    let version = touch(tx.conn(), id).await?;
     tx.commit().await?;
-    Ok(Json(widget))
+    Ok((etag(version), Json(widget)))
 }
 
 #[utoipa::path(delete, path = "/api/v1/dashboards/{id}/widgets/{widget_id}", security(("bearer" = [])),
@@ -439,9 +501,10 @@ pub async fn delete_widget(
     State(state): State<AppState>,
     ctx: OrgContext,
     Path((id, widget_id)): Path<(Uuid, Uuid)>,
-) -> ApiResult<StatusCode> {
+    headers: HeaderMap,
+) -> ApiResult<(StatusCode, HeaderMap)> {
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    editable_dashboard(tx.conn(), &ctx, id).await?;
+    writable_dashboard(tx.conn(), &ctx, id, &headers).await?;
     let gone = sqlx::query("DELETE FROM dashboard_widgets WHERE dashboard_id = $1 AND id = $2")
         .bind(id)
         .bind(widget_id)
@@ -450,9 +513,9 @@ pub async fn delete_widget(
     if gone.rows_affected() == 0 {
         return Err(ApiError::NotFound("widget"));
     }
-    touch(tx.conn(), id).await?;
+    let version = touch(tx.conn(), id).await?;
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((StatusCode::NO_CONTENT, etag(version)))
 }
 
 #[utoipa::path(post, path = "/api/v1/analytics/query", request_body = WidgetQuery, security(("bearer" = [])),
@@ -476,7 +539,8 @@ pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::IF_MATCH])
+        .expose_headers([header::ETAG]);
     Router::new()
         .nest("/api/v1", api)
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))

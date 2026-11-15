@@ -109,6 +109,11 @@ export interface components {
             shared: boolean;
             /** Format: date-time */
             updated_at: string;
+            /**
+             * Format: int64
+             * @description Bumped by every change to the dashboard or its charts; send it as `If-Match`.
+             */
+            version: number;
             widgets: components["schemas"]["Widget"][];
         };
         DashboardList: {
@@ -126,6 +131,11 @@ export interface components {
             shared: boolean;
             /** Format: date-time */
             updated_at: string;
+            /**
+             * Format: int64
+             * @description Bumped by every change to the dashboard or its charts; send it as `If-Match`.
+             */
+            version: number;
             /** Format: int64 */
             widget_count: number;
         };
@@ -399,7 +409,10 @@ export interface operations {
     update: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Version the edit is based on */
+                "If-Match": string;
+            };
             path: {
                 id: string;
             };
@@ -431,7 +444,20 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Changed by someone else */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
