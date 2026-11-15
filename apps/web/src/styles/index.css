@@ -99,6 +99,7 @@
 .rich-text code { @apply rounded-sm bg-sunken px-1 py-0.5 font-mono text-sm; }
 .rich-text pre { @apply overflow-x-auto rounded bg-sunken p-3 font-mono text-sm; }
 .rich-text pre code { @apply bg-transparent p-0; }
+.rich-text .mention { @apply rounded-sm bg-accent-soft px-0.5 font-medium text-accent; }
 .rich-text blockquote { @apply border-l-2 border-line-strong pl-3 text-ink-muted; }
 .rich-text hr { @apply border-line; }
 .rich-text p.is-editor-empty:first-child::before {

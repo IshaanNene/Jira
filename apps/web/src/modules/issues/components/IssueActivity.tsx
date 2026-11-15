@@ -54,7 +54,7 @@ function Comments({ issue, canComment, canModerate }: { issue: IssueDetail; canC
           <div className="min-w-0 flex-1">
             {composing ? (
               <>
-                <RichTextEditor aria-label="Comment" autoFocus placeholder="Add a comment…" onChange={setDraft} resetKey={resetKey} minHeight="5rem" />
+                <RichTextEditor aria-label="Comment" autoFocus placeholder="Add a comment… Type @ to mention someone." onChange={setDraft} resetKey={resetKey} minHeight="5rem" />
                 <div className="mt-2 flex gap-2">
                   <Button variant="primary" loading={add.isPending} disabled={isEmptyDoc(draft)} onClick={post}>Save</Button>
                   <Button variant="ghost" onClick={() => { setComposing(false); setDraft(null); }}>Cancel</Button>
