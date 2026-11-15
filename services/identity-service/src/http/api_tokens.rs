@@ -21,7 +21,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{
-    auth::{issue_token, publish_revocation, require_session},
+    auth::{issue_token, publish_revocation, require_admitted, require_session},
     dto::TokenResponse,
 };
 use crate::{crypto, store, AppState};
@@ -144,7 +144,8 @@ pub async fn create(
         return Err(ApiError::Unauthenticated("Your session has ended. Sign in again."));
     }
     // Still a member now, not just when the access token was issued.
-    state.membership.check(auth.user_id, org).await?.ok_or(ApiError::Forbidden)?;
+    let membership = state.membership.check(auth.user_id, org).await?.ok_or(ApiError::Forbidden)?;
+    require_admitted(&state, auth.user_id, &membership).await?;
 
     let secret = format!("{PREFIX}{}", crypto::random_token());
     let hint: String = secret.chars().take(PREFIX.len() + 4).collect();
@@ -224,6 +225,8 @@ pub async fn exchange(State(state): State<AppState>, Json(body): Json<ApiTokenEx
         return Err(ApiError::Forbidden);
     }
     let membership = state.membership.check(account.id, organization_id).await?.ok_or(ApiError::Forbidden)?;
+    // A token does not get around a requirement the workspace added after it was made.
+    require_admitted(&state, account.id, &membership).await?;
     // Coarse on purpose: one write per token per minute at most.
     sqlx::query(
         "UPDATE api_tokens SET last_used_at = now() \

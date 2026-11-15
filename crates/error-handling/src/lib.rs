@@ -40,6 +40,10 @@ pub enum ApiError {
     Unauthenticated(&'static str),
     #[error("forbidden")]
     Forbidden,
+    /// A refusal the client can act on (403 with its own `code`), such as a workspace that
+    /// requires two-step verification. The message must be safe to show.
+    #[error("forbidden: {code}")]
+    ForbiddenBecause { code: &'static str, message: &'static str },
     #[error("{0} not found")]
     NotFound(&'static str),
     #[error("validation failed")]
@@ -73,6 +77,7 @@ impl ApiError {
         match self {
             ApiError::Unauthenticated(_) => "unauthenticated",
             ApiError::Forbidden => "forbidden",
+            ApiError::ForbiddenBecause { code, .. } => code,
             ApiError::NotFound(_) => "not_found",
             ApiError::Validation(_) => "validation_failed",
             ApiError::VersionConflict { .. } => "version_conflict",
@@ -88,7 +93,7 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             ApiError::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
-            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::Forbidden | ApiError::ForbiddenBecause { .. } => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::VersionConflict { .. } | ApiError::Conflict(_) => StatusCode::CONFLICT,
@@ -102,7 +107,7 @@ impl ApiError {
     fn title(&self) -> &'static str {
         match self {
             ApiError::Unauthenticated(_) => "Authentication required",
-            ApiError::Forbidden => "Not allowed",
+            ApiError::Forbidden | ApiError::ForbiddenBecause { .. } => "Not allowed",
             ApiError::NotFound(_) => "Not found",
             ApiError::Validation(_) => "Validation failed",
             ApiError::VersionConflict { .. } => "Edit conflict",
@@ -120,6 +125,7 @@ impl ApiError {
         match self {
             ApiError::Unauthenticated(reason) => (*reason).to_owned(),
             ApiError::Forbidden => "You do not have permission to perform this action.".to_owned(),
+            ApiError::ForbiddenBecause { message, .. } => (*message).to_owned(),
             ApiError::NotFound(what) => format!("The requested {what} does not exist."),
             ApiError::Validation(_) => "One or more fields are invalid.".to_owned(),
             ApiError::VersionConflict { .. } => {
@@ -215,7 +221,7 @@ impl From<ApiError> for tonic::Status {
         use tonic::Code;
         let code = match &err {
             ApiError::Unauthenticated(_) => Code::Unauthenticated,
-            ApiError::Forbidden => Code::PermissionDenied,
+            ApiError::Forbidden | ApiError::ForbiddenBecause { .. } => Code::PermissionDenied,
             ApiError::NotFound(_) => Code::NotFound,
             ApiError::Validation(_) => Code::InvalidArgument,
             ApiError::VersionConflict { .. } => Code::Aborted,

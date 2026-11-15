@@ -95,7 +95,9 @@ pub enum HandlerError {
 impl From<ApiError> for HandlerError {
     fn from(error: ApiError) -> Self {
         match error {
-            ApiError::Validation(_) | ApiError::NotFound(_) | ApiError::Forbidden => Self::Permanent(anyhow::anyhow!("{error}")),
+            ApiError::Validation(_) | ApiError::NotFound(_) | ApiError::Forbidden | ApiError::ForbiddenBecause { .. } => {
+                Self::Permanent(anyhow::anyhow!("{error}"))
+            }
             other => Self::Transient(anyhow::anyhow!("{other}")),
         }
     }

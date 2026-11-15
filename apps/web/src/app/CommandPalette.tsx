@@ -4,7 +4,7 @@ import { Building2, LogOut, Moon, Plus, Search, Sun } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { signOut, switchOrganization } from "@/modules/auth";
+import { signOut, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
 import { can, useMyOrganizations } from "@/modules/organizations";
 import { IssueTypeIcon } from "@/modules/issues";
 import { ProjectAvatar, useProjects } from "@/modules/projects";
@@ -111,7 +111,16 @@ export function CommandPalette() {
                       <Command.Item
                         key={org.id}
                         value={`switch workspace ${org.name} ${org.slug}`}
-                        onSelect={() => run(async () => { await switchOrganization(org.id); navigate("/"); })}
+                        onSelect={() =>
+                          run(async () => {
+                            try {
+                              await switchOrganization(org.id);
+                              navigate("/");
+                            } catch (error) {
+                              navigate(twoStepRequiredPath(error, org.id) ?? "/onboarding");
+                            }
+                          })
+                        }
                         className={itemClass}
                       >
                         <Building2 aria-hidden /> {org.name}

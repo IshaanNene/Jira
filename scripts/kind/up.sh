@@ -38,7 +38,7 @@ secret() { kubectl -n "$NS" create secret generic "$1" "${@:2}" --dry-run=client
 secret meridian-shared \
   --from-literal=INTERNAL_SERVICE_SECRET="$INTERNAL_SERVICE_SECRET" \
   --from-literal=REDIS_URL=redis://redis:6379
-for s in tenant identity user permission project workflow issue agile notification analytics; do
+for s in tenant identity user permission project workflow issue agile notification search analytics; do
   extra=()
   case "$s" in
     identity) extra=(--from-literal=IDENTITY_KEY_ENCRYPTION_KEY="$IDENTITY_KEY_ENCRYPTION_KEY") ;;

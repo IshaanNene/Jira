@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Button, Skeleton } from "@/components/ui";
-import { AuthLayout, FormError, signOut, switchOrganization } from "@/modules/auth";
+import { AuthLayout, FormError, signOut, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
 import { ApiError, errorMessage, type OrgRole } from "@/services/api";
 import { useSession } from "@/state/session";
 import { formatDate } from "@/utils/format";
@@ -82,7 +82,13 @@ export default function AcceptInvitationPage() {
     setError(null);
     try {
       const result = await accept.mutateAsync(token);
-      await switchOrganization(result.organization_id);
+      try {
+        await switchOrganization(result.organization_id);
+      } catch (e) {
+        const required = twoStepRequiredPath(e, result.organization_id);
+        if (required) return navigate(required, { replace: true });
+        throw e;
+      }
       navigate("/", { replace: true });
     } catch (e) {
       setError(errorMessage(e));

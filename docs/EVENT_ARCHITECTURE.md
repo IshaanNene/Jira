@@ -37,7 +37,7 @@ One topic per aggregate type, so that all events of one aggregate are totally or
 |---|---|---|---|
 | `platform.identity.v1` | `identity.user_registered`, `identity.login_succeeded`, `identity.login_failed`, `identity.session_revoked` | `account_id` | identity |
 | `platform.tenant.v1` | `tenant.provisioned`, `tenant.placement_changed`, `tenant.suspended` | `tenant_id` | tenant |
-| `platform.organization.v1` | `organization.created`, `organization.updated`, `user.invited`, `membership.changed`, `team.changed` | `tenant_id` | user |
+| `platform.organization.v1` | `organization.created`, `organization.updated`, `organization.two_step_changed`, `user.invited`, `membership.changed`, `team.changed` | `tenant_id` | user |
 | `platform.project.v1` | `project.created`, `project.updated`, `project.archived`, `version.released` | `tenant_id:project_id` | project |
 | `platform.issue.v1` | `issue.created`, `issue.updated`, `issue.deleted`, `issue.assigned`, `issue.transitioned`, `comment.created`, `comment.updated`, `comment.deleted` | `tenant_id:issue_id` | issue |
 | `platform.workflow.v1` | `workflow.updated`, `workflow.published` | `tenant_id:workflow_id` | workflow |

@@ -18,6 +18,8 @@ use uuid::Uuid;
 pub struct MembershipInfo {
     pub tenant_id: Uuid,
     pub role: OrgRole,
+    /// The workspace requires two-step verification of its members.
+    pub require_two_step: bool,
 }
 
 #[async_trait]
@@ -70,6 +72,6 @@ impl MembershipChecker for GrpcMembership {
             .map_err(|_| ApiError::internal(anyhow::anyhow!("user-service returned an invalid tenant id")))?;
         let role = OrgRole::parse(&reply.org_role)
             .ok_or_else(|| ApiError::internal(anyhow::anyhow!("user-service returned an unknown role")))?;
-        Ok(Some(MembershipInfo { tenant_id, role }))
+        Ok(Some(MembershipInfo { tenant_id, role, require_two_step: reply.require_two_step }))
     }
 }

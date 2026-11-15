@@ -9,7 +9,7 @@ export {
 export { AuthLayout } from "./components/AuthLayout";
 export { FormError } from "./components/FormError";
 export { applyServerErrors } from "./form-errors";
-export { safeNext } from "./navigation";
+export { safeNext, twoStepRequiredPath } from "./navigation";
 export { bootstrapSession, completeSignIn, leaveOrganizationScope, refreshSession, signIn, signOut, signUp, switchOrganization } from "./session-service";
 
 export const LoginPage = lazy(() => import("./pages/LoginPage"));

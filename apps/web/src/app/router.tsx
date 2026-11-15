@@ -10,7 +10,7 @@ import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notificatio
 import { SearchPage } from "@/modules/search";
 import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
-import { ProfilePage, SecurityPage } from "@/modules/users";
+import { ProfilePage, SecurityPage, TwoStepRequiredPage } from "@/modules/users";
 import { WorkflowDesignerPage, WorkflowsPage } from "@/modules/workflows";
 import { HomePage } from "@/modules/workspace";
 
@@ -50,6 +50,7 @@ export const router = createBrowserRouter([
         element: <RequireAuth />,
         children: [
           { path: "/onboarding", element: <OnboardingPage /> },
+          { path: "/two-step-required", element: <TwoStepRequiredPage /> },
           {
             element: <RequireOrganization />,
             children: [

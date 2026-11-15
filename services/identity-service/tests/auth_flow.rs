@@ -323,7 +323,11 @@ async fn exchange_issues_org_token_only_for_members() {
     let registered = register(&h.app, "member@example.com").await;
     let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
     let (org, tenant, other_org) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-    h.membership.0.lock().unwrap().insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Admin });
+    h.membership
+        .0
+        .lock()
+        .unwrap()
+        .insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Admin, require_two_step: false });
 
     let ok = call(
         &h.app,
@@ -636,7 +640,11 @@ async fn api_tokens_are_exchanged_for_org_tokens_and_cannot_manage_credentials()
     let registered = register(&h.app, "script@example.com").await;
     let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
     let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
-    h.membership.0.lock().unwrap().insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member });
+    h.membership
+        .0
+        .lock()
+        .unwrap()
+        .insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member, require_two_step: false });
     let session = token(
         &call(
             &h.app,
@@ -749,7 +757,11 @@ async fn api_tokens_are_exchanged_for_org_tokens_and_cannot_manage_credentials()
     h.membership.0.lock().unwrap().clear();
     let r = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    h.membership.0.lock().unwrap().insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member });
+    h.membership
+        .0
+        .lock()
+        .unwrap()
+        .insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member, require_two_step: false });
 
     // Someone else cannot revoke it; its owner can, and then it is dead.
     let mallory = register(&h.app, "mallory@example.com").await;
@@ -785,5 +797,88 @@ async fn api_tokens_are_exchanged_for_org_tokens_and_cannot_manage_credentials()
     )
     .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_workspace_can_require_two_step_verification() {
+    let h = harness().await;
+    let password = "a-long-enough-password";
+    let registered = register(&h.app, "careful@example.com").await;
+    let me = token(&registered);
+    let cookie = registered.cookie.clone().unwrap();
+    let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let set_required = |required: bool| {
+        h.membership
+            .0
+            .lock()
+            .unwrap()
+            .insert((user_id, org), MembershipInfo { tenant_id: tenant, role: OrgRole::Member, require_two_step: required });
+    };
+    let exchange = |bearer: String| {
+        let app = h.app.clone();
+        async move {
+            call(&app, Method::POST, "/api/v1/auth/token/exchange", Some(json!({ "organization_id": org })), Some(&bearer), None)
+                .await
+        }
+    };
+
+    // Before the requirement: a workspace token and an API token.
+    set_required(false);
+    let session = exchange(me.clone()).await;
+    assert_eq!(session.status, StatusCode::OK);
+    let created = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "ci", "expires_in_days": 30 })),
+        Some(&token(&session)),
+        None,
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let secret = created.body["secret"].clone();
+
+    // The workspace starts requiring it: no new workspace token of any kind until it is on.
+    set_required(true);
+    let refused = exchange(me.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["code"], "two_step_required", "{}", refused.body);
+    let api = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(api.body["code"], "two_step_required");
+    let more = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "more", "expires_in_days": 30 })),
+        Some(&token(&session)),
+        None,
+    )
+    .await;
+    assert_eq!(more.body["code"], "two_step_required");
+    // Refresh still signs the person in, to their account, so they can turn it on.
+    let refreshed =
+        call(&h.app, Method::POST, "/api/v1/auth/token/refresh", Some(json!({ "organization_id": org })), None, Some(&cookie))
+            .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    assert!(refreshed.body["organization"].is_null());
+    let cookie = refreshed.cookie.clone().unwrap();
+
+    let setup =
+        call(&h.app, Method::POST, "/api/v1/auth/mfa/totp/setup", Some(json!({ "password": password })), Some(&me), None).await;
+    let secret_bytes = base32_decode(setup.body["secret"].as_str().unwrap());
+    let code = identity_service::mfa::code_at(&secret_bytes, step_now());
+    let on = call(&h.app, Method::POST, "/api/v1/auth/mfa/totp/confirm", Some(json!({ "code": code })), Some(&me), None).await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+
+    // Now all three work again.
+    assert_eq!(exchange(me.clone()).await.status, StatusCode::OK);
+    let api = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(api.status, StatusCode::OK, "{}", api.body);
+    let refreshed =
+        call(&h.app, Method::POST, "/api/v1/auth/token/refresh", Some(json!({ "organization_id": org })), None, Some(&cookie))
+            .await;
+    assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
     h.db.cleanup().await;
 }

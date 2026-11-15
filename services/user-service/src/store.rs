@@ -101,11 +101,12 @@ pub struct Organization {
     pub tenant_id: Uuid,
     pub name: String,
     pub slug: String,
+    pub require_two_step: bool,
     pub version: i64,
     pub created_at: OffsetDateTime,
 }
 
-const ORG_COLUMNS: &str = "id, tenant_id, name, slug::text AS slug, version, created_at";
+const ORG_COLUMNS: &str = "id, tenant_id, name, slug::text AS slug, require_two_step, version, created_at";
 
 pub async fn insert_organization(
     conn: &mut PgConnection,
@@ -133,18 +134,21 @@ pub async fn organization(conn: &mut PgConnection, tenant_id: Uuid) -> ApiResult
 }
 
 /// Optimistic update: succeeds only if the row is still at `expected_version`.
-pub async fn rename_organization(
+pub async fn update_organization(
     conn: &mut PgConnection,
     tenant_id: Uuid,
-    name: &str,
+    name: Option<&str>,
+    require_two_step: Option<bool>,
     expected_version: i64,
 ) -> ApiResult<Option<Organization>> {
     Ok(sqlx::query_as::<_, Organization>(&format!(
-        "UPDATE organizations SET name = $2, version = version + 1, updated_at = now() \
-         WHERE tenant_id = $1 AND version = $3 RETURNING {ORG_COLUMNS}"
+        "UPDATE organizations SET name = COALESCE($2, name), require_two_step = COALESCE($3, require_two_step), \
+         version = version + 1, updated_at = now() \
+         WHERE tenant_id = $1 AND version = $4 RETURNING {ORG_COLUMNS}"
     ))
     .bind(tenant_id)
     .bind(name)
+    .bind(require_two_step)
     .bind(expected_version)
     .fetch_optional(conn)
     .await?)

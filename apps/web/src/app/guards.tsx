@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { Button } from "@/components/ui";
-import { bootstrapSession, safeNext, switchOrganization } from "@/modules/auth";
+import { bootstrapSession, safeNext, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
 import { useMyOrganizations } from "@/modules/organizations";
 import { useSession } from "@/state/session";
 import { PRODUCT_NAME } from "@/utils/config";
@@ -71,14 +71,14 @@ export function RedirectIfAuthenticated() {
 export function RequireOrganization() {
   const organization = useSession((s) => s.organization);
   const organizations = useMyOrganizations();
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | false>(false);
   const only = !organization && organizations.data?.length === 1 ? organizations.data[0] : undefined;
 
   useEffect(() => {
-    if (only && !failed) switchOrganization(only.id).catch(() => setFailed(true));
+    if (only && !failed) switchOrganization(only.id).catch((error) => setFailed(twoStepRequiredPath(error, only.id) ?? "/onboarding"));
   }, [only, failed]);
 
   if (organization) return <Outlet />;
   if (organizations.isPending || (only && !failed)) return <FullPageSpinner label="Opening your workspace" />;
-  return <Navigate to="/onboarding" replace />;
+  return <Navigate to={failed || "/onboarding"} replace />;
 }

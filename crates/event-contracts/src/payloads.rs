@@ -66,6 +66,15 @@ pub struct OrganizationUpdatedV1 {
 }
 payload!(OrganizationUpdatedV1, "organization.updated", 1, topics::ORGANIZATION, "organization");
 
+/// The workspace started or stopped requiring two-step verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrganizationTwoStepChangedV1 {
+    pub organization_id: Uuid,
+    pub name: String,
+    pub required: bool,
+}
+payload!(OrganizationTwoStepChangedV1, "organization.two_step_changed", 1, topics::ORGANIZATION, "organization");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserInvitedV1 {
     pub invitation_id: Uuid,

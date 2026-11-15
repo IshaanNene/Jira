@@ -4,13 +4,14 @@ import { useSearchParams } from "react-router-dom";
 
 import { Button, EmptyState, ErrorState, Input, Page, Select, Skeleton } from "@/components/ui";
 import { useProjects } from "@/modules/projects";
-import { ApiError, type SearchResults } from "@/services/api";
+import { ApiError, type SavedFilter, type SearchResults } from "@/services/api";
 import { cn } from "@/utils/cn";
 
-import { useDebounced, useMqlSearch, useSearch, type SearchParams } from "../api";
+import { useDebounced, useMqlSearch, useSavedFilter, useSearch, type SearchParams } from "../api";
 import { SearchResultRow } from "../components";
 import { basicToMql, MQL_EXAMPLES } from "../mql";
 import { MqlEditor, type QueryProblem } from "../MqlEditor";
+import { SavedFilters } from "../SavedFilters";
 
 const ANY = "any";
 const CATEGORIES = [
@@ -63,7 +64,7 @@ export default function SearchPage() {
       });
       update({ mode: "mql", mql });
     } else {
-      update({ mode: undefined });
+      update({ mode: undefined, filter: undefined });
     }
   };
 
@@ -159,11 +160,16 @@ function BasicSearch({ url, update }: { url: URLSearchParams; update: (c: Record
 }
 
 function QuerySearch({ url, update }: { url: URLSearchParams; update: (c: Record<string, string | undefined>) => void }) {
-  const ran = url.get("mql") ?? "";
+  const filterId = url.get("filter");
+  const saved = useSavedFilter(filterId);
+  // A link to a filter alone (`?mode=mql&filter=…`) runs the filter's query.
+  const ran = url.get("mql") ?? (filterId ? (saved.data?.query ?? "") : "");
   const [draft, setDraft] = useState(ran);
   const [help, setHelp] = useState(false);
   useEffect(() => setDraft(ran), [ran]);
-  const results = useMqlSearch(ran);
+  const results = useMqlSearch(ran, !filterId || url.has("mql") || saved.isSuccess);
+  const openFilter = (f: SavedFilter) => update({ filter: f.id, mql: f.query });
+  const gone = saved.error instanceof ApiError && saved.error.status === 404;
 
   const invalid = results.error instanceof ApiError && results.error.status === 422 ? results.error.fieldErrors.find((f) => f.field === "mql") : undefined;
   const problem: QueryProblem | undefined = invalid ? { query: ran, message: invalid.message, span: invalid.span } : undefined;
@@ -175,6 +181,21 @@ function QuerySearch({ url, update }: { url: URLSearchParams; update: (c: Record
 
   return (
     <>
+      {gone ? (
+        <p role="alert" className="mb-3 text-sm text-warning">
+          That filter was deleted, or it isn't shared with you.{" "}
+          <button type="button" className="font-medium underline" onClick={() => update({ filter: undefined })}>
+            Dismiss
+          </button>
+        </p>
+      ) : (
+        <SavedFilters
+          current={saved.data && filterId ? saved.data : null}
+          query={ran}
+          onOpen={openFilter}
+          onClose={() => update({ filter: undefined })}
+        />
+      )}
       <div className="mb-1">
         <MqlEditor value={draft} onChange={setDraft} onRun={run} problem={problem} />
       </div>

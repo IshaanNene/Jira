@@ -116,6 +116,18 @@ export function useRenameOrganization() {
   });
 }
 
+/** Turn the workspace's two-step verification requirement on or off. */
+export function useRequireTwoStep() {
+  const queryClient = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: async ({ required, version }: { required: boolean; version: number }) =>
+      (await requestWithMeta<Organization>("PATCH", `${BASE}/organizations/current`, { body: { require_two_step: required }, ifMatch: version }))
+        .data,
+    onSuccess: (organization) => queryClient.setQueryData(orgKeys.current(orgId), organization),
+  });
+}
+
 export function useMembers(search: string, enabled = true) {
   const orgId = useOrgId();
   return useInfiniteQuery({

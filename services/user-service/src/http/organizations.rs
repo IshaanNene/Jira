@@ -7,7 +7,7 @@ use axum::{
 use error_handling::{require_if_match, ApiError, ApiResult};
 use event_contracts::{
     outbox,
-    payloads::{MembershipChangedV1, OrganizationCreatedV1, OrganizationUpdatedV1},
+    payloads::{MembershipChangedV1, OrganizationCreatedV1, OrganizationTwoStepChangedV1, OrganizationUpdatedV1},
     Actor, EventEnvelope,
 };
 use uuid::Uuid;
@@ -150,26 +150,47 @@ pub async fn update_current(
 ) -> ApiResult<(HeaderMap, Json<OrganizationDto>)> {
     ctx.require(OrgPermission::ManageOrganization)?;
     let expected = require_if_match(&headers)?;
-    body.name = body.name.trim().to_owned();
+    body.name = body.name.map(|n| n.trim().to_owned());
     body.validate()?;
+    if body.name.is_none() && body.require_two_step.is_none() {
+        return Err(ApiError::invalid("name", "required", "Change the name or the two-step verification setting."));
+    }
 
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    let Some(org) = store::rename_organization(tx.conn(), ctx.tenant_id, &body.name, expected).await? else {
+    let before = store::organization(tx.conn(), ctx.tenant_id).await?.ok_or(ApiError::NotFound("organization"))?;
+    let updated =
+        store::update_organization(tx.conn(), ctx.tenant_id, body.name.as_deref(), body.require_two_step, expected).await?;
+    let Some(org) = updated else {
         let current = store::organization(tx.conn(), ctx.tenant_id).await?.ok_or(ApiError::NotFound("organization"))?;
         let current = serde_json::to_value(OrganizationDto::new(current, ctx.role.as_str())).ok();
         return Err(ApiError::VersionConflict { current });
     };
-    outbox::enqueue(
-        tx.conn(),
-        &EventEnvelope::new(
-            Some(ctx.tenant_id),
-            org.id,
-            org.version,
-            Actor::User(ctx.user_id),
-            OrganizationUpdatedV1 { organization_id: org.id, name: org.name.clone() },
-        ),
-    )
-    .await?;
+    if org.name != before.name {
+        outbox::enqueue(
+            tx.conn(),
+            &EventEnvelope::new(
+                Some(ctx.tenant_id),
+                org.id,
+                org.version,
+                Actor::User(ctx.user_id),
+                OrganizationUpdatedV1 { organization_id: org.id, name: org.name.clone() },
+            ),
+        )
+        .await?;
+    }
+    if org.require_two_step != before.require_two_step {
+        outbox::enqueue(
+            tx.conn(),
+            &EventEnvelope::new(
+                Some(ctx.tenant_id),
+                org.id,
+                org.version,
+                Actor::User(ctx.user_id),
+                OrganizationTwoStepChangedV1 { organization_id: org.id, name: org.name.clone(), required: org.require_two_step },
+            ),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok((etag(org.version), Json(OrganizationDto::new(org, ctx.role.as_str()))))
 }

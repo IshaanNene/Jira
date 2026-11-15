@@ -95,6 +95,11 @@ pub fn entry_for(event: &Event) -> Result<Option<Entry>, HandlerError> {
             let p: OrganizationUpdatedV1 = event.payload()?;
             Some(entry("organization.renamed", "organization", p.organization_id, p.name))
         }
+        "organization.two_step_changed" => {
+            let p: OrganizationTwoStepChangedV1 = event.payload()?;
+            let action = if p.required { "organization.two_step_required" } else { "organization.two_step_optional" };
+            Some(entry(action, "organization", p.organization_id, p.name))
+        }
         "user.invited" => {
             let p: UserInvitedV1 = event.payload()?;
             Some(entry("member.invited", "invitation", p.invitation_id, p.email).with("role", p.org_role))

@@ -1,8 +1,9 @@
 //! Search service: full-text issue search on OpenSearch, kept current from issue events.
 //!
-//! It owns no data of record. The index can be dropped and rebuilt at any time from
-//! issue-service (`search-service reindex <tenant-id>`).
+//! The index is not data of record: it can be dropped and rebuilt at any time from
+//! issue-service (`search-service reindex <tenant-id>`). Saved filters are, and live in PostgreSQL.
 
+pub mod filters;
 pub mod http;
 pub mod index;
 pub mod indexer;
@@ -18,13 +19,18 @@ use event_bus::{run_consumer, KafkaSettings};
 use event_contracts::topics;
 use observability::{HttpLayerConfig, Telemetry};
 use platform_common::{config, server};
+use sqlx::{migrate::Migrator, PgPool};
+use tenant_context::{pools_from_env, DbRouter, PoolSettings, RegistryPlacement};
 use uuid::Uuid;
 
 pub const SERVICE_NAME: &str = "search-service";
+pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Clone)]
 pub struct AppState {
     pub index: index::Index,
+    /// Saved filters.
+    pub db: Arc<DbRouter>,
     pub verifier: Arc<TokenVerifier>,
     pub policy: Arc<PolicyClient>,
     pub people: Arc<dyn people::People>,
@@ -53,6 +59,14 @@ fn indexer(index: index::Index) -> anyhow::Result<indexer::Indexer> {
     Ok(indexer::Indexer { index, source: Arc::new(source::GrpcSource::new(&issue, &secret)?) })
 }
 
+pub async fn migrate() -> anyhow::Result<()> {
+    let pool = PgPool::connect(&config::required("DATABASE_MIGRATION_URL")?).await?;
+    MIGRATOR.run(&pool).await?;
+    pool.close().await;
+    tracing::info!("migrations applied");
+    Ok(())
+}
+
 /// Rebuild one tenant's documents from issue-service.
 pub async fn reindex(tenant_id: Uuid) -> anyhow::Result<()> {
     let index = open_index()?;
@@ -67,6 +81,11 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let secret = config::required("INTERNAL_SERVICE_SECRET")?;
     let permission = config::or("PERMISSION_SERVICE_GRPC_URL", "http://127.0.0.1:9108");
     let user = config::or("USER_SERVICE_GRPC_URL", "http://127.0.0.1:9103");
+    let registry = config::or("TENANT_SERVICE_GRPC_URL", "http://127.0.0.1:9102");
+    let db = Arc::new(DbRouter::new(
+        pools_from_env(&PoolSettings::from_env()?)?,
+        Arc::new(RegistryPlacement::new(&registry, &secret, SERVICE_NAME)?),
+    ));
 
     let index = open_index()?;
     ensure_index(&index).await?;
@@ -87,6 +106,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
 
     let state = AppState {
         index: index.clone(),
+        db: Arc::clone(&db),
         verifier: Arc::new(
             TokenVerifier::remote(config::required("TOKEN_ISSUER")?, config::required("JWKS_URL")?)?.with_revocations(redis),
         ),
@@ -95,8 +115,14 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
     let health = server::health_router(move || {
-        let index = index.clone();
-        async move { index.ready().await }
+        let (index, db) = (index.clone(), Arc::clone(&db));
+        async move {
+            let pg = match db.global() {
+                Ok(pool) => sqlx::query("SELECT 1").execute(pool).await.is_ok(),
+                Err(_) => false,
+            };
+            pg && index.ready().await
+        }
     });
     let app = observability::apply_http_layers(http::router(state), &HttpLayerConfig::default())
         .merge(health)

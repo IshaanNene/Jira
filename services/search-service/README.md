@@ -1,7 +1,8 @@
 # search-service
 
-Full-text issue search on OpenSearch. It owns no data of record: the index can be dropped and rebuilt from
-issue-service at any time.
+Full-text issue search on OpenSearch. The index is not data of record: it can be dropped and rebuilt from
+issue-service at any time. Saved MQL filters are, and live in PostgreSQL (`search_db`, row-level security by tenant):
+`/api/v1/search/filters` lists, creates, reads, updates and deletes them, and every write parses the query.
 
 **Indexing.** Consumes the issue and project topics. For any `issue.*` or `comment.*` event it fetches the issue's
 current document with `issue.v1.Issues/GetDocuments` (key, summary, plain-text description and comments, status,

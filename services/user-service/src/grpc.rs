@@ -37,6 +37,10 @@ impl Membership for MembershipService {
         // inside the tenant's own scope.
         let mut tx = self.db.begin(tenant_id).await?;
         let membership = store::membership(tx.conn(), tenant_id, user_id).await?;
+        let require_two_step = match membership {
+            Some(_) => store::organization(tx.conn(), tenant_id).await?.is_some_and(|o| o.require_two_step),
+            None => false,
+        };
         tx.commit().await?;
         Ok(match membership {
             Some(m) => Response::new(CheckMembershipResponse {
@@ -44,6 +48,7 @@ impl Membership for MembershipService {
                 tenant_id: tenant_id.to_string(),
                 org_role: m.org_role,
                 status: m.status,
+                require_two_step,
             }),
             None => not_member(),
         })

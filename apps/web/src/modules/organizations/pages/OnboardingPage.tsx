@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { Avatar, Button, ErrorState, Skeleton, toast } from "@/components/ui";
-import { AuthLayout, signOut, switchOrganization } from "@/modules/auth";
+import { AuthLayout, signOut, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
 import { errorMessage } from "@/services/api";
 import { useSession } from "@/state/session";
 
@@ -25,6 +25,8 @@ export default function OnboardingPage() {
       await switchOrganization(organizationId);
       navigate("/", { replace: true });
     } catch (error) {
+      const required = twoStepRequiredPath(error, organizationId);
+      if (required) return navigate(required);
       toast.error("Couldn't open workspace", errorMessage(error));
       setOpening(null);
     }

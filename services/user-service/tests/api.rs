@@ -498,6 +498,54 @@ async fn organization_rename_uses_optimistic_concurrency() {
 }
 
 #[tokio::test]
+async fn a_workspace_can_require_two_step_verification() {
+    let h = harness().await;
+    let (ada, grace) = (User::new("ada"), User::new("grace"));
+    let (org, tenant) = h.create_org(&ada, "Acme").await;
+    let owner = h.org_token(&ada, tenant, org, "owner");
+    h.add_member(&owner, &grace, "admin").await;
+    let path = "/api/v1/organizations/current";
+    let service = MembershipService { db: Arc::clone(&h.router) };
+    let required = |user: Uuid| {
+        let service = &service;
+        async move {
+            let request = CheckMembershipRequest { user_id: user.to_string(), organization_id: org.to_string() };
+            service.check_membership(tonic::Request::new(request)).await.unwrap().into_inner().require_two_step
+        }
+    };
+    assert!(!required(grace.id).await);
+
+    let current = h.call(Method::GET, path, Some(&owner), None, None).await;
+    assert_eq!(current.body["require_two_step"], false);
+    let empty = h.call(Method::PATCH, path, Some(&owner), Some(json!({})), Some("\"1\"")).await;
+    assert_eq!(empty.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let member = h.org_token(&grace, tenant, org, "member");
+    let denied = h.call(Method::PATCH, path, Some(&member), Some(json!({ "require_two_step": true })), Some("\"1\"")).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let on = h.call(Method::PATCH, path, Some(&owner), Some(json!({ "require_two_step": true })), Some("\"1\"")).await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!((on.body["require_two_step"].as_bool(), on.body["name"].as_str()), (Some(true), Some("Acme")));
+    assert!(required(grace.id).await, "identity is told with every membership check");
+    assert!(!required(User::new("stranger").id).await);
+    // The setting goes through the same optimistic concurrency as a rename.
+    let stale = h.call(Method::PATCH, path, Some(&owner), Some(json!({ "name": "Acme 2" })), Some("\"1\"")).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT);
+    let off = h.call(Method::PATCH, path, Some(&owner), Some(json!({ "require_two_step": false })), Some("\"2\"")).await;
+    assert_eq!(off.status, StatusCode::OK);
+
+    // Both changes are audited; a no-op change emits nothing.
+    let same = h.call(Method::PATCH, path, Some(&owner), Some(json!({ "require_two_step": false })), Some("\"3\"")).await;
+    assert_eq!(same.status, StatusCode::OK);
+    let recorder = user_service::audit::Recorder { db: Arc::clone(&h.router) };
+    record_outbox(&h, &recorder).await;
+    let page = h.call(Method::GET, "/api/v1/organizations/current/audit?category=organization", Some(&owner), None, None).await;
+    let actions: Vec<&str> = page.body["items"].as_array().unwrap().iter().map(|i| i["action"].as_str().unwrap()).collect();
+    assert_eq!(actions, ["organization.two_step_optional", "organization.two_step_required", "organization.created"]);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn member_listing_paginates_and_searches_safely() {
     let h = harness().await;
     let ada = User::new("ada");

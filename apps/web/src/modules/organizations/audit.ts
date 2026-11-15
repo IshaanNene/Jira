@@ -51,6 +51,10 @@ export function describe(entry: AuditEntry, people: Record<string, string>): str
       return `created the workspace ${what}`;
     case "organization.renamed":
       return `renamed the workspace to ${what}`;
+    case "organization.two_step_required":
+      return "required two-step verification of every member";
+    case "organization.two_step_optional":
+      return "stopped requiring two-step verification";
     case "member.invited":
       return `invited ${what} as ${role(d.role)}`;
     case "member.joined": {

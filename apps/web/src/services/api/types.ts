@@ -112,6 +112,10 @@ type SearchApi = SearchComponents["schemas"];
 export type SearchHit = SearchApi["SearchHit"];
 export type SearchResults = SearchApi["SearchResults"];
 export type TextPart = SearchApi["TextPart"];
+export type SavedFilter = SearchApi["SavedFilter"];
+export type SavedFilterList = SearchApi["SavedFilterList"];
+export type CreateSavedFilter = SearchApi["CreateSavedFilter"];
+export type UpdateSavedFilter = SearchApi["UpdateSavedFilter"];
 /** A rich-text document in the editor's JSON format. */
 type AnalyticsApi = AnalyticsComponents["schemas"];
 export type DashboardSummary = AnalyticsApi["DashboardSummary"];

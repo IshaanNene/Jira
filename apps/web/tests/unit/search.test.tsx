@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -166,5 +166,87 @@ describe("MQL search", () => {
     expect(editor).toHaveValue("project ");
     expect(option).not.toBeInTheDocument();
     expect(await screen.findByRole("option", { name: "=" })).toBeInTheDocument();
+  });
+
+  it("opens a shared filter, saves a copy, saves changes to it and deletes it", async () => {
+    signIn();
+    const BOB = "00000000-0000-7000-8000-0000000000b0";
+    const at = "2026-11-15T00:00:00Z";
+    type F = { id: string; name: string; query: string; owner_id: string; shared: boolean; editable: boolean; updated_at: string };
+    let filters: F[] = [{ id: "f-bob", name: "Release blockers", query: "priority = highest", owner_id: BOB, shared: true, editable: false, updated_at: at }];
+    const api = fakeApi({
+      "GET /api/v1/projects": { items: [project({ id: "p1", key: "PAY", name: "Payments" })], next_cursor: null },
+      "GET /api/v1/organizations/current/members": MEMBERS,
+      "GET /api/v1/search/issues/query": { items: [hit()], total: 1, total_is_lower_bound: false, next_cursor: null },
+      "GET /api/v1/search/filters": () => ({ body: { items: filters } }),
+      "GET /api/v1/search/filters/f-bob": () => ({ body: filters.find((f) => f.id === "f-bob") }),
+      "GET /api/v1/search/filters/f-mine": () => {
+        const f = filters.find((x) => x.id === "f-mine");
+        return f ? { body: f } : { status: 404, body: { code: "not_found", detail: "filter not found" } };
+      },
+      "POST /api/v1/search/filters": (call: Call) => {
+        const body = call.body as { name: string; query: string; shared: boolean };
+        if (body.name === "Release blockers") {
+          return { status: 422, body: { code: "validation_failed", detail: "invalid", errors: [{ field: "name", code: "taken", message: 'You already have a filter called "Release blockers".' }] } };
+        }
+        const f = { id: "f-mine", ...body, owner_id: "00000000-0000-7000-8000-000000000001", editable: true, updated_at: at };
+        filters = [f, ...filters];
+        return { status: 201, body: f };
+      },
+      "PATCH /api/v1/search/filters/f-mine": (call: Call) => {
+        filters = filters.map((f) => (f.id === "f-mine" ? { ...f, ...(call.body as Partial<F>) } : f));
+        return { body: filters[0] };
+      },
+      "DELETE /api/v1/search/filters/f-mine": () => {
+        filters = filters.filter((f) => f.id !== "f-mine");
+        return { status: 204 };
+      },
+    });
+    renderAt(<SearchPage />, "/search", "/search?mode=mql&mql=status%20%3D%20done");
+
+    // Someone else's shared filter runs but cannot be changed.
+    await userEvent.click(await screen.findByRole("button", { name: "Filters" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Release blockers" }));
+    expect(await screen.findByRole("heading", { name: "Release blockers" })).toBeInTheDocument();
+    await waitFor(() => expect(api.calls.at(-1)?.query.get("mql")).toBe("priority = highest"));
+    const editor = screen.getByRole("combobox", { name: "MQL query" });
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "priority = high{Enter}");
+    expect(await screen.findByText("Edited")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+
+    // Save a copy of the edited query as one's own.
+    await userEvent.click(screen.getByRole("button", { name: "Filter actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Save as new filter" }));
+    let dialog = await screen.findByRole("dialog", { name: "Save filter" });
+    expect(within(dialog).getByText("priority = high")).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Release blockers");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await within(dialog).findByText('You already have a filter called "Release blockers".')).toBeInTheDocument();
+    await userEvent.clear(within(dialog).getByLabelText("Name"));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "High priority");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("heading", { name: "High priority" })).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/search/filters").at(-1)!.body).toEqual({ name: "High priority", query: "priority = high", shared: false });
+
+    // Change and save one's own filter.
+    await userEvent.clear(screen.getByRole("combobox", { name: "MQL query" }));
+    await userEvent.type(screen.getByRole("combobox", { name: "MQL query" }), "priority >= high{Enter}");
+    await userEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByText("Edited")).toBeNull());
+    expect(api.sent("PATCH", "/api/v1/search/filters/f-mine").at(-1)!.body).toEqual({ query: "priority >= high" });
+
+    // Both groups are listed.
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    expect(await screen.findByText("My filters")).toBeInTheDocument();
+    expect(screen.getByText("Shared with the workspace")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByRole("button", { name: "Filter actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    dialog = await screen.findByRole("dialog", { name: 'Delete "High priority"?' });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(await screen.findByRole("button", { name: "Save filter" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "High priority" })).toBeNull();
   });
 });

@@ -52,6 +52,8 @@ pub struct OrganizationDto {
     pub slug: String,
     /// The caller's role in this organization.
     pub role: String,
+    /// Members must have two-step verification on to work in it.
+    pub require_two_step: bool,
     pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -64,6 +66,7 @@ impl OrganizationDto {
             name: org.name,
             slug: org.slug,
             role: role.to_owned(),
+            require_two_step: org.require_two_step,
             version: org.version,
             created_at: org.created_at,
         }
@@ -88,7 +91,9 @@ pub struct CreateOrganizationRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateOrganizationRequest {
     #[validate(length(min = 2, max = 80, message = "Name must be between 2 and 80 characters."))]
-    pub name: String,
+    pub name: Option<String>,
+    /// Require two-step verification of every member.
+    pub require_two_step: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

@@ -75,7 +75,7 @@ services:
   # Server-Sent Events: long-lived connections, drained on shutdown.
   realtime:     { grpc: false, database: false, terminationGracePeriodSeconds: 120 }
   notification: { grpc: false, database: true }
-  search:       { grpc: false, database: false }
+  search:       { grpc: false, database: true }
   analytics:    { grpc: false, database: true }
 
 web:

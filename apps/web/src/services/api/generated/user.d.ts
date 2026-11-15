@@ -314,6 +314,8 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+            /** @description Members must have two-step verification on to work in it. */
+            require_two_step: boolean;
             /** @description The caller's role in this organization. */
             role: string;
             slug: string;
@@ -342,7 +344,9 @@ export interface components {
             status?: string | null;
         };
         UpdateOrganizationRequest: {
-            name: string;
+            name?: string | null;
+            /** @description Require two-step verification of every member. */
+            require_two_step?: boolean | null;
         };
         UpdateProfileRequest: {
             display_name?: string | null;

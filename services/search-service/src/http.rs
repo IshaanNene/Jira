@@ -19,6 +19,7 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::{
+    filters,
     index::{Filters, Hit, Hits, MARK_END, MARK_START},
     mql::{self, MqlError, SortValue},
     AppState,
@@ -286,18 +287,31 @@ pub async fn query_issues(
         version = "1.0.0",
         description = "Full-text and MQL search over the issues the caller can browse."
     ),
-    paths(search_issues, query_issues),
-    components(schemas(SearchResults, SearchHit, Snippet, TextPart))
+    paths(search_issues, query_issues, filters::list, filters::create, filters::get_one, filters::update, filters::delete),
+    components(schemas(
+        SearchResults,
+        SearchHit,
+        Snippet,
+        TextPart,
+        filters::SavedFilter,
+        filters::SavedFilterList,
+        filters::CreateSavedFilter,
+        filters::UpdateSavedFilter
+    ))
 )]
 pub struct ApiDoc;
 
 pub fn router(state: AppState) -> Router {
-    let api = Router::new().route("/search/issues", get(search_issues)).route("/search/issues/query", get(query_issues));
+    let api = Router::new()
+        .route("/search/issues", get(search_issues))
+        .route("/search/issues/query", get(query_issues))
+        .route("/search/filters", get(filters::list).post(filters::create))
+        .route("/search/filters/{id}", get(filters::get_one).patch(filters::update).delete(filters::delete));
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET])
-        .allow_headers([header::AUTHORIZATION]);
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
     Router::new()
         .nest("/api/v1", api)
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))

@@ -100,8 +100,11 @@ async fn harness() -> Harness {
     let roles = Arc::new(Roles::default());
     let people = Arc::new(Directory::default());
     let auth = TestAuth::new().unwrap();
+    // Saved filters are tested in filters.rs; these tests never reach the database.
+    let db = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
     let state = AppState {
         index: index.clone(),
+        db: Arc::new(tenant_context::DbRouter::single(db)),
         verifier: Arc::clone(&auth.verifier),
         policy: Arc::new(PolicyClient::new(roles.clone(), RedisHandle::default())),
         people: people.clone(),

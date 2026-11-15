@@ -362,8 +362,13 @@ pub async fn refresh(
 
     // Resolve the organization scope before rotating, so a dependency outage leaves the
     // presented token usable for a retry.
+    // A workspace the person may no longer enter (removed, or it now requires two-step
+    // verification they have not turned on) falls back to an account token.
     let membership = match body.organization_id {
-        Some(org_id) => state.membership.check(account.id, org_id).await.map_err(&keep)?.map(|m| (org_id, m)),
+        Some(org_id) => match state.membership.check(account.id, org_id).await.map_err(&keep)? {
+            Some(m) if admits(&state, account.id, &m).await.map_err(&keep)? => Some((org_id, m)),
+            _ => None,
+        },
         None => None,
     };
 
@@ -396,7 +401,26 @@ pub async fn exchange(
     // Membership and role are read from the user service now — never from the request and
     // never copied from the caller's current token.
     let membership = state.membership.check(account.id, body.organization_id).await?.ok_or(ApiError::Forbidden)?;
+    require_admitted(&state, account.id, &membership).await?;
     Ok(Json(issue_access_token(&state, &account, auth.session_id, Some((body.organization_id, &membership)))?))
+}
+
+pub(crate) const TWO_STEP_REQUIRED: ApiError = ApiError::ForbiddenBecause {
+    code: "two_step_required",
+    message: "This workspace requires two-step verification. Turn it on in your security settings, then try again.",
+};
+
+/// Whether the workspace lets this member in: today, its two-step verification requirement.
+pub(crate) async fn admits(state: &AppState, account_id: Uuid, membership: &MembershipInfo) -> ApiResult<bool> {
+    Ok(!membership.require_two_step || super::mfa::totp_enabled(&state.pool, account_id).await?)
+}
+
+pub(crate) async fn require_admitted(state: &AppState, account_id: Uuid, membership: &MembershipInfo) -> ApiResult<()> {
+    if admits(state, account_id, membership).await? {
+        Ok(())
+    } else {
+        Err(TWO_STEP_REQUIRED)
+    }
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 204)))]

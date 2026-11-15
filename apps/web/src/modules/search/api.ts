@@ -1,11 +1,20 @@
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { api, ApiError, type SearchResults } from "@/services/api";
+import {
+  api,
+  ApiError,
+  type CreateSavedFilter,
+  type SavedFilter,
+  type SavedFilterList,
+  type SearchResults,
+  type UpdateSavedFilter,
+} from "@/services/api";
 import { useSession } from "@/state/session";
 
 const PATH = "/api/v1/search/issues";
 const MQL_PATH = "/api/v1/search/issues/query";
+const FILTERS_PATH = "/api/v1/search/filters";
 
 export interface SearchParams {
   q: string;
@@ -18,6 +27,8 @@ export const searchKeys = {
   all: (orgId: string | undefined) => ["org", orgId, "search"] as const,
   query: (orgId: string | undefined, params: SearchParams, limit: number) => ["org", orgId, "search", params, limit] as const,
   mql: (orgId: string | undefined, mql: string) => ["org", orgId, "search", "mql", mql] as const,
+  filters: (orgId: string | undefined) => ["org", orgId, "search-filters"] as const,
+  filter: (orgId: string | undefined, id: string) => ["org", orgId, "search-filters", id] as const,
 };
 
 /** `value`, once it has stopped changing for `ms`. */
@@ -68,4 +79,48 @@ export function useMqlSearch(mql: string, enabled = true) {
     enabled: Boolean(orgId) && enabled,
     retry: (count, error) => !(error instanceof ApiError && error.status === 422) && count < 2,
   });
+}
+
+/** The person's own saved filters, then the ones others shared. */
+export function useSavedFilters() {
+  const orgId = useSession((s) => s.organization?.id);
+  return useQuery({
+    queryKey: searchKeys.filters(orgId),
+    queryFn: ({ signal }) => api.get<SavedFilterList>(FILTERS_PATH, { signal }),
+    enabled: Boolean(orgId),
+  });
+}
+
+export function useSavedFilter(id: string | null) {
+  const orgId = useSession((s) => s.organization?.id);
+  return useQuery({
+    queryKey: searchKeys.filter(orgId, id ?? ""),
+    queryFn: ({ signal }) => api.get<SavedFilter>(`${FILTERS_PATH}/${id}`, { signal }),
+    enabled: Boolean(orgId) && Boolean(id),
+    retry: (count, error) => !(error instanceof ApiError && error.status === 404) && count < 2,
+  });
+}
+
+function useRefreshFilters() {
+  const orgId = useSession((s) => s.organization?.id);
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: searchKeys.filters(orgId) });
+}
+
+export function useCreateSavedFilter() {
+  const refresh = useRefreshFilters();
+  return useMutation({ mutationFn: (input: CreateSavedFilter) => api.post<SavedFilter>(FILTERS_PATH, input), onSettled: refresh });
+}
+
+export function useUpdateSavedFilter() {
+  const refresh = useRefreshFilters();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateSavedFilter & { id: string }) => api.patch<SavedFilter>(`${FILTERS_PATH}/${id}`, input),
+    onSettled: refresh,
+  });
+}
+
+export function useDeleteSavedFilter() {
+  const refresh = useRefreshFilters();
+  return useMutation({ mutationFn: (id: string) => api.delete(`${FILTERS_PATH}/${id}`), onSettled: refresh });
 }

@@ -12,7 +12,7 @@ import {
   Skeleton,
   toast,
 } from "@/components/ui";
-import { leaveOrganizationScope, switchOrganization } from "@/modules/auth";
+import { leaveOrganizationScope, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
 import { useCurrentOrganization, useMyOrganizations } from "@/modules/organizations";
 import { errorMessage } from "@/services/api";
 import { useSession } from "@/state/session";
@@ -29,6 +29,8 @@ export function WorkspaceSwitcher({ collapsed }: { collapsed: boolean }) {
       await switchOrganization(id);
       navigate("/");
     } catch (error) {
+      const required = twoStepRequiredPath(error, id);
+      if (required) return navigate(required);
       toast.error("Couldn't switch workspace", errorMessage(error));
     }
   };

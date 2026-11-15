@@ -26,6 +26,8 @@ utoipa.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+sqlx.workspace = true
+tenant-context.workspace = true
 
 [dev-dependencies]
 test-utilities.workspace = true
