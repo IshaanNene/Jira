@@ -16,8 +16,8 @@ const SIZES = [
   { value: "full", label: "Full width" },
 ];
 
-function periodOptions(kind: "created_vs_resolved" | "cycle_time" | "velocity") {
-  const unit = kind === "created_vs_resolved" ? "days" : kind === "cycle_time" ? "weeks" : "sprints";
+function periodOptions(kind: keyof typeof PERIODS) {
+  const unit = kind === "created_vs_resolved" || kind === "cumulative_flow" ? "days" : kind === "cycle_time" ? "weeks" : "sprints";
   return PERIODS[kind].map((n) => ({ value: String(n), label: `Last ${n} ${unit}` }));
 }
 
@@ -47,6 +47,11 @@ function QueryFields({ query, onChange }: { query: WidgetQuery; onChange: (query
       {query.kind === "created_vs_resolved" && (
         <Field label="Period">
           <Select value={String(query.days)} onValueChange={(v) => onChange({ ...query, days: Number(v) })} options={periodOptions("created_vs_resolved")} />
+        </Field>
+      )}
+      {query.kind === "cumulative_flow" && (
+        <Field label="Period">
+          <Select value={String(query.days)} onValueChange={(v) => onChange({ ...query, days: Number(v) })} options={periodOptions("cumulative_flow")} />
         </Field>
       )}
       {query.kind === "cycle_time" && (

@@ -147,6 +147,16 @@ export interface components {
             /** Format: int64 */
             resolved: number;
         };
+        DayFlow: {
+            /** @description `YYYY-MM-DD`, UTC; counts are at the end of that day. */
+            date: string;
+            /** Format: int64 */
+            done: number;
+            /** Format: int64 */
+            in_progress: number;
+            /** Format: int64 */
+            todo: number;
+        };
         Group: {
             /** Format: int64 */
             count: number;
@@ -212,6 +222,10 @@ export interface components {
             /** Format: int64 */
             total: number;
         } | {
+            days: components["schemas"]["DayFlow"][];
+            /** @enum {string} */
+            kind: "cumulative_flow";
+        } | {
             /** @enum {string} */
             kind: "velocity";
             sprints: components["schemas"]["SprintResult"][];
@@ -241,6 +255,15 @@ export interface components {
             include_done?: boolean;
             /** @enum {string} */
             kind: "breakdown";
+            projects?: string[];
+        } | {
+            /**
+             * Format: int32
+             * @description 7 to 365.
+             */
+            days: number;
+            /** @enum {string} */
+            kind: "cumulative_flow";
             projects?: string[];
         } | {
             /** @enum {string} */

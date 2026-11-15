@@ -49,6 +49,7 @@ const MAX_WIDGETS: i64 = 30;
         widgets::DayCounts,
         widgets::WeekCycleTime,
         widgets::Group,
+        widgets::DayFlow,
         widgets::SprintResult
     ))
 )]

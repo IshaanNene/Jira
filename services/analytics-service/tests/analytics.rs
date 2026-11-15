@@ -305,6 +305,29 @@ async fn charts_count_only_the_viewers_tenant_and_projects() {
     };
     assert_eq!(category, "in_progress");
 
+    // Cumulative flow: today matches the current state; earlier days are worked back through
+    // the recorded moves. `doing`'s only move predates categories, so it counts as in progress
+    // from its creation.
+    let cfd = h.chart(&admin_token, json!({ "kind": "cumulative_flow", "days": 14 })).await;
+    let flow: Vec<(u64, u64, u64)> = cfd["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["todo"].as_u64().unwrap(), d["in_progress"].as_u64().unwrap(), d["done"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(flow.len(), 14, "{cfd}");
+    let back = |d: usize| flow[13 - d];
+    assert_eq!(back(0), (1, 1, 1));
+    assert_eq!(back(1), (1, 1, 1), "HR's issue was created a day ago");
+    assert_eq!(back(2), (0, 1, 1), "done finished two days ago");
+    assert_eq!(back(4), (0, 2, 0));
+    assert_eq!(back(5), (0, 1, 0), "done started five days ago; doing did not exist yet");
+    assert_eq!(back(6), (1, 0, 0));
+    assert_eq!(back(10), (1, 0, 0));
+    assert_eq!(back(11), (0, 0, 0));
+    let pay_member = h.chart(&member_token, json!({ "kind": "cumulative_flow", "days": 7 })).await;
+    assert_eq!(pay_member["days"][6], json!({ "date": cvr["days"][13]["date"], "todo": 0, "in_progress": 1, "done": 1 }));
+
     // A deleted issue drops out; so does every issue of a deleted project.
     h.event(tenant, topics::ISSUE, "issue.deleted", now, json!({ "issue_id": doing, "key": "X-2", "project_id": pay })).await;
     let after = h.chart(&admin_token, json!({ "kind": "breakdown", "group_by": "project", "include_done": true })).await;

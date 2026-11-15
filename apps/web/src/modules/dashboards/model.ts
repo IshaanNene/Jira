@@ -8,6 +8,7 @@ export const KIND_LABEL: Record<WidgetKind, string> = {
   created_vs_resolved: "Created vs resolved",
   cycle_time: "Cycle time",
   breakdown: "Issue breakdown",
+  cumulative_flow: "Cumulative flow",
   velocity: "Sprint velocity",
 };
 
@@ -15,6 +16,7 @@ export const KIND_DESCRIPTION: Record<WidgetKind, string> = {
   created_vs_resolved: "Issues created and resolved each day.",
   cycle_time: "Days from first start to done, per week the issues were finished.",
   breakdown: "Open issues counted by a field.",
+  cumulative_flow: "Issues to do, in progress and done at the end of each day.",
   velocity: "Issues completed and left over in each completed sprint.",
 };
 
@@ -30,6 +32,7 @@ export const GROUP_LABEL: Record<GroupBy, string> = {
 export const PERIODS = {
   created_vs_resolved: [7, 14, 30, 90, 180, 365],
   cycle_time: [4, 8, 12, 26, 52],
+  cumulative_flow: [14, 30, 90, 180, 365],
   velocity: [3, 5, 7, 10, 20],
 } as const;
 
@@ -42,6 +45,8 @@ export function defaultQuery(kind: WidgetKind, projects: string[], firstProject?
       return { kind, projects, weeks: 12 };
     case "breakdown":
       return { kind, projects, group_by: "status_category", include_done: false };
+    case "cumulative_flow":
+      return { kind, projects, days: 30 };
     case "velocity":
       return { kind, project: projects[0] ?? firstProject ?? "", sprints: 7 };
   }
@@ -68,6 +73,8 @@ export function describeQuery(query: WidgetQuery, projectName: (id: string) => s
       return `${scope} · last ${query.weeks} weeks`;
     case "breakdown":
       return `${scope} · ${query.include_done ? "all issues" : "open issues"}`;
+    case "cumulative_flow":
+      return `${scope} · last ${query.days} days`;
     case "velocity":
       return `${scope} · last ${query.sprints} sprints`;
   }
@@ -78,7 +85,7 @@ export interface Names {
   user: (id: string) => string;
 }
 
-const CATEGORY_LABEL: Record<string, string> = { todo: "To do", in_progress: "In progress", done: "Done" };
+export const CATEGORY_LABEL: Record<string, string> = { todo: "To do", in_progress: "In progress", done: "Done" };
 
 /** The readable name of a breakdown group. An empty key is "none" (e.g. unassigned). */
 export function groupLabel(groupBy: GroupBy, key: string, names: Names): string {
@@ -117,6 +124,8 @@ export function isEmpty(data: WidgetData): boolean {
       return data.weeks.every((w) => w.issues === 0);
     case "breakdown":
       return data.total === 0;
+    case "cumulative_flow":
+      return data.days.every((d) => d.todo + d.in_progress + d.done === 0);
     case "velocity":
       return data.sprints.length === 0;
   }
@@ -150,6 +159,11 @@ export function tableOf(data: WidgetData, names: Names): Table {
           key: g.key || "none",
           cells: [groupLabel(data.group_by, g.key, names), String(g.count), data.total ? `${Math.round((g.count / data.total) * 100)}%` : "–"],
         })),
+      };
+    case "cumulative_flow":
+      return {
+        columns: [{ label: "Day" }, { label: "To do", numeric: true }, { label: "In progress", numeric: true }, { label: "Done", numeric: true }],
+        rows: [...data.days].reverse().map((d) => ({ key: d.date, cells: [formatDay(d.date), String(d.todo), String(d.in_progress), String(d.done)] })),
       };
     case "velocity":
       return {

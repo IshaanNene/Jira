@@ -12,6 +12,8 @@ registerCharts([LineChart, BarChart, GridComponent, LegendComponent, TooltipComp
 export interface ChartTheme {
   /** Two series colours, checked for colour-blind separation against each theme's surface. */
   series: [string, string];
+  /** Ordered stages (to do, in progress, done): one hue, stronger towards done. */
+  stages: [string, string, string];
   reference: string;
   ink: string;
   muted: string;
@@ -28,6 +30,7 @@ function readTheme(): ChartTheme {
   };
   return {
     series: dark ? ["#3B82F6", "#D97706"] : ["#0C66E4", "#E56910"],
+    stages: dark ? ["#0055CC", "#388BFF", "#85B8FF"] : ["#85B8FF", "#388BFF", "#0055CC"],
     reference: dark ? "#8C9BAB" : "#8590A2",
     ink: token("--ink", dark ? "#C7D1DB" : "#172B4D"),
     muted: token("--ink-muted", dark ? "#9FADBC" : "#44546F"),

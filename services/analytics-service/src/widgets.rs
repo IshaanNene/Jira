@@ -39,6 +39,13 @@ pub enum WidgetQuery {
         #[serde(default)]
         include_done: bool,
     },
+    /// Issues in each status category at the end of each day: a cumulative flow diagram.
+    CumulativeFlow {
+        #[serde(default)]
+        projects: Vec<Uuid>,
+        /// 7 to 365.
+        days: u16,
+    },
     /// Issues completed and left unfinished in a project's last sprints.
     Velocity {
         project: Uuid,
@@ -94,6 +101,7 @@ impl WidgetQuery {
             WidgetQuery::CreatedVsResolved { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::CycleTime { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::Breakdown { projects: p, .. } => projects(p),
+            WidgetQuery::CumulativeFlow { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::Velocity { sprints, .. } => range("sprints", *sprints, 3, 20),
         }
     }
@@ -102,7 +110,8 @@ impl WidgetQuery {
         match self {
             WidgetQuery::CreatedVsResolved { projects, .. }
             | WidgetQuery::CycleTime { projects, .. }
-            | WidgetQuery::Breakdown { projects, .. } => projects.clone(),
+            | WidgetQuery::Breakdown { projects, .. }
+            | WidgetQuery::CumulativeFlow { projects, .. } => projects.clone(),
             WidgetQuery::Velocity { project, .. } => vec![*project],
         }
     }
@@ -132,6 +141,15 @@ pub struct Group {
     pub count: u64,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct DayFlow {
+    /// `YYYY-MM-DD`, UTC; counts are at the end of that day.
+    pub date: String,
+    pub todo: u64,
+    pub in_progress: u64,
+    pub done: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct SprintResult {
     pub sprint_id: Uuid,
@@ -149,6 +167,7 @@ pub enum WidgetData {
     CreatedVsResolved { days: Vec<DayCounts> },
     CycleTime { weeks: Vec<WeekCycleTime> },
     Breakdown { group_by: GroupBy, groups: Vec<Group>, total: u64 },
+    CumulativeFlow { days: Vec<DayFlow> },
     Velocity { sprints: Vec<SprintResult> },
 }
 
@@ -161,6 +180,9 @@ impl WidgetData {
             }
             WidgetQuery::CycleTime { .. } => WidgetData::CycleTime { weeks: vec![] },
             WidgetQuery::Breakdown { group_by, .. } => WidgetData::Breakdown { group_by: *group_by, groups: vec![], total: 0 },
+            WidgetQuery::CumulativeFlow { days, .. } => {
+                WidgetData::CumulativeFlow { days: flow(&BTreeMap::new(), &BTreeMap::new(), today, *days) }
+            }
             WidgetQuery::Velocity { .. } => WidgetData::Velocity { sprints: vec![] },
         }
     }
@@ -199,6 +221,53 @@ fn fill_days(found: BTreeMap<String, (u64, u64)>, today: Date, days: u16) -> Vec
             DayCounts { date, created, resolved }
         })
         .collect()
+}
+
+/// Counts per category, in the order todo, in progress, done.
+type Flow = [i64; 3];
+
+fn category_index(category: &str) -> Option<usize> {
+    ["todo", "in_progress", "done"].iter().position(|c| *c == category)
+}
+
+/// Works back from today's counts: the end of each earlier day is the end of the next day
+/// minus what changed on that next day. Anchoring on today means today always matches the
+/// issues' current state, even where older history was never recorded.
+fn flow(current: &BTreeMap<String, i64>, changes: &BTreeMap<String, Flow>, today: Date, days: u16) -> Vec<DayFlow> {
+    let mut counts: Flow = [0; 3];
+    for (category, n) in current {
+        if let Some(i) = category_index(category) {
+            counts[i] = *n;
+        }
+    }
+    let mut out = Vec::with_capacity(usize::from(days));
+    for back in 0..i64::from(days) {
+        let date = today - Duration::days(back);
+        if back > 0 {
+            if let Some(change) = changes.get(&day_string(date + Duration::days(1))) {
+                for (count, delta) in counts.iter_mut().zip(change) {
+                    *count -= delta;
+                }
+            }
+        }
+        let n = |i: usize| u64::try_from(counts[i].max(0)).unwrap_or_default();
+        out.push(DayFlow { date: day_string(date), todo: n(0), in_progress: n(1), done: n(2) });
+    }
+    out.reverse();
+    out
+}
+
+#[derive(Deserialize)]
+struct CategoryCount {
+    category: String,
+    n: i64,
+}
+
+#[derive(Deserialize)]
+struct CategoryChange {
+    day: String,
+    category: String,
+    n: i64,
 }
 
 const PROJECT_FILTER: &str = " AND project_id IN {projects:Array(UUID)}";
@@ -286,6 +355,57 @@ pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible:
                 store.query(tenant, &format!("SELECT count() AS total {base}"), &params).await.map_err(unavailable)?;
             Ok(WidgetData::Breakdown { group_by: *group_by, groups, total: total.first().map_or(0, |t| t.total) })
         }
+        WidgetQuery::CumulativeFlow { days, .. } => {
+            let from = today - Duration::days(i64::from(*days) - 1);
+            let live = format!("SELECT issue_id FROM issue_state FINAL WHERE tenant_id = {{tenant:UUID}}{filter}");
+            let current: Vec<CategoryCount> = store
+                .query(
+                    tenant,
+                    &format!(
+                        "SELECT status_category AS category, toInt64(count()) AS n FROM issue_state FINAL \
+                         WHERE tenant_id = {{tenant:UUID}}{filter} GROUP BY category"
+                    ),
+                    &params,
+                )
+                .await
+                .map_err(unavailable)?;
+            // What moved on each day after the first: an issue appears in the category it
+            // started in (the one its first move left, or where it still is), and every move
+            // takes one from a category and gives one to another. Moves recorded before events
+            // carried both categories are left out, so each issue's moves still add up to where
+            // it is now.
+            let known = " AND from_category != '' AND to_category != ''";
+            let sql = format!(
+                "SELECT toString(day) AS day, category, sum(n) AS n FROM ( \
+                   SELECT toDate(l.created_at) AS day, if(f.first_from != '', f.first_from, l.status_category) AS category, \
+                          toInt64(1) AS n \
+                   FROM ( \
+                     SELECT issue_id, status_category, created_at FROM issue_state FINAL \
+                     WHERE tenant_id = {{tenant:UUID}}{filter} AND toDate(created_at) > {{from:Date}} \
+                   ) AS l \
+                   LEFT JOIN ( \
+                     SELECT issue_id, argMin(from_category, occurred_at) AS first_from FROM issue_events FINAL \
+                     WHERE tenant_id = {{tenant:UUID}} AND event_type = 'issue.transitioned'{known} GROUP BY issue_id \
+                   ) AS f ON l.issue_id = f.issue_id \
+                   UNION ALL \
+                   SELECT toDate(occurred_at) AS day, arrayJoin([from_category, to_category]) AS category, \
+                          if(category = from_category, toInt64(-1), toInt64(1)) AS n \
+                   FROM issue_events FINAL \
+                   WHERE tenant_id = {{tenant:UUID}} AND event_type = 'issue.transitioned' \
+                     AND from_category != to_category{known} AND toDate(occurred_at) > {{from:Date}} AND issue_id IN ({live}) \
+                 ) WHERE category IN ('todo', 'in_progress', 'done') GROUP BY day, category"
+            );
+            let rows: Vec<CategoryChange> =
+                store.query(tenant, &sql, &params.add("from", day_string(from))).await.map_err(unavailable)?;
+            let current = current.into_iter().map(|c| (c.category, c.n)).collect();
+            let mut changes: BTreeMap<String, Flow> = BTreeMap::new();
+            for row in rows {
+                if let Some(i) = category_index(&row.category) {
+                    changes.entry(row.day).or_default()[i] += row.n;
+                }
+            }
+            Ok(WidgetData::CumulativeFlow { days: flow(&current, &changes, today, *days) })
+        }
         WidgetQuery::Velocity { project, sprints } => {
             let sql = "SELECT sprint_id, any(name) AS name, any(completed) AS completed, any(incomplete) AS incomplete, \
                          formatDateTime(max(occurred_at), '%Y-%m-%dT%H:%i:%SZ') AS completed_at \
@@ -336,5 +456,16 @@ mod tests {
         let days = fill_days(found, today, 3);
         assert_eq!(days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), ["2026-02-28", "2026-03-01", "2026-03-02"]);
         assert_eq!((days[0].created, days[0].resolved, days[2].created), (2, 1, 0));
+    }
+
+    #[test]
+    fn flow_works_back_from_today() {
+        let today = Date::from_calendar_date(2026, time::Month::March, 3).unwrap();
+        let current = BTreeMap::from([("todo".to_owned(), 1), ("in_progress".to_owned(), 1), ("done".to_owned(), 2)]);
+        // 03-02: one issue created in todo. 03-03: one moved from in progress to done.
+        let changes = BTreeMap::from([("2026-03-02".to_owned(), [1, 0, 0]), ("2026-03-03".to_owned(), [0, -1, 1])]);
+        let days = flow(&current, &changes, today, 3);
+        let counts: Vec<_> = days.iter().map(|d| (d.date.as_str(), d.todo, d.in_progress, d.done)).collect();
+        assert_eq!(counts, [("2026-03-01", 0, 2, 1), ("2026-03-02", 1, 2, 1), ("2026-03-03", 1, 1, 2)]);
     }
 }

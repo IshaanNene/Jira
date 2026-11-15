@@ -7,7 +7,7 @@ import type { ChartTheme } from "@/components/charts/Chart";
 import { bar, categoryAxis, chrome, line, valueAxis } from "@/components/charts/options";
 import type { WidgetData } from "@/services/api";
 
-import { formatDays, formatShortDay, GROUP_LABEL, groupLabel, type Names } from "./model";
+import { CATEGORY_LABEL, formatDays, formatShortDay, GROUP_LABEL, groupLabel, type Names } from "./model";
 
 const axisTooltip = (theme: ChartTheme, format?: (value: number) => string) => {
   const base = chrome(theme, format);
@@ -68,6 +68,33 @@ export function chartOption(data: WidgetData, theme: ChartTheme, names: Names): 
             label: { show: true, position: "right", color: theme.ink },
           },
         ],
+      };
+    }
+    case "cumulative_flow": {
+      // Stacked bands with done at the bottom, so finished work grows upwards. A 2px line in
+      // the surface colour separates neighbouring bands.
+      const base = axisTooltip(theme);
+      const stages = (["done", "in_progress", "todo"] as const).map((key) => ({
+        key,
+        name: CATEGORY_LABEL[key]!,
+        color: theme.stages[key === "todo" ? 0 : key === "in_progress" ? 1 : 2],
+      }));
+      return {
+        ...base,
+        legend: { ...base.legend, data: [...stages].reverse().map((s) => s.name) },
+        xAxis: { ...categoryAxis(theme, data.days.map((d) => formatShortDay(d.date))), boundaryGap: false },
+        yAxis: valueAxis(theme, "Issues"),
+        series: stages.map((s) => ({
+          name: s.name,
+          type: "line",
+          stack: "flow",
+          color: s.color,
+          data: data.days.map((d) => d[s.key]),
+          symbol: "none",
+          lineStyle: { width: 2, color: theme.surface },
+          areaStyle: { color: s.color, opacity: 1 },
+          emphasis: { focus: "series" },
+        })),
       };
     }
     case "velocity": {

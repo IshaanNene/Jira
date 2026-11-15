@@ -15,7 +15,10 @@ afterEach(() => vi.unstubAllGlobals());
 const PAY = project();
 const OTHER = "00000000-0000-7000-8000-000000000009";
 const names: Names = { project: (id) => (id === PAY.id ? "Payments" : "Unknown project"), user: (id) => (id === USER_ID ? "Ada Lovelace" : "Former member") };
-const theme: ChartTheme = { series: ["#0C66E4", "#E56910"], reference: "#8590A2", ink: "#172B4D", muted: "#44546F", line: "#DCDFE4", surface: "#FFFFFF" };
+const theme: ChartTheme = {
+  series: ["#0C66E4", "#E56910"],
+  stages: ["#85B8FF", "#388BFF", "#0055CC"],
+  reference: "#8590A2", ink: "#172B4D", muted: "#44546F", line: "#DCDFE4", surface: "#FFFFFF" };
 
 const BREAKDOWN: WidgetData = {
   kind: "breakdown",
@@ -65,6 +68,28 @@ describe("dashboard model", () => {
     ]);
     expect(lines.series[0].lineStyle.width).toBe(2);
     expect(lines.series[0].symbolSize).toBeGreaterThanOrEqual(8);
+  });
+
+  it("stacks cumulative flow with done at the bottom, in one hue stronger towards done", () => {
+    const flow: WidgetData = {
+      kind: "cumulative_flow",
+      days: [
+        { date: "2026-11-01", todo: 3, in_progress: 1, done: 0 },
+        { date: "2026-11-02", todo: 2, in_progress: 1, done: 1 },
+      ],
+    };
+    const option = chartOption(flow, theme, names) as Record<string, any>;
+    expect(Array.isArray(option.yAxis)).toBe(false);
+    expect(option.series.map((s: { name: string; color: string; stack: string }) => [s.name, s.color, s.stack])).toEqual([
+      ["Done", theme.stages[2], "flow"],
+      ["In progress", theme.stages[1], "flow"],
+      ["To do", theme.stages[0], "flow"],
+    ]);
+    expect(option.series[0].data).toEqual([0, 1]);
+    expect(option.series[0].lineStyle.color).toBe(theme.surface);
+    expect(option.legend.data).toEqual(["To do", "In progress", "Done"]);
+    expect(describeQuery({ kind: "cumulative_flow", projects: [], days: 90 }, names.project)).toBe("All projects · last 90 days");
+    expect(tableOf(flow, names).rows[0]!.cells.slice(1)).toEqual(["2", "1", "1"]);
   });
 });
 
