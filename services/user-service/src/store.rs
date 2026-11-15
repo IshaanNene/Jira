@@ -320,6 +320,7 @@ pub struct Invitation {
     pub expires_at: OffsetDateTime,
     pub accepted_at: Option<OffsetDateTime>,
     pub revoked_at: Option<OffsetDateTime>,
+    pub last_sent_at: Option<OffsetDateTime>,
 }
 
 impl Invitation {
@@ -337,7 +338,7 @@ impl Invitation {
 }
 
 const INVITATION_SELECT: &str = "SELECT i.id, i.organization_id, i.email::text AS email, i.org_role, i.invited_by, \
-        p.display_name AS invited_by_name, i.created_at, i.expires_at, i.accepted_at, i.revoked_at \
+        p.display_name AS invited_by_name, i.created_at, i.expires_at, i.accepted_at, i.revoked_at, i.last_sent_at \
      FROM invitations i LEFT JOIN user_profiles p ON p.user_id = i.invited_by";
 
 #[allow(clippy::too_many_arguments)]
@@ -404,6 +405,42 @@ pub async fn open_invitations(conn: &mut PgConnection, tenant_id: Uuid) -> ApiRe
     .bind(tenant_id)
     .fetch_all(conn)
     .await?)
+}
+
+/// Give an open invitation a new token and a new expiry; the old link stops working.
+pub async fn renew_invitation(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    id: Uuid,
+    ttl_days: i32,
+    token_hash: &[u8],
+    emailed: bool,
+) -> ApiResult<()> {
+    sqlx::query(
+        "UPDATE invitations SET expires_at = now() + make_interval(days => $3),              last_sent_at = CASE WHEN $4 THEN now() ELSE last_sent_at END          WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant_id)
+    .bind(id)
+    .bind(ttl_days)
+    .bind(emailed)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE invitation_tokens SET token_hash = $3 WHERE tenant_id = $1 AND invitation_id = $2")
+        .bind(tenant_id)
+        .bind(id)
+        .bind(token_hash)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn mark_invitation_emailed(conn: &mut PgConnection, tenant_id: Uuid, id: Uuid) -> ApiResult<()> {
+    sqlx::query("UPDATE invitations SET last_sent_at = now() WHERE tenant_id = $1 AND id = $2")
+        .bind(tenant_id)
+        .bind(id)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 pub async fn revoke_invitation(conn: &mut PgConnection, tenant_id: Uuid, id: Uuid) -> ApiResult<bool> {

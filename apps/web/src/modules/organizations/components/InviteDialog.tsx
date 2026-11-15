@@ -71,10 +71,17 @@ export function InviteDialog() {
         </Button>
       </DialogTrigger>
       {created ? (
-        <DialogContent title="Invitation created" description={`${created.email} can join as ${ROLE_LABEL[created.org_role as OrgRole] ?? created.org_role} until ${formatDate(created.expires_at)}.`}>
+        <DialogContent
+          title={created.last_sent_at ? "Invitation sent" : "Invitation created"}
+          description={`${created.last_sent_at ? `We emailed ${created.email} an invitation. They` : created.email} can join as ${ROLE_LABEL[created.org_role as OrgRole] ?? created.org_role} until ${formatDate(created.expires_at)}.`}
+        >
           <Field
             label="Invitation link"
-            hint="Share this link with them directly. It is shown only once and works only for the invited email address."
+            hint={
+              created.last_sent_at
+                ? "You can also share this link directly. It is shown only once and works only for the invited email address."
+                : "Share this link with them directly. It is shown only once and works only for the invited email address."
+            }
           >
             <Input readOnly value={created.accept_url ?? ""} onFocus={(e) => e.currentTarget.select()} className="font-mono text-sm" />
           </Field>

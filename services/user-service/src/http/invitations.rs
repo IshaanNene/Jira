@@ -16,7 +16,7 @@ use super::{
     dto::{AcceptInvitationResponse, CreateInvitationRequest, InvitationDto, InvitationList, InvitationPreview},
     organizations::emit_membership_changed,
 };
-use crate::{domain::check_can_invite, store, AppState};
+use crate::{domain::check_can_invite, invite_mail, store, AppState};
 
 const INVITATION_TTL_DAYS: i32 = 7;
 /// Unknown, revoked, accepted and malformed tokens all look the same from outside.
@@ -85,6 +85,9 @@ pub async fn create(
         }
         Err(err) => return Err(err.into()),
     }
+    if state.mail.is_some() {
+        store::mark_invitation_emailed(tx.conn(), ctx.tenant_id, id).await?;
+    }
     let (_, seq) = store::next_membership_seq(tx.conn(), ctx.tenant_id).await?;
     outbox::enqueue(
         tx.conn(),
@@ -106,8 +109,70 @@ pub async fn create(
     let invitation = store::invitation(tx.conn(), ctx.tenant_id, id, false).await?.ok_or(NOT_FOUND)?;
     tx.commit().await?;
 
-    let accept_url = format!("{}/invite/{token}", state.settings.web_base_url.trim_end_matches('/'));
+    let accept_url = accept_url(&state, &token);
+    email_invitation(&state, &ctx, &org.name, &invitation, &accept_url);
     Ok((StatusCode::CREATED, Json(InvitationDto::new(invitation, Some(accept_url)))))
+}
+
+fn accept_url(state: &AppState, token: &str) -> String {
+    format!("{}/invite/{token}", state.settings.web_base_url.trim_end_matches('/'))
+}
+
+fn email_invitation(
+    state: &AppState,
+    ctx: &OrgContext,
+    organization_name: &str,
+    invitation: &store::Invitation,
+    accept_url: &str,
+) {
+    let Some(mail) = &state.mail else { return };
+    let rendered = invite_mail::render(&invite_mail::InviteEmail {
+        inviter_name: &ctx.name,
+        organization_name,
+        role_label: invite_mail::role_label(&invitation.org_role),
+        accept_url,
+        expires_at: invitation.expires_at,
+    });
+    invite_mail::send(mail, invitation.id, invitation.email.clone(), rendered);
+}
+
+/// No new link within this long of the last email.
+const RESEND_INTERVAL: time::Duration = time::Duration::seconds(60);
+
+/// Give an open (or expired) invitation a new link, valid for another 7 days, and email it. The
+/// previous link stops working. The new link is in the response, as when the invitation was made.
+#[utoipa::path(post, path = "/api/v1/organizations/current/invitations/{id}/resend", security(("bearer" = [])),
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = InvitationDto), (status = 404), (status = 409, description = "Already a member"),
+        (status = 429, description = "Emailed less than a minute ago")))]
+pub async fn resend(State(state): State<AppState>, ctx: OrgContext, Path(id): Path<Uuid>) -> ApiResult<Json<InvitationDto>> {
+    ctx.require(OrgPermission::InviteMembers)?;
+    let token = new_token();
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let current = store::invitation(tx.conn(), ctx.tenant_id, id, true).await?.ok_or(NOT_FOUND)?;
+    if !matches!(current.state(), "pending" | "expired") {
+        return Err(NOT_FOUND);
+    }
+    // The sender must still be allowed to grant the role.
+    check_can_invite(ctx.role, OrgRole::parse(&current.org_role).ok_or(NOT_FOUND)?)?;
+    if let Some(last) = current.last_sent_at {
+        let wait = RESEND_INTERVAL - (time::OffsetDateTime::now_utc() - last);
+        if wait > time::Duration::ZERO {
+            return Err(ApiError::RateLimited { retry_after_secs: wait.whole_seconds().max(1) as u64 });
+        }
+    }
+    if store::is_member_email(tx.conn(), ctx.tenant_id, &current.email).await? {
+        return Err(ApiError::Conflict("This person is already a member of the organization.".into()));
+    }
+    store::renew_invitation(tx.conn(), ctx.tenant_id, id, INVITATION_TTL_DAYS, &hash(&token), state.mail.is_some()).await?;
+    let org = store::organization(tx.conn(), ctx.tenant_id).await?.ok_or(ApiError::NotFound("organization"))?;
+    let invitation = store::invitation(tx.conn(), ctx.tenant_id, id, false).await?.ok_or(NOT_FOUND)?;
+    tx.commit().await?;
+
+    let accept_url = accept_url(&state, &token);
+    email_invitation(&state, &ctx, &org.name, &invitation, &accept_url);
+    tracing::info!(invitation_id = %id, "invitation renewed");
+    Ok(Json(InvitationDto::new(invitation, Some(accept_url))))
 }
 
 #[utoipa::path(delete, path = "/api/v1/organizations/current/invitations/{id}", security(("bearer" = [])),

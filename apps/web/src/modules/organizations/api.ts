@@ -178,6 +178,16 @@ export function useCreateInvitation() {
   });
 }
 
+/** A new link for an open or expired invitation, emailed when the server can; the old link stops working. */
+export function useResendInvitation() {
+  const queryClient = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Invitation>(`${BASE}/organizations/current/invitations/${id}/resend`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: orgKeys.invitations(orgId) }),
+  });
+}
+
 export function useRevokeInvitation() {
   const queryClient = useQueryClient();
   const orgId = useOrgId();

@@ -148,6 +148,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/organizations/current/invitations/{id}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Give an open (or expired) invitation a new link, valid for another 7 days, and email it. The
+         *     previous link stops working. The new link is in the response, as when the invitation was made.
+         */
+        post: operations["resend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/current/members": {
         parameters: {
             query?: never;
@@ -276,6 +296,11 @@ export interface components {
             /** Format: uuid */
             invited_by: string;
             invited_by_name?: string | null;
+            /**
+             * Format: date-time
+             * @description When the link was last emailed; absent when it never was (no mail server).
+             */
+            last_sent_at?: string | null;
             org_role: string;
             /** @description pending | expired */
             state: string;
@@ -728,6 +753,47 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already a member */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Emailed less than a minute ago */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

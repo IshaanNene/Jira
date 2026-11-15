@@ -4,6 +4,7 @@ pub mod audit;
 pub mod domain;
 pub mod grpc;
 pub mod http;
+pub mod invite_mail;
 pub mod store;
 pub mod tenants;
 
@@ -35,6 +36,8 @@ pub struct AppState {
     pub verifier: Arc<TokenVerifier>,
     pub tenants: Arc<dyn TenantProvisioner>,
     pub settings: Arc<Settings>,
+    /// Invitation emails; `None` without a mail server (links are then only shown to the inviter).
+    pub mail: Option<Arc<invite_mail::InviteMail>>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -51,6 +54,8 @@ pub struct Config {
     pub internal_secret: String,
     pub token_issuer: String,
     pub jwks_url: String,
+    /// `(SMTP_URL, EMAIL_FROM)` when email is set up.
+    pub smtp: Option<(String, String)>,
     pub settings: Settings,
 }
 
@@ -64,6 +69,8 @@ impl Config {
             internal_secret: config::required("INTERNAL_SERVICE_SECRET")?,
             token_issuer: config::required("TOKEN_ISSUER")?,
             jwks_url: config::required("JWKS_URL")?,
+            smtp: config::optional("SMTP_URL")
+                .map(|url| (url, config::or("EMAIL_FROM", "Meridian <invitations@meridian.localhost>"))),
             settings: Settings {
                 allowed_origins: config::list("ALLOWED_ORIGINS"),
                 web_base_url: config::or("WEB_BASE_URL", "http://localhost:5173"),
@@ -121,6 +128,15 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
         verifier,
         tenants: Arc::new(GrpcProvisioner::new(&config.tenant_service_grpc_url, &config.internal_secret)?),
         settings: Arc::new(config.settings),
+        mail: match config.smtp {
+            Some((url, from)) => {
+                Some(Arc::new(invite_mail::InviteMail { mailer: Arc::new(smtp_mailer::SmtpMailer::new(&url, &from)?) }))
+            }
+            None => {
+                tracing::warn!("SMTP_URL is not set: invitations are not emailed");
+                None
+            }
+        },
     };
 
     let auth = ServiceServerAuth::new(&config.internal_secret, SERVICE_NAME)?;

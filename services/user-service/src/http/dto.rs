@@ -165,6 +165,9 @@ pub struct InvitationDto {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    /// When the link was last emailed; absent when it never was (no mail server).
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_sent_at: Option<OffsetDateTime>,
     /// Only present in the response to the request that created the invitation; the
     /// token inside it is not stored and cannot be shown again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,6 +185,7 @@ impl InvitationDto {
             invited_by_name: i.invited_by_name,
             created_at: i.created_at,
             expires_at: i.expires_at,
+            last_sent_at: i.last_sent_at,
             accept_url,
         }
     }

@@ -35,6 +35,7 @@ use crate::AppState;
         invitations::list,
         invitations::create,
         invitations::revoke,
+        invitations::resend,
         invitations::preview,
         invitations::accept,
         audit::list,
@@ -73,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/organizations/current/members/{user_id}", patch(members::update).delete(members::remove))
         .route("/organizations/current/invitations", get(invitations::list).post(invitations::create))
         .route("/organizations/current/invitations/{id}", delete(invitations::revoke))
+        .route("/organizations/current/invitations/{id}/resend", post(invitations::resend))
         .route("/invitations/{token}", get(invitations::preview))
         .route("/invitations/{token}/accept", post(invitations::accept))
         .route("/organizations/current/audit", get(audit::list))

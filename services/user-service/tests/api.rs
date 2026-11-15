@@ -39,6 +39,19 @@ struct Harness {
     auth: TestAuth,
     router: Arc<DbRouter>,
     provisioner: Arc<FakeProvisioner>,
+    outbox: Arc<MailRecorder>,
+}
+
+/// (to, subject, text) of every email sent.
+#[derive(Default)]
+struct MailRecorder(Mutex<Vec<(String, String, String)>>);
+
+#[async_trait]
+impl smtp_mailer::Mailer for MailRecorder {
+    async fn send(&self, email: &smtp_mailer::Outgoing<'_>) -> Result<(), smtp_mailer::SendError> {
+        self.0.lock().unwrap().push((email.to.to_owned(), email.subject.to_owned(), email.text.to_owned()));
+        Ok(())
+    }
 }
 
 struct User {
@@ -63,13 +76,15 @@ async fn harness() -> Harness {
     let auth = TestAuth::new().unwrap();
     let router = Arc::new(DbRouter::single(db.app.clone()));
     let provisioner = Arc::new(FakeProvisioner::default());
+    let outbox = Arc::new(MailRecorder::default());
     let state = AppState {
         db: Arc::clone(&router),
         verifier: Arc::clone(&auth.verifier),
         tenants: provisioner.clone(),
         settings: Arc::new(Settings { allowed_origins: vec![], web_base_url: "http://web.test".into() }),
+        mail: Some(Arc::new(user_service::invite_mail::InviteMail { mailer: outbox.clone() })),
     };
-    Harness { db, app: http::router(state), auth, router, provisioner }
+    Harness { db, app: http::router(state), auth, router, provisioner, outbox }
 }
 
 impl Harness {
@@ -296,6 +311,100 @@ async fn api_never_crosses_tenants() {
     let (role,): (String,) =
         sqlx::query_as("SELECT org_role FROM memberships WHERE user_id = $1").bind(bob.id).fetch_one(&h.db.owner).await.unwrap();
     assert_eq!(role, "owner", "tenant B is untouched");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn invitations_are_emailed_and_can_be_sent_again_with_a_new_link() {
+    let h = harness().await;
+    let (ada, grace, maya) = (User::new("ada"), User::new("grace"), User::new("maya"));
+    let (org, tenant) = h.create_org(&ada, "Acme <Labs>").await;
+    let owner = h.org_token(&ada, tenant, org, "owner");
+    let mails_to = |to: String, expected: usize| {
+        let outbox = Arc::clone(&h.outbox);
+        async move {
+            for _ in 0..50 {
+                let found: Vec<(String, String)> = outbox
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(t, _, _)| *t == to)
+                    .map(|(_, s, b)| (s.clone(), b.clone()))
+                    .collect();
+                if found.len() >= expected {
+                    return found;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            }
+            panic!("expected {expected} emails to {to}");
+        }
+    };
+
+    let created = h
+        .call(
+            Method::POST,
+            "/api/v1/organizations/current/invitations",
+            Some(&owner),
+            Some(json!({ "email": grace.email, "org_role": "member" })),
+            None,
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert!(created.body["last_sent_at"].is_string());
+    let first_url = created.body["accept_url"].as_str().unwrap().to_owned();
+    let mails = mails_to(grace.email.clone(), 1).await;
+    assert_eq!(mails[0].0, "ada invited you to Acme <Labs> on Meridian");
+    assert!(mails[0].1.contains(&format!("Accept the invitation: {first_url}")) && mails[0].1.contains("as a member."));
+    let id = created.body["id"].as_str().unwrap().to_owned();
+    let resend = format!("/api/v1/organizations/current/invitations/{id}/resend");
+
+    // Not again within a minute; members cannot send at all.
+    assert_eq!(h.call(Method::POST, &resend, Some(&owner), None, None).await.status, StatusCode::TOO_MANY_REQUESTS);
+    h.add_member(&owner, &maya, "member").await;
+    let member = h.org_token(&maya, tenant, org, "member");
+    assert_eq!(h.call(Method::POST, &resend, Some(&member), None, None).await.status, StatusCode::FORBIDDEN);
+
+    // Later, an expired invitation gets a new link and a new week; the old link is dead.
+    sqlx::query(
+        "UPDATE invitations SET last_sent_at = now() - interval '2 minutes', expires_at = now() - interval '1 day' WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&id).unwrap())
+    .execute(&h.db.owner)
+    .await
+    .unwrap();
+    let again = h.call(Method::POST, &resend, Some(&owner), None, None).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(again.body["state"], "pending");
+    let second_url = again.body["accept_url"].as_str().unwrap().to_owned();
+    assert_ne!(first_url, second_url);
+    let mails = mails_to(grace.email.clone(), 2).await;
+    assert!(mails[1].1.contains(&second_url));
+    let token_of = |url: &str| url.rsplit('/').next().unwrap().to_owned();
+    assert_eq!(
+        h.call(Method::GET, &format!("/api/v1/invitations/{}", token_of(&first_url)), None, None, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        h.call(Method::GET, &format!("/api/v1/invitations/{}", token_of(&second_url)), None, None, None).await.status,
+        StatusCode::OK
+    );
+    let listed = h.call(Method::GET, "/api/v1/organizations/current/invitations", Some(&owner), None, None).await;
+    assert!(listed.body["items"][0].get("accept_url").is_none() && listed.body["items"][0]["last_sent_at"].is_string());
+
+    // Once accepted there is nothing to resend.
+    let accepted = h
+        .call(
+            Method::POST,
+            &format!("/api/v1/invitations/{}/accept", token_of(&second_url)),
+            Some(&h.account(&grace)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    sqlx::query("UPDATE invitations SET last_sent_at = NULL").execute(&h.db.owner).await.unwrap();
+    assert_eq!(h.call(Method::POST, &resend, Some(&owner), None, None).await.status, StatusCode::NOT_FOUND);
     h.db.cleanup().await;
 }
 
