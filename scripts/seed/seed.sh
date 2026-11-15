@@ -5,6 +5,8 @@
 set -euo pipefail
 API="${API:-http://localhost:8080/api/v1}"
 ORIGIN="${ORIGIN:-http://localhost:5173}"
+# Mailpit catches the verification emails that invitees need before they can join.
+MAILPIT="${MAILPIT:-http://localhost:58025}"
 # Development-only demo credentials; printed at the end so you can sign in.
 PASSWORD="${SEED_PASSWORD:-demo-password-123}"
 JAR_DIR="$(mktemp -d)"; trap 'rm -rf "$JAR_DIR"' EXIT
@@ -19,6 +21,25 @@ account_token() {
   body=$(curl -fsS -c "$JAR_DIR/$email" -H 'Content-Type: application/json' -X POST "$API/auth/register" \
            -d "{\"email\":\"$email\",\"password\":\"$PASSWORD\",\"display_name\":\"$name\"}")
   echo "$body" | field '["access_token"]'
+}
+
+claim() { python3 -c "import sys,json,base64; p=sys.argv[1].split('.')[1]; print(json.loads(base64.urlsafe_b64decode(p+'='*(-len(p)%4))).get(sys.argv[2]))" "$1" "$2"; }
+
+# Accepting an invitation needs a verified address: follow the link in the newest
+# verification email in Mailpit (asking for one first, in case none was sent).
+verify_email() {
+  local email="$1" token="$2" query id
+  curl -sS -o /dev/null -H "Authorization: Bearer $token" -X POST "$API/auth/email/verification" || true
+  query=$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "to:$email subject:\"Verify your email address\"")
+  for _ in $(seq 1 20); do
+    id=$(curl -fsS "$MAILPIT/api/v1/search?query=$query" | field '["messages"][0]["ID"] if d["messages"] else ""')
+    [ -n "$id" ] && break
+    sleep 0.5
+  done
+  [ -n "$id" ] || { echo "no verification email for $email in Mailpit ($MAILPIT)" >&2; exit 1; }
+  curl -fsS "$MAILPIT/api/v1/message/$id" |
+    python3 -c "import sys,json,re; print(json.dumps({'token': re.search(r'token=([A-Za-z0-9_-]+)', json.load(sys.stdin)['Text']).group(1)}))" |
+    curl -fsS -H 'Content-Type: application/json' -X POST "$API/auth/email/verify" -d @- >/dev/null
 }
 
 OWNER=$(account_token "olivia@demo.example" "Olivia Owner")
@@ -38,6 +59,10 @@ invite() {
   url=$(echo "$reply" | field '.get("accept_url") or ""')
   if [ -z "$url" ]; then echo "skipped $email (already a member or invited)"; return; fi
   token=$(account_token "$email" "$name")
+  if [ "$(claim "$token" email_verified)" != "True" ]; then
+    verify_email "$email" "$token"
+    token=$(account_token "$email" "$name")
+  fi
   curl -fsS -H "Authorization: Bearer $token" -X POST "$API/invitations/${url##*/}/accept" >/dev/null
   echo "added $name as $role"
 }

@@ -1,3 +1,4 @@
+pub mod account_email;
 pub mod api_tokens;
 pub mod auth;
 pub mod dto;
@@ -29,6 +30,10 @@ use crate::AppState;
         auth::logout,
         auth::me,
         auth::jwks,
+        account_email::send_verification,
+        account_email::verify,
+        account_email::forgot,
+        account_email::reset,
         mfa::login,
         mfa::status,
         mfa::setup,
@@ -44,6 +49,9 @@ use crate::AppState;
     ),
     components(schemas(
         dto::RegisterRequest,
+        account_email::EmailTokenRequest,
+        account_email::ForgotPasswordRequest,
+        account_email::ResetPasswordRequest,
         dto::LoginRequest,
         dto::RefreshRequest,
         dto::ExchangeRequest,
@@ -80,6 +88,10 @@ pub fn router(state: AppState) -> Router {
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
         .route("/login/mfa", post(mfa::login))
+        .route("/email/verification", post(account_email::send_verification))
+        .route("/email/verify", post(account_email::verify))
+        .route("/password/forgot", post(account_email::forgot))
+        .route("/password/reset", post(account_email::reset))
         .route("/mfa", get(mfa::status))
         .route("/mfa/totp/setup", post(mfa::setup))
         .route("/mfa/totp/confirm", post(mfa::confirm))

@@ -13,6 +13,7 @@ import {
   Skeleton,
   Tooltip,
 } from "@/components/ui";
+import { VerifyEmailBanner } from "@/modules/auth";
 import { CreateIssueDialog } from "@/modules/issues";
 import { NotificationBell } from "@/modules/notifications";
 import { can } from "@/modules/organizations";
@@ -130,6 +131,7 @@ export function AppShell() {
         </div>
       </header>
 
+      <VerifyEmailBanner />
       <main id="main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto outline-none">
         <ErrorBoundary resetKey={location.pathname}>
           <Suspense fallback={<PageFallback />}>

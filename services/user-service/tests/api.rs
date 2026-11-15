@@ -357,6 +357,18 @@ async fn invitation_lifecycle() {
     let anonymous = h.call(Method::POST, &format!("/api/v1/invitations/{token}/accept"), None, None, None).await;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
 
+    // The invited address, but not yet proved to be the caller's: refused, and the link still works.
+    let mut unverified = test_utilities::TestAuth::claims(grace.id, &grace.email);
+    unverified.email_verified = false;
+    let unverified = h.auth.sign(&unverified).unwrap();
+    let refused = h.call(Method::POST, &format!("/api/v1/invitations/{token}/accept"), Some(&unverified), None, None).await;
+    assert_eq!(
+        (refused.status, refused.body["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("email_unverified")),
+        "{}",
+        refused.body
+    );
+
     let accepted =
         h.call(Method::POST, &format!("/api/v1/invitations/{token}/accept"), Some(&h.account(&grace)), None, None).await;
     assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);

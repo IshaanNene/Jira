@@ -77,6 +77,11 @@ export default function LoginPage() {
         <Field label="Password" error={errors.password?.message}>
           <Input type="password" autoComplete="current-password" {...register("password")} />
         </Field>
+        <p className="-mt-2 text-right text-sm">
+          <Link to="/forgot-password" className="text-accent hover:underline">
+            Forgot your password?
+          </Link>
+        </p>
         <Button type="submit" variant="primary" size="lg" className="w-full" loading={isSubmitting}>
           Sign in
         </Button>

@@ -1,5 +1,6 @@
 //! Identity service: accounts, sessions, access tokens and (from Phase 6) federation.
 
+pub mod account_email;
 pub mod crypto;
 pub mod http;
 pub mod keys;
@@ -43,6 +44,8 @@ pub struct AppState {
     pub dummy_hash: Arc<String>,
     /// Seals and opens authenticator secrets.
     pub sealer: Arc<crypto::KeySealer>,
+    /// Verification and password reset emails; `None` without a mail server.
+    pub mail: Option<Arc<account_email::AccountMail>>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -76,6 +79,7 @@ impl AppState {
             redis,
             dummy_hash: Arc::new(dummy_hash),
             sealer: Arc::new(sealer),
+            mail: None,
         })
     }
 }
@@ -87,6 +91,8 @@ pub struct Config {
     pub user_service_grpc_url: String,
     pub internal_secret: String,
     pub key_encryption_key: String,
+    /// `(SMTP_URL, EMAIL_FROM, APP_URL)` when email is set up.
+    pub mail: Option<(String, String, String)>,
     pub settings: Settings,
 }
 
@@ -99,6 +105,14 @@ impl Config {
             user_service_grpc_url: config::or("USER_SERVICE_GRPC_URL", "http://127.0.0.1:9103"),
             internal_secret: config::required("INTERNAL_SERVICE_SECRET")?,
             key_encryption_key: config::required("IDENTITY_KEY_ENCRYPTION_KEY")?,
+            mail: match config::optional("SMTP_URL") {
+                Some(url) => Some((
+                    url,
+                    config::or("EMAIL_FROM", "Meridian <accounts@meridian.localhost>"),
+                    config::required("APP_URL")?.trim_end_matches('/').to_owned(),
+                )),
+                None => None,
+            },
             settings: Settings {
                 issuer: config::required("TOKEN_ISSUER")?,
                 allowed_origins: config::list("ALLOWED_ORIGINS"),
@@ -136,7 +150,14 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
     let sealer = crypto::KeySealer::from_base64(&config.key_encryption_key)?;
     let membership = Arc::new(GrpcMembership::new(&config.user_service_grpc_url, &config.internal_secret)?);
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;
-    let state = AppState::build(pool, config.settings, sealer, membership, redis).await?;
+    let mut state = AppState::build(pool, config.settings, sealer, membership, redis).await?;
+    match config.mail {
+        Some((url, from, app_url)) => {
+            let mailer = Arc::new(smtp_mailer::SmtpMailer::new(&url, &from)?);
+            state.mail = Some(Arc::new(account_email::AccountMail { mailer, app_url }));
+        }
+        None => tracing::warn!("SMTP_URL is not set: verification and password reset emails cannot be sent"),
+    }
     server::serve_http(config.http_addr, app(state, &telemetry)).await?;
     Ok(telemetry)
 }

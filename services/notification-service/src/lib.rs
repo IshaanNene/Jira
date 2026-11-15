@@ -5,7 +5,8 @@ pub mod directory;
 pub mod domain;
 pub mod email;
 pub mod http;
-pub mod mailer;
+/// Re-exported so callers keep `notification_service::mailer::…`.
+pub use smtp_mailer as mailer;
 pub mod notifier;
 pub mod sender;
 pub mod store;

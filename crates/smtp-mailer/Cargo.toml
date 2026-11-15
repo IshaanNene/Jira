@@ -1,0 +1,11 @@
+[package]
+name = "smtp-mailer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+lettre.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

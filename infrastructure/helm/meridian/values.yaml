@@ -4,7 +4,7 @@
 # namespace (created by External Secrets in staging/production, by scripts/kind/up.sh locally):
 #   meridian-shared            INTERNAL_SERVICE_SECRET, REDIS_URL [, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD]
 #   meridian-<service>         what that service needs at run time (DATABASE_URL, and per service:
-#                              identity IDENTITY_KEY_ENCRYPTION_KEY; issue S3_ACCESS_KEY_ID,
+#                              identity IDENTITY_KEY_ENCRYPTION_KEY, SMTP_URL; issue S3_ACCESS_KEY_ID,
 #                              S3_SECRET_ACCESS_KEY; notification SMTP_URL; search OPENSEARCH_URL;
 #                              analytics CLICKHOUSE_WRITER_PASSWORD, CLICKHOUSE_READER_PASSWORD)
 #   meridian-<service>-migrate DATABASE_MIGRATION_URL (owner role; analytics also
@@ -102,7 +102,7 @@ gateway:
     limits: { memory: 512Mi }
   # Path routing to services. First match wins.
   routes:
-    - { regex: "^/api/v1/auth/(login|register|token/api)$", service: identity, credentials: true }
+    - { regex: "^/api/v1/auth/(login|login/mfa|register|token/api|password/forgot|password/reset|email/verify)$", service: identity, credentials: true }
     - { prefix: /api/v1/auth/, service: identity }
     - { prefix: /api/v1/users, service: user }
     - { prefix: /api/v1/organizations, service: user }

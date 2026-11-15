@@ -41,7 +41,7 @@ secret meridian-shared \
 for s in tenant identity user permission project workflow issue agile notification search analytics; do
   extra=()
   case "$s" in
-    identity) extra=(--from-literal=IDENTITY_KEY_ENCRYPTION_KEY="$IDENTITY_KEY_ENCRYPTION_KEY") ;;
+    identity) extra=(--from-literal=IDENTITY_KEY_ENCRYPTION_KEY="$IDENTITY_KEY_ENCRYPTION_KEY" --from-literal=SMTP_URL=smtp://mailpit:1025) ;;
     issue) extra=(--from-literal=S3_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID" --from-literal=S3_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY") ;;
     notification) extra=(--from-literal=SMTP_URL=smtp://mailpit:1025) ;;
     analytics) extra=(--from-literal=CLICKHOUSE_WRITER_PASSWORD="$CLICKHOUSE_WRITER_PASSWORD" --from-literal=CLICKHOUSE_READER_PASSWORD="$CLICKHOUSE_READER_PASSWORD") ;;

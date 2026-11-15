@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Button, Skeleton } from "@/components/ui";
-import { AuthLayout, FormError, signOut, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
+import { AuthLayout, FormError, refreshSession, ResendButton, signOut, switchOrganization, twoStepRequiredPath, useSendVerification } from "@/modules/auth";
 import { ApiError, errorMessage, type OrgRole } from "@/services/api";
 import { useSession } from "@/state/session";
 import { formatDate } from "@/utils/format";
@@ -18,7 +18,9 @@ export default function AcceptInvitationPage() {
   const account = useSession((s) => s.account);
   const preview = useInvitationPreview(token);
   const accept = useAcceptInvitation();
+  const resend = useSendVerification();
   const [error, setError] = useState<string | null>(null);
+  const [resent, setResent] = useState(false);
 
   if (preview.isPending || status === "loading") {
     return (
@@ -81,7 +83,11 @@ export default function AcceptInvitationPage() {
   const onAccept = async () => {
     setError(null);
     try {
-      const result = await accept.mutateAsync(token);
+      const result = await accept.mutateAsync(token).catch(async (e: unknown) => {
+        // Verified in another tab since this token was issued: pick that up and try once more.
+        if (e instanceof ApiError && e.code === "email_unverified" && (await refreshSession())) return accept.mutateAsync(token);
+        throw e;
+      });
       try {
         await switchOrganization(result.organization_id);
       } catch (e) {
@@ -109,9 +115,21 @@ export default function AcceptInvitationPage() {
             </Button>
           </>
         ) : (
-          <Button variant="primary" size="lg" className="w-full" loading={accept.isPending} onClick={() => void onAccept()}>
-            Accept invitation
-          </Button>
+          <>
+            {!account.email_verified && (
+              <p className="rounded border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-ink">
+                Verify {account.email} first: open the link we emailed you, then accept here.{" "}
+                <ResendButton
+                  sent={resent}
+                  busy={resend.isPending}
+                  onClick={() => resend.mutate(undefined, { onSuccess: () => setResent(true), onError: (e) => setError(errorMessage(e)) })}
+                />
+              </p>
+            )}
+            <Button variant="primary" size="lg" className="w-full" loading={accept.isPending} onClick={() => void onAccept()}>
+              Accept invitation
+            </Button>
+          </>
         )}
       </div>
     </AuthLayout>

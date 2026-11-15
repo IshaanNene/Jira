@@ -144,6 +144,7 @@ impl TestAuth {
             exp: now + 600,
             typ: TokenKind::Account,
             email: email.to_owned(),
+            email_verified: true,
             name: email.split('@').next().unwrap_or("user").to_owned(),
             tid: None,
             org: None,

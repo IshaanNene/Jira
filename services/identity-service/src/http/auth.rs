@@ -108,6 +108,7 @@ pub(crate) fn issue_token(
         exp: now + ACCESS_TOKEN_TTL_SECS,
         typ: if organization.is_some() { TokenKind::Org } else { TokenKind::Account },
         email: account.email.clone(),
+        email_verified: account.email_verified_at.is_some(),
         name: account.display_name.clone(),
         tid: organization.map(|(_, m)| m.tenant_id),
         org: organization.map(|(id, _)| id),
@@ -144,7 +145,7 @@ pub(crate) async fn start_session(
     Ok((session.id, refresh))
 }
 
-fn normalize_email(email: &str) -> String {
+pub(crate) fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
@@ -188,6 +189,14 @@ pub async fn register(
     tx.commit().await?;
 
     tracing::info!(user_id = %account.id, "account registered");
+    if let Some(mail) = &state.mail {
+        // The first link; a failure here leaves the person to ask for another.
+        match crate::account_email::issue(&state.pool, &account, crate::account_email::Purpose::VerifyEmail).await {
+            Ok(Ok(token)) => crate::account_email::send(mail, &account, crate::account_email::Purpose::VerifyEmail, token),
+            Ok(Err(_)) => {}
+            Err(error) => tracing::warn!(user_id = %account.id, %error, "verification link not issued"),
+        }
+    }
     let response = issue_access_token(&state, &account, session_id, None)?;
     Ok((StatusCode::CREATED, jar.add(refresh_cookie(&state, refresh)), Json(response)))
 }

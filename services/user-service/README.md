@@ -18,7 +18,8 @@ design: `user_profiles`, `user_org_directory` (which organizations a user is in)
 
 **Rules.** Admins manage non-owners; only owners touch ownership; an organization always keeps one
 active owner; the actor's role is re-read from the database on every member change; invitations are
-single-use, expire after 7 days and can only be accepted by the invited address.
+single-use, expire after 7 days and can only be accepted by the invited address, once its owner has verified it
+(the access token's `email_verified` claim; otherwise `403 email_unverified`).
 
 **Database.** Owns `user_db`. Emits `organization.created`, `organization.updated`, `user.invited`,
 `membership.changed`.

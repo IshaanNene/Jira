@@ -20,6 +20,7 @@ event-contracts = { path = "crates/event-contracts" }
 api-contracts = { path = "crates/api-contracts" }
 test-utilities = { path = "crates/test-utilities" }
 event-bus = { path = "crates/event-bus" }
+smtp-mailer = { path = "crates/smtp-mailer" }
 
 # runtime / web
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }

@@ -52,6 +52,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/email/verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send (or send again) the link that verifies the caller's address. */
+        post: operations["send_verification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark the address of the link's account verified. Works signed out; the person's next access
+         *     token carries `email_verified`.
+         */
+        post: operations["verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -190,6 +227,47 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password/forgot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email a password reset link if the address has an active account. The answer is the same
+         *     either way, and nothing about the account is looked up before it is sent.
+         */
+        post: operations["forgot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set a new password with a reset link. Every session ends, the lockout is cleared and the
+         *     address counts as verified (the link proved it). Two-step verification still applies at the
+         *     next sign-in; API tokens are separate credentials and keep working.
+         */
+        post: operations["reset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -341,9 +419,16 @@ export interface components {
             secret: string;
             token: components["schemas"]["ApiTokenDto"];
         };
+        EmailTokenRequest: {
+            /** @description From the link in the email. */
+            token: string;
+        };
         ExchangeRequest: {
             /** Format: uuid */
             organization_id: string;
+        };
+        ForgotPasswordRequest: {
+            email: string;
         };
         LoginRequest: {
             email: string;
@@ -392,6 +477,11 @@ export interface components {
             display_name: string;
             email: string;
             password: string;
+        };
+        ResetPasswordRequest: {
+            password: string;
+            /** @description From the link in the email. */
+            token: string;
         };
         SessionDto: {
             /** Format: date-time */
@@ -535,6 +625,73 @@ export interface operations {
             };
             /** @description No such token for this account */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    send_verification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sent */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already verified */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sent too recently */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Email is not set up */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailTokenRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid, used or expired link */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -809,6 +966,62 @@ export interface operations {
                 content?: never;
             };
             /** @description Wrong password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    forgot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForgotPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description If the address has an account, a link is on its way */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid link or password */
             422: {
                 headers: {
                     [name: string]: unknown;

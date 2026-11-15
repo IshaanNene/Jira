@@ -3,7 +3,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
-import { LoginPage, RegisterPage } from "@/modules/auth";
+import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, VerifyEmailPage } from "@/modules/auth";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
 import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notifications";
@@ -40,10 +40,14 @@ export const router = createBrowserRouter([
         children: [
           { path: "/login", element: <LoginPage /> },
           { path: "/register", element: <RegisterPage /> },
+          { path: "/forgot-password", element: <ForgotPasswordPage /> },
         ],
       },
       // Reachable signed in or out: shows a preview first, accepts once signed in.
       { path: "/invite/:token", element: <AcceptInvitationPage /> },
+      // From account emails; work signed in or out.
+      { path: "/verify-email", element: <VerifyEmailPage /> },
+      { path: "/reset-password", element: <ResetPasswordPage /> },
       // From notification emails; works signed out.
       { path: "/unsubscribe", element: <UnsubscribePage /> },
       {

@@ -19,6 +19,7 @@ fn claims() -> Claims {
         exp: now + 600,
         typ: TokenKind::Account,
         email: "a@example.com".into(),
+        email_verified: true,
         name: "A".into(),
         tid: None,
         org: None,

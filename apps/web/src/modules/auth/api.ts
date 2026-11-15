@@ -84,3 +84,22 @@ export function useRevokeApiToken(organizationId: string) {
     onSettled: () => queryClient.invalidateQueries({ queryKey: apiTokensKey(organizationId) }),
   });
 }
+
+/** Email the signed-in person a new link to verify their address (202), unless it already is (204). */
+export function useSendVerification() {
+  return useMutation({ mutationFn: () => api.post("/api/v1/auth/email/verification") });
+}
+
+export function useVerifyEmail() {
+  return useMutation({ mutationFn: (token: string) => api.post("/api/v1/auth/email/verify", { token }, { auth: false }) });
+}
+
+export function useForgotPassword() {
+  return useMutation({ mutationFn: (email: string) => api.post("/api/v1/auth/password/forgot", { email }, { auth: false }) });
+}
+
+export function useResetPassword() {
+  return useMutation({
+    mutationFn: (input: { token: string; password: string }) => api.post("/api/v1/auth/password/reset", input, { auth: false }),
+  });
+}

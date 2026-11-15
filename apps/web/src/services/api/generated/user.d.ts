@@ -410,6 +410,13 @@ export interface operations {
                     "application/json": components["schemas"]["AcceptInvitationResponse"];
                 };
             };
+            /** @description `email_unverified`: the caller's address is not verified */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             404: {
                 headers: {
                     [name: string]: unknown;

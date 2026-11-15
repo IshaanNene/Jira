@@ -1,4 +1,4 @@
-//! Sending one email over SMTP.
+//! Sending one email over SMTP, for every service that sends mail.
 
 use async_trait::async_trait;
 use lettre::{

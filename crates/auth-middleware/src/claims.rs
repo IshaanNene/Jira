@@ -27,6 +27,10 @@ pub struct Claims {
     pub exp: i64,
     pub typ: TokenKind,
     pub email: String,
+    /// The person proved they receive mail at `email`. Tokens from before this claim existed
+    /// read as unverified.
+    #[serde(default)]
+    pub email_verified: bool,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tid: Option<Uuid>,

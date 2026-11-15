@@ -154,8 +154,14 @@ pub async fn preview(State(state): State<AppState>, Path(token): Path<String>) -
     }))
 }
 
+const EMAIL_UNVERIFIED: ApiError = ApiError::ForbiddenBecause {
+    code: "email_unverified",
+    message: "Verify your email address first: use the link we emailed you, then try again.",
+};
+
 #[utoipa::path(post, path = "/api/v1/invitations/{token}/accept", security(("bearer" = [])), params(("token" = String, Path)),
-    responses((status = 200, body = AcceptInvitationResponse), (status = 404), (status = 409, description = "Expired or sent to another address")))]
+    responses((status = 200, body = AcceptInvitationResponse), (status = 403, description = "`email_unverified`: the caller's address is not verified"),
+        (status = 404), (status = 409, description = "Expired or sent to another address")))]
 pub async fn accept(
     State(state): State<AppState>,
     auth: AuthContext,
@@ -175,9 +181,14 @@ pub async fn accept(
         "expired" => return Err(ApiError::Conflict("This invitation has expired. Ask for a new one.".into())),
         _ => return Err(NOT_FOUND),
     }
-    // Possession of the link is not enough: it must be redeemed by the invited address.
+    // Possession of the link is not enough: it must be redeemed by the invited address, and the
+    // person must have proved they receive mail there (otherwise anyone could register the
+    // address first and take the seat).
     if !invitation.email.eq_ignore_ascii_case(&auth.email) {
         return Err(ApiError::Conflict("This invitation was sent to a different email address.".into()));
+    }
+    if !auth.claims.email_verified {
+        return Err(EMAIL_UNVERIFIED);
     }
     let org = store::organization(tx.conn(), tenant_id).await?.ok_or(NOT_FOUND)?;
     let joined = store::insert_membership(tx.conn(), tenant_id, org.id, auth.user_id, &invitation.org_role).await?;
