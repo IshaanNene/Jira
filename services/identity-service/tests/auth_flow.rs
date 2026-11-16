@@ -56,6 +56,8 @@ async fn harness() -> Harness {
         cookie_secure: false,
         session_ttl_days: 30,
         trust_forwarded_for: false,
+        app_url: ORIGIN.into(),
+        sso_reach: identity_service::sso::Reach { allow_http: true, allow_private: true },
         passkeys: identity_service::webauthn::RelyingParty {
             id: "localhost".into(),
             name: "Meridian".into(),
@@ -1257,4 +1259,279 @@ async fn a_passkey_sign_in_meets_a_two_step_requirement() {
     )
     .await;
     assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
+}
+
+#[path = "support/fake_idp.rs"]
+mod fake_idp;
+
+/// A request with raw cookies; returns status, the Location header, every Set-Cookie
+/// `name=value`, and the JSON body.
+async fn raw(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    bearer: Option<&str>,
+    cookies: &str,
+) -> (StatusCode, String, Vec<String>, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, ORIGIN);
+    if let Some(token) = bearer {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if !cookies.is_empty() {
+        req = req.header(header::COOKIE, cookies);
+    }
+    let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
+    let response = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = response.status();
+    let location = response.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_owned()).unwrap_or_default();
+    let set: Vec<String> = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+        .collect();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, location, set, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+fn cookie_value(set: &[String], name: &str) -> String {
+    set.iter().find_map(|c| c.strip_prefix(&format!("{name}="))).unwrap_or_default().to_owned()
+}
+
+/// Starts a flow (`path` = start or link) and comes back from the provider as `subject`.
+/// Returns the callback's Location and Set-Cookies.
+async fn sso_round_trip(
+    h: &Harness,
+    idp: &fake_idp::FakeIdp,
+    path: &str,
+    body: Value,
+    bearer: Option<&str>,
+    subject: &str,
+) -> (String, Vec<String>) {
+    let (status, _, set, started) = raw(&h.app, Method::POST, path, Some(body), bearer, "").await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let browser = cookie_value(&set, "sso_state");
+    let (state, code) = idp.approve(started["authorization_url"].as_str().unwrap(), subject, "person@corp.example", None);
+    let (status, location, set, _) = raw(
+        &h.app,
+        Method::GET,
+        &format!("/api/v1/auth/sso/callback?state={state}&code={code}"),
+        None,
+        None,
+        &format!("sso_state={browser}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    (location, set)
+}
+
+#[tokio::test]
+async fn workspaces_sign_members_in_through_their_identity_provider() {
+    let h = harness().await;
+    let idp = fake_idp::FakeIdp::start().await;
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, owner) = member(&h, "owner@corp.example", org, tenant, OrgRole::Owner).await;
+    let (member_id, member_org_token) = member(&h, "member@corp.example", org, tenant, OrgRole::Member).await;
+    let connection = json!({
+        "sign_in_name": "Acme", "issuer": idp.issuer(), "client_id": fake_idp::CLIENT_ID,
+        "client_secret": fake_idp::CLIENT_SECRET, "enabled": true, "require_sso": false,
+    });
+
+    // Only admins and owners set it up, and the provider must answer.
+    let (status, ..) =
+        raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(connection.clone()), Some(&member_org_token), "").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let mut unreachable = connection.clone();
+    unreachable["issuer"] = json!("http://127.0.0.1:1");
+    let (status, _, _, body) = raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(unreachable), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, _, _, saved) =
+        raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(connection.clone()), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["sign_in_name"], "acme");
+    assert_eq!(saved["redirect_uri"], format!("{ORIGIN}/api/v1/auth/sso/callback"));
+    assert!(saved.get("client_secret").is_none());
+
+    // Another workspace cannot take the same sign-in name.
+    let (other_org, other_tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, other_owner) = member(&h, "rival@corp.example", other_org, other_tenant, OrgRole::Owner).await;
+    let (status, ..) =
+        raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(connection.clone()), Some(&other_owner), "").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Signing in before linking: the provider's say-so is not enough.
+    let (location, set) =
+        sso_round_trip(&h, &idp, "/api/v1/auth/sso/start", json!({ "sign_in_name": "acme" }), None, "okta|member").await;
+    assert_eq!(location, format!("{ORIGIN}/login?sso_error=not_linked"));
+    assert!(cookie_value(&set, "refresh_token").is_empty());
+
+    // The member links their account while signed in to it (with their account token).
+    let account_token = {
+        let login = call(
+            &h.app,
+            Method::POST,
+            "/api/v1/auth/login",
+            Some(json!({ "email": "member@corp.example", "password": "a-long-enough-password" })),
+            None,
+            None,
+        )
+        .await;
+        token(&login)
+    };
+    let (location, _) =
+        sso_round_trip(&h, &idp, "/api/v1/auth/sso/link", json!({ "organization_id": org }), Some(&account_token), "okta|member")
+            .await;
+    assert_eq!(location, format!("{ORIGIN}/settings/security?sso=linked"));
+    // The same provider identity cannot be linked to a second account.
+    let (location, _) =
+        sso_round_trip(&h, &idp, "/api/v1/auth/sso/link", json!({ "organization_id": org }), Some(&owner), "okta|member").await;
+    assert_eq!(location, format!("{ORIGIN}/settings/security?sso_error=already_linked"));
+    let (_, _, _, mine) = raw(&h.app, Method::GET, "/api/v1/auth/sso/workspace", None, Some(&member_org_token), "").await;
+    assert_eq!(mine, json!({ "available": true, "sign_in_name": "acme", "require_sso": false, "linked": true }));
+    let (_, _, _, links) = raw(&h.app, Method::GET, "/api/v1/auth/sso/links", None, Some(&account_token), "").await;
+    assert_eq!(links["items"][0]["sign_in_name"], "acme");
+    assert_eq!(links["items"][0]["email"], "person@corp.example");
+
+    // Now SSO signs them in, to this workspace only.
+    let (location, set) =
+        sso_round_trip(&h, &idp, "/api/v1/auth/sso/start", json!({ "sign_in_name": "ACME" }), None, "okta|member").await;
+    assert_eq!(location, format!("{ORIGIN}/sso/complete?workspace={org}"));
+    let refresh = cookie_value(&set, "refresh_token");
+    assert!(!refresh.is_empty());
+    let refreshed =
+        call(&h.app, Method::POST, "/api/v1/auth/token/refresh", Some(json!({ "organization_id": org })), None, Some(&refresh))
+            .await;
+    assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
+    let sso_session = token(&refreshed);
+    h.membership.0.lock().unwrap().insert(
+        (member_id, other_org),
+        MembershipInfo { tenant_id: other_tenant, role: OrgRole::Member, require_two_step: false },
+    );
+    let elsewhere = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/token/exchange",
+        Some(json!({ "organization_id": other_org })),
+        Some(&sso_session),
+        None,
+    )
+    .await;
+    assert_eq!(elsewhere.body["code"], "sso_other_workspace", "{}", elsewhere.body);
+
+    // A workspace that requires SSO turns away password sessions (but not its owners).
+    let mut required = connection.clone();
+    required["require_sso"] = json!(true);
+    required.as_object_mut().unwrap().remove("client_secret");
+    let (status, _, _, body) = raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(required), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let refused = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/token/exchange",
+        Some(json!({ "organization_id": org })),
+        Some(&account_token),
+        None,
+    )
+    .await;
+    assert_eq!(refused.body["code"], "sso_required");
+    let ok = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/token/exchange",
+        Some(json!({ "organization_id": org })),
+        Some(&sso_session),
+        None,
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK);
+    let (status, ..) = raw(&h.app, Method::GET, "/api/v1/auth/sso/connection", None, Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Unlinking stops it.
+    let (status, ..) =
+        raw(&h.app, Method::DELETE, &format!("/api/v1/auth/sso/links/{org}"), None, Some(&account_token), "").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (location, _) =
+        sso_round_trip(&h, &idp, "/api/v1/auth/sso/start", json!({ "sign_in_name": "acme" }), None, "okta|member").await;
+    assert_eq!(location, format!("{ORIGIN}/login?sso_error=not_linked"));
+}
+
+#[tokio::test]
+async fn sso_callbacks_must_come_back_to_the_browser_that_started_them_with_a_valid_token() {
+    let h = harness().await;
+    let idp = fake_idp::FakeIdp::start().await;
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, owner) = member(&h, "owner2@corp.example", org, tenant, OrgRole::Owner).await;
+    let connection = json!({
+        "sign_in_name": "beta", "issuer": idp.issuer(), "client_id": fake_idp::CLIENT_ID,
+        "client_secret": fake_idp::CLIENT_SECRET, "enabled": true, "require_sso": false,
+    });
+    let (status, ..) = raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(connection), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let start = || async {
+        let (_, _, set, started) =
+            raw(&h.app, Method::POST, "/api/v1/auth/sso/start", Some(json!({ "sign_in_name": "beta" })), None, "").await;
+        (cookie_value(&set, "sso_state"), started["authorization_url"].as_str().unwrap().to_owned())
+    };
+    let back = |state: String, code: String, cookie: String| {
+        let app = h.app.clone();
+        async move {
+            raw(
+                &app,
+                Method::GET,
+                &format!("/api/v1/auth/sso/callback?state={state}&code={code}"),
+                None,
+                None,
+                &format!("sso_state={cookie}"),
+            )
+            .await
+            .1
+        }
+    };
+    let expired = format!("{ORIGIN}/login?sso_error=expired");
+
+    // Login CSRF: someone else's callback link, opened in a browser without the cookie.
+    let (_, url) = start().await;
+    let (state, code) = idp.approve(&url, "okta|x", "x@corp.example", None);
+    assert_eq!(back(state.clone(), code.clone(), "not-the-cookie".into()).await, expired);
+    // ... and that sign-in is now spent, even with the right cookie.
+    assert_eq!(back(state, code, String::new()).await, expired);
+
+    // A token for another sign-in (wrong nonce), or signed with the wrong key, is refused.
+    let (cookie, url) = start().await;
+    let (state, code) = idp.approve(&url, "okta|x", "x@corp.example", Some("another-nonce"));
+    assert_eq!(back(state, code, cookie).await, format!("{ORIGIN}/login?sso_error=provider"));
+    idp.set_forge(true);
+    let (cookie, url) = start().await;
+    let (state, code) = idp.approve(&url, "okta|x", "x@corp.example", None);
+    assert_eq!(back(state, code, cookie).await, format!("{ORIGIN}/login?sso_error=provider"));
+    idp.set_forge(false);
+
+    // Cancelled at the provider; unknown sign-in names; removing the connection.
+    let (cookie, url) = start().await;
+    let (state, _) = idp.approve(&url, "okta|x", "x@corp.example", None);
+    let (_, location, ..) = raw(
+        &h.app,
+        Method::GET,
+        &format!("/api/v1/auth/sso/callback?state={state}&error=access_denied"),
+        None,
+        None,
+        &format!("sso_state={cookie}"),
+    )
+    .await;
+    assert_eq!(location, format!("{ORIGIN}/login?sso_error=cancelled"));
+    let (status, ..) =
+        raw(&h.app, Method::POST, "/api/v1/auth/sso/start", Some(json!({ "sign_in_name": "nobody" })), None, "").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, ..) = raw(&h.app, Method::DELETE, "/api/v1/auth/sso/connection", None, Some(&owner), "").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, ..) =
+        raw(&h.app, Method::POST, "/api/v1/auth/sso/start", Some(json!({ "sign_in_name": "beta" })), None, "").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

@@ -24,7 +24,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{
-    auth::{client_info, issue_access_token, refresh_cookie, require_session, start_session},
+    auth::{client_info, issue_access_token, refresh_cookie, require_session, start_session, SignInMethod},
     dto::TokenResponse,
     mfa::{confirm_password, current_account, log_event, PasswordConfirmation},
 };
@@ -387,7 +387,7 @@ pub async fn sign_in(
         .execute(&mut *tx)
         .await?;
     store::reset_failed_logins(&mut tx, account.id).await?;
-    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, "passkey").await?;
+    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, SignInMethod::Passkey).await?;
     outbox::enqueue(
         &mut tx,
         &EventEnvelope::new(None, account.id, 1, Actor::User(account.id), LoginSucceededV1 { user_id: account.id, session_id }),

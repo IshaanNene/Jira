@@ -7,7 +7,7 @@
 //! redirects are not followed. Signing secrets are stored encrypted and shown once.
 
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -69,43 +69,7 @@ pub struct Settings {
 
 // --- addresses ---------------------------------------------------------------------
 
-/// Whether an address is on the public internet (not loopback, private, link-local,
-/// shared, documentation, multicast, unspecified, or an IPv4 address in IPv6 clothing).
-pub fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => public_v4(v4),
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return public_v4(v4);
-            }
-            let s = v6.segments();
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (s[0] & 0xfe00) == 0xfc00 // unique local
-                || (s[0] & 0xffc0) == 0xfe80 // link-local
-                || (s[0] == 0x2001 && s[1] == 0x0db8) // documentation
-                || (s[0] == 0x0064 && s[1] == 0xff9b) // NAT64
-                || v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
-        }
-    }
-}
-
-fn public_v4(ip: Ipv4Addr) -> bool {
-    let o = ip.octets();
-    !(ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || o[0] == 0
-        || (o[0] == 100 && (o[1] & 0xc0) == 64) // shared address space (CGNAT)
-        || (o[0] == 192 && o[1] == 0 && o[2] == 0) // IETF protocol assignments
-        || (o[0] == 198 && (o[1] & 0xfe) == 18) // benchmarking
-        || o[0] >= 240)
-}
+pub use platform_common::net::is_public;
 
 /// Check an endpoint URL when it is saved.
 pub fn validate_url(raw: &str, reach: Reach) -> Result<Url, &'static str> {

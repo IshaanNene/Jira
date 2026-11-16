@@ -1,6 +1,7 @@
-import { api, ApiError, configureAuth, NetworkError, type MfaChallenge, type OrgRole, type PasskeyOptions, type TokenResponse } from "@/services/api";
+import { api, ApiError, configureAuth, NetworkError, type MfaChallenge, type OrgRole, type PasskeyOptions, type SsoRedirect, type TokenResponse } from "@/services/api";
 import { queryClient } from "@/services/query-client";
 import { useSession } from "@/state/session";
+import { goTo } from "@/utils/browser";
 
 import { getPasskey, type RequestOptionsJson } from "./webauthn";
 
@@ -111,6 +112,12 @@ export async function signIn(email: string, password: string): Promise<MfaChalle
 export async function completeSignIn(mfaToken: string, code: string): Promise<void> {
   apply(await api.post<TokenResponse>(`${AUTH}/login/mfa`, { mfa_token: mfaToken, code }, { auth: false }));
   channel?.postMessage("signed-in");
+}
+
+/** Find the workspace's identity provider and send the browser there. */
+export async function startSso(signInName: string): Promise<void> {
+  const redirect = await api.post<SsoRedirect>(`${AUTH}/sso/start`, { sign_in_name: signInName }, { auth: false });
+  goTo(redirect.authorization_url);
 }
 
 /** Sign in with a passkey chosen in the browser's prompt; no email or password needed. */

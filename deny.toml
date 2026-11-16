@@ -1,0 +1,9 @@
+# cargo-deny configuration (CI runs `cargo deny check advisories`).
+
+[advisories]
+ignore = [
+    # rsa: the "Marvin" timing side channel in RSA *decryption* with a private key. The crate
+    # comes in through openidconnect, which only verifies identity providers' ID-token
+    # signatures with their public keys; nothing here decrypts or signs with RSA.
+    { id = "RUSTSEC-2023-0071", reason = "only RSA signature verification with public keys (OIDC ID tokens)" },
+]

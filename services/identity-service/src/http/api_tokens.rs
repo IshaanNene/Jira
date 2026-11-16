@@ -145,7 +145,7 @@ pub async fn create(
     }
     // Still a member now, not just when the access token was issued.
     let membership = state.membership.check(auth.user_id, org).await?.ok_or(ApiError::Forbidden)?;
-    require_admitted(&state, auth.user_id, Some(auth.session_id), &membership).await?;
+    require_admitted(&state, auth.user_id, org, Some(auth.session_id), &membership).await?;
 
     let secret = format!("{PREFIX}{}", crypto::random_token());
     let hint: String = secret.chars().take(PREFIX.len() + 4).collect();
@@ -226,7 +226,7 @@ pub async fn exchange(State(state): State<AppState>, Json(body): Json<ApiTokenEx
     }
     let membership = state.membership.check(account.id, organization_id).await?.ok_or(ApiError::Forbidden)?;
     // A token does not get around a requirement the workspace added after it was made.
-    require_admitted(&state, account.id, None, &membership).await?;
+    require_admitted(&state, account.id, organization_id, None, &membership).await?;
     // Coarse on purpose: one write per token per minute at most.
     sqlx::query(
         "UPDATE api_tokens SET last_used_at = now() \

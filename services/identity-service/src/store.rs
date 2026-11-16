@@ -120,10 +120,11 @@ pub async fn insert_session(
     ip: Option<&str>,
     user_agent: Option<&str>,
     auth_method: &str,
+    sso_organization_id: Option<Uuid>,
 ) -> ApiResult<Session> {
     Ok(sqlx::query_as::<_, Session>(&format!(
-        "INSERT INTO sessions (id, account_id, expires_at, ip, user_agent, auth_method) \
-         VALUES ($1, $2, now() + make_interval(days => $3), $4, $5, $6) RETURNING {SESSION_COLUMNS}"
+        "INSERT INTO sessions (id, account_id, expires_at, ip, user_agent, auth_method, sso_organization_id) \
+         VALUES ($1, $2, now() + make_interval(days => $3), $4, $5, $6, $7) RETURNING {SESSION_COLUMNS}"
     ))
     .bind(platform_common::new_id())
     .bind(account_id)
@@ -131,6 +132,7 @@ pub async fn insert_session(
     .bind(ip)
     .bind(user_agent)
     .bind(auth_method)
+    .bind(sso_organization_id)
     .fetch_one(conn)
     .await?)
 }

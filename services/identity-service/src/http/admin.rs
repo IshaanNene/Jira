@@ -24,7 +24,7 @@ use crate::AppState;
 pub const MAX_LOOKUP: usize = 500;
 
 /// A signed-in admin or owner (not an API token) acting in their organization.
-fn admin(auth: &AuthContext, ctx: &OrgContext) -> ApiResult<()> {
+pub(crate) fn admin(auth: &AuthContext, ctx: &OrgContext) -> ApiResult<()> {
     require_session(auth)?;
     ctx.require(OrgPermission::ManageOrganization)?;
     Ok(())

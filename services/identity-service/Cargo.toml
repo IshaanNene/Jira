@@ -38,6 +38,8 @@ tracing.workspace = true
 anyhow.workspace = true
 qrcode.workspace = true
 smtp-mailer.workspace = true
+openidconnect.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 test-utilities.workspace = true

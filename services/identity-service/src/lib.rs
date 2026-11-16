@@ -7,6 +7,7 @@ pub mod http;
 pub mod keys;
 pub mod membership;
 pub mod mfa;
+pub mod sso;
 pub mod store;
 pub mod webauthn;
 
@@ -33,6 +34,10 @@ pub struct Settings {
     pub trust_forwarded_for: bool,
     /// Where passkeys are bound: the domain and the exact page origins.
     pub passkeys: webauthn::RelyingParty,
+    /// The web app's origin: where people land after single sign-on, and the base of the
+    /// redirect URI given to identity providers (`{app_url}/api/v1/auth/sso/callback`).
+    pub app_url: String,
+    pub sso_reach: sso::Reach,
 }
 
 #[derive(Clone)]
@@ -50,6 +55,8 @@ pub struct AppState {
     pub sealer: Arc<crypto::KeySealer>,
     /// Verification and password reset emails; `None` without a mail server.
     pub mail: Option<Arc<account_email::AccountMail>>,
+    /// Talks to workspaces' identity providers.
+    pub sso: Arc<sso::Provider>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -72,6 +79,7 @@ impl AppState {
         for jwk in &material.jwks.keys {
             verifier.add_key(jwk)?;
         }
+        let sso = Arc::new(sso::Provider::new(settings.sso_reach)?);
         let dummy_hash = crypto::hash_password(crypto::random_token()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(Self {
             pool,
@@ -84,6 +92,7 @@ impl AppState {
             dummy_hash: Arc::new(dummy_hash),
             sealer: Arc::new(sealer),
             mail: None,
+            sso,
         })
     }
 }
@@ -120,6 +129,12 @@ impl Config {
             settings: Settings {
                 issuer: config::required("TOKEN_ISSUER")?,
                 passkeys: relying_party(&config::list("ALLOWED_ORIGINS"))?,
+                app_url: config::optional("APP_URL")
+                    .or_else(|| config::list("ALLOWED_ORIGINS").into_iter().next())
+                    .unwrap_or_else(|| "http://localhost:5173".to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+                sso_reach: sso::Reach::from_env(),
                 allowed_origins: config::list("ALLOWED_ORIGINS"),
                 cookie_secure: config::parse_or("COOKIE_SECURE", true)?,
                 session_ttl_days: config::parse_or("SESSION_TTL_DAYS", 30)?,

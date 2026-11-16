@@ -6,6 +6,7 @@ pub mod dto;
 pub mod mfa;
 pub mod passkeys;
 pub mod sessions;
+pub mod sso;
 
 use axum::{
     extract::{Request, State},
@@ -59,7 +60,16 @@ use crate::AppState;
         passkeys::rename,
         passkeys::remove,
         passkeys::sign_in_options,
-        passkeys::sign_in
+        passkeys::sign_in,
+        sso::get_connection,
+        sso::save_connection,
+        sso::delete_connection,
+        sso::start,
+        sso::link,
+        sso::links,
+        sso::unlink,
+        sso::callback,
+        sso::workspace
     ),
     components(schemas(
         dto::RegisterRequest,
@@ -98,7 +108,15 @@ use crate::AppState;
         passkeys::PasskeyOptions,
         passkeys::NewPasskey,
         passkeys::PasskeySignIn,
-        passkeys::RenamePasskey
+        passkeys::RenamePasskey,
+        sso::SsoConnectionDto,
+        sso::SaveSsoConnection,
+        sso::StartSso,
+        sso::LinkSso,
+        sso::SsoRedirect,
+        sso::SsoLinkDto,
+        sso::SsoLinkList,
+        sso::WorkspaceSso
     ))
 )]
 pub struct ApiDoc;
@@ -116,6 +134,13 @@ pub fn router(state: AppState) -> Router {
         .route("/login/mfa", post(mfa::login))
         .route("/passkeys/sign-in/options", post(passkeys::sign_in_options))
         .route("/passkeys/sign-in", post(passkeys::sign_in))
+        .route("/sso/start", post(sso::start))
+        .route("/sso/callback", get(sso::callback))
+        .route("/sso/link", post(sso::link))
+        .route("/sso/links", get(sso::links))
+        .route("/sso/workspace", get(sso::workspace))
+        .route("/sso/links/{organization_id}", delete(sso::unlink))
+        .route("/sso/connection", get(sso::get_connection).put(sso::save_connection).delete(sso::delete_connection))
         .route("/passkeys", get(passkeys::list).post(passkeys::register))
         .route("/passkeys/options", post(passkeys::registration_options))
         .route("/passkeys/{id}", patch(passkeys::rename))
@@ -147,7 +172,7 @@ pub fn router(state: AppState) -> Router {
     let origins: Vec<_> = state.settings.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PATCH])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PATCH, Method::PUT])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::IF_MATCH])
         .allow_credentials(true);
 

@@ -19,7 +19,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{
-    auth::{client_info, issue_access_token, refresh_cookie, revoke_everywhere, start_session, ClientInfo},
+    auth::{client_info, issue_access_token, refresh_cookie, revoke_everywhere, start_session, ClientInfo, SignInMethod},
     dto::TokenResponse,
 };
 use crate::{
@@ -294,7 +294,7 @@ pub async fn login(
 
     sqlx::query("UPDATE mfa_challenges SET used_at = now() WHERE id = $1").bind(challenge_id).execute(&mut *tx).await?;
     store::reset_failed_logins(&mut tx, account.id).await?;
-    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, "two_step").await?;
+    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, SignInMethod::TwoStep).await?;
     outbox::enqueue(
         &mut tx,
         &EventEnvelope::new(None, account.id, 1, Actor::User(account.id), LoginSucceededV1 { user_id: account.id, session_id }),

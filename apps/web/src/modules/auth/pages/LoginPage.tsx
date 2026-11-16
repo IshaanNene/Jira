@@ -12,6 +12,7 @@ import { AuthLayout } from "../components/AuthLayout";
 import { FormError } from "../components/FormError";
 import { safeNext } from "../navigation";
 import { completeSignIn, signIn, signInWithPasskey } from "../session-service";
+import { ssoErrorMessage } from "../sso-errors";
 import { PasskeyCancelled, passkeysSupported } from "../webauthn";
 
 const schema = z.object({
@@ -23,7 +24,7 @@ type Values = z.infer<typeof schema>;
 export default function LoginPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [formError, setFormError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(() => ssoErrorMessage(params.get("sso_error")));
   const [challenge, setChallenge] = useState<MfaChallenge | null>(null);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const {
@@ -112,6 +113,11 @@ export default function LoginPage() {
           </Button>
         </>
       )}
+      <p className="mt-4 text-center text-sm">
+        <Link to="/sso" className="text-accent hover:underline">
+          Sign in with SSO
+        </Link>
+      </p>
     </AuthLayout>
   );
 }

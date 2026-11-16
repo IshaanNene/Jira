@@ -7,6 +7,7 @@ import { describeUserAgent, formatDate, formatRelative } from "@/utils/format";
 
 import { ApiTokens } from "../components/ApiTokens";
 import { Passkeys } from "../components/Passkeys";
+import { SingleSignOn } from "../components/SingleSignOn";
 import { TwoStepVerification } from "../components/TwoStepVerification";
 
 export default function SecurityPage() {
@@ -15,6 +16,7 @@ export default function SecurityPage() {
       <div className="space-y-5">
         <Passkeys />
         <TwoStepVerification />
+        <SingleSignOn />
         <Sessions />
         <ApiTokens />
       </div>
@@ -44,6 +46,7 @@ function Sessions() {
                     <span className="truncate text-base font-medium text-ink">{describeUserAgent(session.user_agent)}</span>
                     {session.current && <Badge tone="success">This device</Badge>}
                     {session.sign_in_method === "passkey" && <Badge>Passkey</Badge>}
+                    {session.sign_in_method === "sso" && <Badge>Single sign-on</Badge>}
                   </div>
                   <div className="truncate text-sm text-ink-muted">
                     {session.ip ?? "Unknown address"} · Active {formatRelative(session.last_seen_at)} · Signed in {formatDate(session.created_at)}

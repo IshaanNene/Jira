@@ -63,6 +63,8 @@ rand = "0.8"
 sha2 = "0.10"
 subtle = "2"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# OpenID Connect relying party (SSO). reqwest + rustls, no OpenSSL.
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 
 # api docs & validation
 utoipa = { version = "5", features = ["axum_extras", "uuid", "time"] }

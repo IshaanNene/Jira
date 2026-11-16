@@ -3,6 +3,10 @@ import { lazy } from "react";
 export {
   useAddPasskey,
   useApiTokens,
+  useLinkSso,
+  useSsoLinks,
+  useUnlinkSso,
+  useWorkspaceSso,
   usePasskeys,
   useRemovePasskey,
   useRenamePasskey,
@@ -17,11 +21,14 @@ export { FormError } from "./components/FormError";
 export { applyServerErrors } from "./form-errors";
 export { safeNext, twoStepRequiredPath } from "./navigation";
 export { PasskeyCancelled, passkeysSupported } from "./webauthn";
-export { bootstrapSession, completeSignIn, leaveOrganizationScope, refreshSession, signIn, signInWithPasskey, signOut, signUp, switchOrganization } from "./session-service";
+export { ssoErrorMessage } from "./sso-errors";
+export { bootstrapSession, completeSignIn, leaveOrganizationScope, refreshSession, signIn, signInWithPasskey, signOut, signUp, startSso, switchOrganization } from "./session-service";
 
 export const LoginPage = lazy(() => import("./pages/LoginPage"));
 export const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 export const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
 export const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
 export const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
+export const SsoSignInPage = lazy(() => import("./pages/SsoSignInPage"));
+export const SsoCompletePage = lazy(() => import("./pages/SsoCompletePage"));
 export const ConfirmEmailChangePage = lazy(() => import("./pages/ConfirmEmailChangePage"));

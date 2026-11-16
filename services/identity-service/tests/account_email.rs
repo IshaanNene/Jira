@@ -72,6 +72,8 @@ async fn harness(with_mail: bool) -> Harness {
         cookie_secure: false,
         session_ttl_days: 30,
         trust_forwarded_for: false,
+        app_url: ORIGIN.into(),
+        sso_reach: identity_service::sso::Reach::default(),
         passkeys: identity_service::webauthn::RelyingParty {
             id: "localhost".into(),
             name: "Meridian".into(),

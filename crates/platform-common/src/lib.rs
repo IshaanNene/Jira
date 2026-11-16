@@ -1,6 +1,7 @@
 //! Cross-cutting plumbing shared by every service. No business rules live here.
 
 pub mod config;
+pub mod net;
 pub mod pagination;
 pub mod request_context;
 pub mod resilience;

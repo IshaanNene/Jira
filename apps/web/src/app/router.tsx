@@ -3,8 +3,8 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
-import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, VerifyEmailPage } from "@/modules/auth";
-import { AdminConsolePage } from "@/modules/admin";
+import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, SsoCompletePage, SsoSignInPage, VerifyEmailPage } from "@/modules/auth";
+import { AdminConsolePage, SingleSignOnPage } from "@/modules/admin";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { WebhooksPage } from "@/modules/integrations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
@@ -44,6 +44,7 @@ export const router = createBrowserRouter([
           { path: "/login", element: <LoginPage /> },
           { path: "/register", element: <RegisterPage /> },
           { path: "/forgot-password", element: <ForgotPasswordPage /> },
+          { path: "/sso", element: <SsoSignInPage /> },
         ],
       },
       // Reachable signed in or out: shows a preview first, accepts once signed in.
@@ -51,6 +52,8 @@ export const router = createBrowserRouter([
       // From account emails; work signed in or out.
       { path: "/verify-email", element: <VerifyEmailPage /> },
       { path: "/reset-password", element: <ResetPasswordPage /> },
+      // Back from a workspace's identity provider, with the session cookie just set.
+      { path: "/sso/complete", element: <SsoCompletePage /> },
       { path: "/confirm-email", element: <ConfirmEmailChangePage /> },
       // The public site; works signed in or out.
       { path: "/features", element: <FeaturesPage /> },
@@ -100,6 +103,7 @@ export const router = createBrowserRouter([
                     children: [
                       { path: "/settings/workspace", element: <OrganizationSettingsPage /> },
                       { path: "/settings/admin", element: <AdminConsolePage /> },
+                      { path: "/settings/sso", element: <SingleSignOnPage /> },
                       { path: "/settings/custom-fields", element: <CustomFieldsPage /> },
                       { path: "/settings/audit-log", element: <AuditLogPage /> },
                       { path: "/settings/webhooks", element: <WebhooksPage /> },

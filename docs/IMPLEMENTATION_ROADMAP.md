@@ -17,7 +17,7 @@ Last updated: 2026-11-14 (Phase 8: container images, Helm chart, Terraform, CI, 
 | 3 | Workflow engine + visual designer | ✅ (gaps listed below) |
 | 4 | Boards, backlog, sprints, reports | ✅ (gaps listed below) |
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
-| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language with saved filters, audit log, authenticator-app two-step verification (optionally required per workspace), API tokens, project automation rules and outgoing webhooks done; the rest not started) |
+| 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | 🚧 (query language with saved filters, audit log, authenticator-app two-step verification (optionally required per workspace), API tokens, passkeys, OIDC single sign-on, admin console, project automation rules and outgoing webhooks done; SAML, SCIM and the rest not started) |
 | 7 | ClickHouse pipeline, dashboards | ✅ (seven chart kinds; gaps listed below) |
 | 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | 🚧 (chart, images, CI, observability and tests built and run locally; Terraform validated but never applied; no Argo CD; gaps listed below) |
 
@@ -105,7 +105,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **259 Rust tests, 155 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **263 Rust tests, 162 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -169,7 +169,7 @@ so that a new migration file is always embedded in the binary.
 | Email verification, password reset, invitation email | Built (see above), including changing an account's address; accepting an invitation needs a verified address. Not built: bounce handling; profiles missed by the event (Kafka down past retention) are not re-synced |
 | Teams, departments, groups, avatars, org logo/branding, domains | Not built |
 | Tenant tier migration; business/enterprise provisioning | Schema and placement decision only; dedicated tiers are recorded as `pending` and are not routable |
-| OIDC, SAML, SCIM | Not built (Phase 6); TOTP two-step verification, passkeys and API tokens are built |
+| SAML, SCIM | Not built (Phase 6); TOTP two-step verification, passkeys, OIDC single sign-on and API tokens are built |
 | Per-IP rate limiting | Dev gateway has global and credential-route buckets only; per-IP needs the rate-limit service planned with Envoy Gateway |
 | OpenTelemetry export | Verified in Phase 8: search-service traces reached Jaeger over OTLP/HTTP. Spans cover HTTP requests only; no trace propagation through Kafka |
 | Playwright end-to-end tests, Storybook | Not set up |
@@ -227,7 +227,8 @@ so that a new migration file is always embedded in the binary.
 | Query language | Built, with saved filters and email subscriptions (see above). Not built: subscriptions in a person's own time zone or for other people and groups, sharing with specific people or groups, favourites, a filter column picker; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog filter by MQL but quick filters cannot be saved on a board |
 | Two-step verification | TOTP built (see above). Requiring it per workspace built (see above): access tokens issued before the requirement stay valid for up to 10 minutes, and a member can still turn their own off (they are then refused at the next refresh). Passkeys built (see the Passkeys row). Not built: an email when it is turned on or off or a recovery code is used; an `amr` claim in tokens; admin reset for a member who lost their phone and codes: deliberately not offered to workspace admins, because an account is global and can belong to other workspaces (today only a database operator can) |
 | API tokens | Built (see above). Not built: scopes narrower than the person's own access; tokens owned by a service account rather than a person; expiry reminders; secret scanning for the `mrd_` prefix |
-| SSO (OIDC, SAML), SCIM | Not started |
+| Single sign-on (OIDC) | Built: Settings → Single sign-on (admins and owners) connects one OpenID Connect provider per workspace (sign-in name, issuer, client id, encrypted secret; the discovery document is read on save), shows the redirect URI to register and how many members linked, can require SSO (owners exempt) and can remove it; members link their own account under Settings → Security and sign in with "Sign in with SSO" by the workspace's sign-in name; such a session opens only that workspace. See SECURITY_DESIGN.md §2. 2 unit tests, 2 identity HTTP tests against a local fake provider, 7 web tests. Not built: provisioning accounts on first sign-in (needs verified email domains); signing in by email domain; group or role mapping from the provider; ending sessions when the provider ends them (back-channel logout); more than one provider per workspace; checking the provider's configuration on a schedule |
+| SAML, SCIM | Not started |
 | Audit log | Built (see above). Not built: client IP address on entries; retention and purge (append-only for now, so entries are kept forever); workflow and board entries have no name (their events carry none); entries are listed in the order they were recorded, which can differ slightly from when they happened across topics; project access entries are written just after the permission change rather than in the same transaction, so a crash between the two loses the entry; no scheduled verifier; no audit of sign-ins (identity-service emits no events yet) |
 | Passkeys | Built: Settings → Security → Passkeys adds (password, then the browser's prompt), renames and removes them; the sign-in page has "Sign in with a passkey" (discoverable credentials, no email typed); sessions show when they were signed in with one; a passkey sign-in meets a workspace's two-step requirement, and the "two-step required" page offers it. Relying-party checks written over `ring` rather than `webauthn-rs` (see SECURITY_DESIGN.md §2 for why and what is checked). 8 unit tests, 2 identity HTTP tests, 4 web tests. Not built: passkey as a second step after a password; conditional UI (autofill) on the email field; a passkey-only account with no password; attestation-based restrictions on authenticator models; an external review of the verifier |
 | Admin console | Built: Settings → Admin console (admins and owners) shows active members by role, projects, whether two-step verification is required, webhooks turned off after failures, which active members lack two-step verification (`POST /api/v1/auth/admin/two-step`, answering only for active members of the caller's workspace), and every active API token issued for the workspace with its owner and last use; revoking one (`DELETE /api/v1/auth/admin/api-tokens/{id}`) takes effect at once and is written to the audit log. Session tokens only, not API tokens. 1 identity integration test, 4 web tests. Not built: usage and seat counts over time, bulk actions on members, forcing a member to sign out everywhere |
@@ -293,5 +294,5 @@ p95 16.3 ms, p99 76.9 ms); 14,408 requests, 1 failed. All thresholds passed.
 1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
    environment from the Terraform with External Secrets and Argo CD, re-running the stress test
    against chart queries now that they are cached, and a restore drill.
-2. Phase 6, remaining: SSO (OIDC, SAML) and SCIM, more automation
+2. Phase 6, remaining: SAML and SCIM, more automation
    (scheduled triggers, comment and transition actions), integrations beyond webhooks (chat, source control).

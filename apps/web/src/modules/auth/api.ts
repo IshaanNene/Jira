@@ -9,7 +9,11 @@ import {
   type Passkey,
   type PasskeyList,
   type PasskeyOptions,
-  type RecoveryCodes, type SessionList, type TotpSetup } from "@/services/api";
+  type RecoveryCodes,
+  type SsoLinkList,
+  type SsoRedirect,
+  type WorkspaceSso, type SessionList, type TotpSetup } from "@/services/api";
+import { goTo } from "@/utils/browser";
 
 import { createPasskey, type CreationOptionsJson } from "./webauthn";
 
@@ -102,6 +106,37 @@ export function useRemovePasskey() {
   return useMutation({
     mutationFn: ({ id, password }: { id: string; password: string }) => api.post(`/api/v1/auth/passkeys/${id}/remove`, { password }),
     onSettled: () => queryClient.invalidateQueries({ queryKey: passkeysKey }),
+  });
+}
+
+const ssoLinksKey = ["auth", "sso", "links"] as const;
+
+export function useSsoLinks() {
+  return useQuery({ queryKey: ssoLinksKey, queryFn: () => api.get<SsoLinkList>("/api/v1/auth/sso/links"), select: (d) => d.items });
+}
+
+/** Single sign-on in the current workspace, as any member sees it. */
+export function useWorkspaceSso(organizationId: string | undefined) {
+  return useQuery({
+    queryKey: ["auth", "sso", "workspace", organizationId],
+    queryFn: () => api.get<WorkspaceSso>("/api/v1/auth/sso/workspace"),
+    enabled: Boolean(organizationId),
+  });
+}
+
+/** Starts linking: the browser leaves for the identity provider and comes back to Security. */
+export function useLinkSso() {
+  return useMutation({
+    mutationFn: (organizationId: string) => api.post<SsoRedirect>("/api/v1/auth/sso/link", { organization_id: organizationId }),
+    onSuccess: (redirect) => goTo(redirect.authorization_url),
+  });
+}
+
+export function useUnlinkSso() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (organizationId: string) => api.delete(`/api/v1/auth/sso/links/${organizationId}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["auth", "sso"] }),
   });
 }
 

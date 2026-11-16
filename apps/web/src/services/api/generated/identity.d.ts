@@ -520,6 +520,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/sso/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The provider sends the browser back here. Always answers with a redirect into the web app. */
+        get: operations["callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_connection"];
+        /**
+         * Set up or change the workspace's identity provider. The provider's discovery document is
+         *     read first, so a typo is caught here rather than at someone's sign-in. Changing the issuer
+         *     removes every member's link (their identities belong to the old provider).
+         */
+        put: operations["save_connection"];
+        post?: never;
+        /** Remove single sign-on from the workspace, with every member's link. */
+        delete: operations["delete_connection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Link the signed-in account to its identity at a workspace's provider. */
+        post: operations["link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["links"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/links/{organization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["unlink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start signing in through a workspace's identity provider. */
+        post: operations["start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What any member needs to know about the current workspace's single sign-on. */
+        get: operations["workspace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/token/api": {
         parameters: {
             query?: never;
@@ -633,6 +755,10 @@ export interface components {
         ForgotPasswordRequest: {
             email: string;
         };
+        LinkSso: {
+            /** Format: uuid */
+            organization_id: string;
+        };
         LoginRequest: {
             email: string;
             password: string;
@@ -739,6 +865,18 @@ export interface components {
             /** @description From the link in the email. */
             token: string;
         };
+        SaveSsoConnection: {
+            client_id: string;
+            /** @description Required the first time; leave out to keep the stored one. */
+            client_secret?: string | null;
+            enabled: boolean;
+            /** @description The provider's issuer URL; `/.well-known/openid-configuration` is read from it. */
+            issuer: string;
+            /** @description Members other than owners may enter the workspace only after signing in through it. */
+            require_sso: boolean;
+            /** @description Lower-case letters, digits and dashes; what members type to find the sign-in. */
+            sign_in_name: string;
+        };
         SessionDto: {
             /** Format: date-time */
             created_at: string;
@@ -756,6 +894,43 @@ export interface components {
         };
         SessionList: {
             items: components["schemas"]["SessionDto"][];
+        };
+        SsoConnectionDto: {
+            client_id: string;
+            enabled: boolean;
+            issuer: string;
+            /**
+             * Format: int64
+             * @description Members who have linked their account.
+             */
+            linked_members: number;
+            /** @description Register this as the redirect (callback) URI at the identity provider. */
+            redirect_uri: string;
+            require_sso: boolean;
+            sign_in_name: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        SsoLinkDto: {
+            /** Format: date-time */
+            created_at: string;
+            /** @description The address the provider reported when the link was made. */
+            email?: string | null;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            /** Format: uuid */
+            organization_id: string;
+            sign_in_name: string;
+        };
+        SsoLinkList: {
+            items: components["schemas"]["SsoLinkDto"][];
+        };
+        SsoRedirect: {
+            /** @description Send the browser here (a full-page navigation). */
+            authorization_url: string;
+        };
+        StartSso: {
+            sign_in_name: string;
         };
         TokenOrganization: {
             /** Format: uuid */
@@ -804,6 +979,15 @@ export interface components {
         };
         WorkspaceApiTokenList: {
             items: components["schemas"]["WorkspaceApiToken"][];
+        };
+        WorkspaceSso: {
+            /** @description Whether the workspace signs people in through an identity provider. */
+            available: boolean;
+            /** @description Whether the caller has linked their account. */
+            linked: boolean;
+            require_sso: boolean;
+            /** @description What to type on the "Sign in with SSO" page. */
+            sign_in_name?: string | null;
         };
     };
     responses: never;
@@ -1776,6 +1960,262 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    callback: {
+        parameters: {
+            query?: {
+                state?: string | null;
+                code?: string | null;
+                /** @description Set by the provider when the person cancelled or was refused there. */
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the web app: signed in, linked, or why not */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoConnectionDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not set up */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    save_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveSsoConnection"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoConnectionDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sign-in name taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid, or the provider could not be reached */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkSso"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoRedirect"];
+                };
+            };
+            /** @description Not a member */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    links: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoLinkList"];
+                };
+            };
+        };
+    };
+    unlink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartSso"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsoRedirect"];
+                };
+            };
+            /** @description No single sign-on under that name */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSso"];
+                };
             };
         };
     };

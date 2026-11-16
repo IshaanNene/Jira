@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use auth_middleware::{revocation_key, AuthContext, Claims, JwkSet, TokenKind, ACCESS_TOKEN_TTL_SECS, API_AUDIENCE};
+use auth_middleware::{revocation_key, AuthContext, Claims, JwkSet, OrgRole, TokenKind, ACCESS_TOKEN_TTL_SECS, API_AUDIENCE};
 use axum::{
     extract::{ConnectInfo, State},
     http::{header::USER_AGENT, HeaderMap, StatusCode},
@@ -131,7 +131,7 @@ pub(crate) async fn start_session(
     state: &AppState,
     account: &Account,
     client: &ClientInfo,
-    method: &str,
+    method: SignInMethod,
 ) -> ApiResult<(Uuid, String)> {
     let session = store::insert_session(
         conn,
@@ -139,12 +139,42 @@ pub(crate) async fn start_session(
         state.settings.session_ttl_days,
         client.ip.as_deref(),
         client.user_agent.as_deref(),
-        method,
+        method.name(),
+        method.sso_organization(),
     )
     .await?;
     let refresh = crypto::random_token();
     store::insert_refresh_token(conn, session.id, &crypto::sha256(refresh.as_bytes())).await?;
     Ok((session.id, refresh))
+}
+
+/// How a session was signed in to; recorded on it and used when deciding which
+/// workspaces it may enter.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SignInMethod {
+    Password,
+    TwoStep,
+    Passkey,
+    /// Through this workspace's identity provider.
+    Sso(Uuid),
+}
+
+impl SignInMethod {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::TwoStep => "two_step",
+            Self::Passkey => "passkey",
+            Self::Sso(_) => "sso",
+        }
+    }
+
+    fn sso_organization(self) -> Option<Uuid> {
+        match self {
+            Self::Sso(org) => Some(org),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) fn normalize_email(email: &str) -> String {
@@ -176,7 +206,7 @@ pub async fn register(
         }
         Err(err) => return Err(err.into()),
     };
-    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, "password").await?;
+    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, SignInMethod::Password).await?;
     outbox::enqueue(
         &mut tx,
         &EventEnvelope::new(
@@ -262,7 +292,7 @@ pub async fn login(
 
     let mut tx = state.pool.begin().await?;
     store::reset_failed_logins(&mut tx, account.id).await?;
-    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, "password").await?;
+    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, SignInMethod::Password).await?;
     outbox::enqueue(
         &mut tx,
         &EventEnvelope::new(None, account.id, 1, Actor::User(account.id), LoginSucceededV1 { user_id: account.id, session_id }),
@@ -377,7 +407,7 @@ pub async fn refresh(
     // verification they have not turned on) falls back to an account token.
     let membership = match body.organization_id {
         Some(org_id) => match state.membership.check(account.id, org_id).await.map_err(&keep)? {
-            Some(m) if admits(&state, account.id, Some(found.session_id), &m).await.map_err(&keep)? => Some((org_id, m)),
+            Some(m) if admits(&state, account.id, org_id, Some(found.session_id), &m).await.map_err(&keep)? => Some((org_id, m)),
             _ => None,
         },
         None => None,
@@ -412,7 +442,7 @@ pub async fn exchange(
     // Membership and role are read from the user service now — never from the request and
     // never copied from the caller's current token.
     let membership = state.membership.check(account.id, body.organization_id).await?.ok_or(ApiError::Forbidden)?;
-    require_admitted(&state, account.id, Some(auth.session_id), &membership).await?;
+    require_admitted(&state, account.id, body.organization_id, Some(auth.session_id), &membership).await?;
     Ok(Json(issue_access_token(&state, &account, auth.session_id, Some((body.organization_id, &membership)))?))
 }
 
@@ -421,41 +451,80 @@ pub(crate) const TWO_STEP_REQUIRED: ApiError = ApiError::ForbiddenBecause {
     message: "This workspace requires two-step verification. Turn it on, or sign in with a passkey, then try again.",
 };
 
-/// Whether the workspace lets this member in: today, its two-step verification requirement.
-/// It is met by an authenticator app, or by a session signed in to with a passkey (the
-/// device's PIN or biometric is the second step). `session` is `None` for an API token,
-/// which is admitted if its owner has either.
-pub(crate) async fn admits(
+pub(crate) const SSO_REQUIRED: ApiError = ApiError::ForbiddenBecause {
+    code: "sso_required",
+    message: "This workspace requires you to sign in through its single sign-on.",
+};
+
+pub(crate) const SSO_OTHER_WORKSPACE: ApiError = ApiError::ForbiddenBecause {
+    code: "sso_other_workspace",
+    message: "You signed in through another workspace's single sign-on. Sign in again to open this one.",
+};
+
+/// Whether the workspace lets this member in, given how the session was signed in to.
+/// `session` is `None` for an API token. Returns the reason when it does not:
+///
+/// * a session signed in through one workspace's identity provider enters only that workspace,
+///   so a provider's administrators cannot reach their members' other workspaces;
+/// * a workspace that requires SSO admits its members (owners excepted, so a broken provider
+///   cannot lock everyone out) only from such a session; API tokens are not affected;
+/// * a workspace that requires two-step verification accepts an authenticator app, a passkey
+///   sign-in, or a sign-in through its own provider (which applies its own policy).
+pub(crate) async fn admission(
     state: &AppState,
     account_id: Uuid,
+    organization_id: Uuid,
     session: Option<Uuid>,
     membership: &MembershipInfo,
-) -> ApiResult<bool> {
-    if !membership.require_two_step {
-        return Ok(true);
-    }
-    let (ok,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM totp_factors WHERE account_id = $1 AND confirmed_at IS NOT NULL) \
-             OR EXISTS (SELECT 1 FROM sessions WHERE id = $2 AND account_id = $1 AND auth_method = 'passkey') \
-             OR ($2::uuid IS NULL AND EXISTS (SELECT 1 FROM passkeys WHERE account_id = $1))",
+) -> ApiResult<Option<ApiError>> {
+    let (totp, has_passkey, method, sso_org, require_sso): (bool, bool, Option<String>, Option<Uuid>, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM totp_factors WHERE account_id = $1 AND confirmed_at IS NOT NULL), \
+                EXISTS (SELECT 1 FROM passkeys WHERE account_id = $1), \
+                (SELECT auth_method FROM sessions WHERE id = $2 AND account_id = $1), \
+                (SELECT sso_organization_id FROM sessions WHERE id = $2 AND account_id = $1), \
+                COALESCE((SELECT require_sso FROM sso_connections WHERE organization_id = $3 AND enabled), false)",
     )
     .bind(account_id)
     .bind(session)
+    .bind(organization_id)
     .fetch_one(&state.pool)
     .await?;
-    Ok(ok)
+    let sso_here = sso_org == Some(organization_id);
+    if sso_org.is_some() && !sso_here {
+        return Ok(Some(SSO_OTHER_WORKSPACE));
+    }
+    if require_sso && session.is_some() && !sso_here && membership.role != OrgRole::Owner {
+        return Ok(Some(SSO_REQUIRED));
+    }
+    if membership.require_two_step {
+        let met = totp || sso_here || method.as_deref() == Some("passkey") || (session.is_none() && has_passkey);
+        if !met {
+            return Ok(Some(TWO_STEP_REQUIRED));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) async fn admits(
+    state: &AppState,
+    account_id: Uuid,
+    organization_id: Uuid,
+    session: Option<Uuid>,
+    membership: &MembershipInfo,
+) -> ApiResult<bool> {
+    Ok(admission(state, account_id, organization_id, session, membership).await?.is_none())
 }
 
 pub(crate) async fn require_admitted(
     state: &AppState,
     account_id: Uuid,
+    organization_id: Uuid,
     session: Option<Uuid>,
     membership: &MembershipInfo,
 ) -> ApiResult<()> {
-    if admits(state, account_id, session, membership).await? {
-        Ok(())
-    } else {
-        Err(TWO_STEP_REQUIRED)
+    match admission(state, account_id, organization_id, session, membership).await? {
+        None => Ok(()),
+        Some(reason) => Err(reason),
     }
 }
 
