@@ -118,6 +118,8 @@ static_resources:
                           route: { cluster: issue, timeout: 60s }
                         - match: { prefix: /api/v1/custom-fields }
                           route: { cluster: issue, timeout: 15s }
+                        - match: { prefix: /api/v1/automation-rules }
+                          route: { cluster: issue, timeout: 15s }
                         - match: { prefix: /api/v1/workflow }
                           route: { cluster: workflow, timeout: 15s }
                         - match: { prefix: /api/v1/boards }

@@ -30,6 +30,7 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use crate::{
+    automation,
     domain::{
         self, check_parent, issue_type, normalize_labels, parse_key, ISSUE_TYPES, LINK_TYPES, PRIORITIES, STATUS_CATEGORIES,
     },
@@ -42,7 +43,7 @@ use crate::{
 
 pub(crate) const NOT_FOUND: ApiError = ApiError::NotFound("issue");
 
-fn etag(version: i64) -> HeaderMap {
+pub(crate) fn etag(version: i64) -> HeaderMap {
     let mut headers = HeaderMap::new();
     if let Ok(v) = HeaderValue::from_str(&format!("\"{version}\"")) {
         headers.insert(ETAG, v);
@@ -174,7 +175,7 @@ pub(crate) async fn ensure_writable(state: &AppState, ctx: &OrgContext, project_
     Ok(())
 }
 
-async fn ensure_assignable(state: &AppState, ctx: &OrgContext, user: Uuid) -> ApiResult<()> {
+pub(crate) async fn ensure_assignable(state: &AppState, ctx: &OrgContext, user: Uuid) -> ApiResult<()> {
     if user != ctx.user_id && !state.directory.is_org_member(user, ctx.organization_id).await? {
         return Err(ApiError::invalid("assignee_id", "not_a_member", "The assignee must be a member of this workspace."));
     }
@@ -379,6 +380,7 @@ pub async fn create(
         };
         emit(&mut tx, &ctx, id, 1, mentioned).await?;
     }
+    let issue = automation::run(&state, &ctx, &mut tx, issue, automation::Event::Created).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, etag(issue.version), Json(dto(&state, &ctx, issue, true).await)))
 }
@@ -492,6 +494,7 @@ pub async fn clone_issue(
         },
     )
     .await?;
+    let issue = automation::run(&state, &ctx, &mut tx, issue, automation::Event::Created).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, etag(issue.version), Json(dto(&state, &ctx, issue, true).await)))
 }
@@ -586,9 +589,24 @@ pub async fn get_one(
 
 // --- update ------------------------------------------------------------------
 
-struct Changes(Vec<Value>);
+#[derive(Default)]
+pub(crate) struct Changes(pub(crate) Vec<Value>);
 
 impl Changes {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub(crate) fn extend(&mut self, other: Changes) {
+        self.0.extend(other.0);
+    }
+    /// A change made by an automation rule: recorded with the rule's name.
+    pub(crate) fn record_by_rule<T: Serialize + PartialEq>(&mut self, field: &str, from: &T, to: &T, rule: &str) -> bool {
+        if from == to {
+            return false;
+        }
+        self.0.push(json!({ "field": field, "from": from, "to": to, "rule": rule }));
+        true
+    }
     fn record<T: Serialize + PartialEq>(&mut self, field: &str, from: &T, to: &T) -> bool {
         if from == to {
             return false;
@@ -596,7 +614,7 @@ impl Changes {
         self.0.push(json!({ "field": field, "from": from, "to": to }));
         true
     }
-    fn fields(&self) -> Vec<String> {
+    pub(crate) fn fields(&self) -> Vec<String> {
         self.0.iter().filter_map(|c| c["field"].as_str().map(str::to_owned)).collect()
     }
 }
@@ -868,7 +886,11 @@ pub async fn update(
         )
         .await?;
     }
-    let saved = store::issue_by_id(tx.conn(), ctx.tenant_id, issue_id).await?.ok_or(NOT_FOUND)?;
+    let mut saved = store::issue_by_id(tx.conn(), ctx.tenant_id, issue_id).await?.ok_or(NOT_FOUND)?;
+    if status_changed {
+        let to_status = saved.status.clone();
+        saved = automation::run(&state, &ctx, &mut tx, saved, automation::Event::Transitioned { to_status: &to_status }).await?;
+    }
     tx.commit().await?;
     Ok((etag(saved.version), Json(dto(&state, &ctx, saved, true).await)))
 }
@@ -1222,6 +1244,11 @@ pub async fn voters(State(state): State<AppState>, ctx: OrgContext, Path(key): P
         watch,
         unwatch,
         crate::http_fields::list,
+        crate::http_automation::list,
+        crate::http_automation::create,
+        crate::http_automation::update,
+        crate::http_automation::delete,
+        crate::http_automation::runs,
         crate::http_fields::create,
         crate::http_fields::update,
         crate::http_fields::archive,
@@ -1245,6 +1272,17 @@ pub async fn voters(State(state): State<AppState>, ctx: OrgContext, Path(key): P
         LinkList,
         CreateLinkRequest,
         CloneIssueRequest,
+        crate::http_automation::AutomationRuleDto,
+        crate::http_automation::AutomationRuleList,
+        crate::http_automation::CreateAutomationRuleRequest,
+        crate::http_automation::UpdateAutomationRuleRequest,
+        crate::http_automation::AutomationRunDto,
+        crate::http_automation::AutomationRunList,
+        crate::automation::RuleDefinition,
+        crate::automation::Trigger,
+        crate::automation::Conditions,
+        crate::automation::Action,
+        crate::automation::Assignee,
         VoterDto,
         VoterList,
         HistoryEntry,
@@ -1281,6 +1319,7 @@ pub fn router(state: AppState) -> Router {
         .route("/issues/{key}/vote", put(vote).delete(unvote))
         .route("/issues/{key}/voters", get(voters))
         .merge(crate::http_fields::routes())
+        .merge(crate::http_automation::routes())
         .merge(crate::attachments::routes());
 
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();

@@ -810,6 +810,117 @@ async fn links_respect_project_visibility() {
 }
 
 #[tokio::test]
+async fn automation_rules() {
+    let h = harness().await;
+    let pay = h.project("PAY");
+    let (_, admin) = h.user(&[(pay, ProjectRole::Administrator)]);
+    let (_, member) = h.user(&[(pay, ProjectRole::Member)]);
+    let (triager, _) = h.user(&[(pay, ProjectRole::Member)]);
+    let (leaver, _) = h.user(&[(pay, ProjectRole::Member)]);
+    let rules = "/api/v1/automation-rules";
+    let new_rule = |name: &str, definition: Value| json!({ "project_key": "PAY", "name": name, "definition": definition });
+
+    // Only project administrators manage rules; a closed set of types, validated.
+    let triage = new_rule(
+        "Triage new tasks",
+        json!({
+            "trigger": { "type": "issue_created" },
+            "conditions": { "issue_types": ["task"] },
+            "actions": [
+                { "type": "assign", "assignee": { "kind": "user", "user_id": triager } },
+                { "type": "set_priority", "priority": "high" },
+                { "type": "add_labels", "labels": ["Triage"] }
+            ]
+        }),
+    );
+    assert_eq!(h.call(Method::POST, rules, &member, Some(triage.clone()), None).await.status, StatusCode::FORBIDDEN);
+    let created = h.call(Method::POST, rules, &admin, Some(triage), None).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let triage_id = created.body["id"].as_str().unwrap().to_owned();
+    let script = new_rule(
+        "x",
+        json!({ "trigger": { "type": "issue_created" }, "actions": [{ "type": "run_script", "code": "rm -rf /" }] }),
+    );
+    assert_eq!(h.call(Method::POST, rules, &admin, Some(script), None).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let stranger = new_rule(
+        "x",
+        json!({ "trigger": { "type": "issue_created" }, "actions": [{ "type": "assign", "assignee": { "kind": "user", "user_id": Uuid::now_v7() } }] }),
+    );
+    assert_eq!(h.call(Method::POST, rules, &admin, Some(stranger), None).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let shipped = new_rule(
+        "Label shipped work",
+        json!({ "trigger": { "type": "issue_transitioned", "to_status": "done" }, "actions": [{ "type": "add_labels", "labels": ["shipped"] }] }),
+    );
+    assert_eq!(h.call(Method::POST, rules, &admin, Some(shipped), None).await.status, StatusCode::CREATED);
+    let list = h.call(Method::GET, &format!("{rules}?project=PAY"), &admin, None, None).await;
+    assert_eq!(list.body["items"].as_array().unwrap().len(), 2);
+    assert_eq!(h.call(Method::GET, &format!("{rules}?project=PAY"), &member, None, None).await.status, StatusCode::FORBIDDEN);
+
+    // A new task is triaged in the same request, as one more version with the rule in its history.
+    let task = h.create(&member, json!({ "project_key": "PAY", "type": "task", "summary": "Rotate keys" })).await;
+    assert_eq!(task.status, StatusCode::CREATED);
+    assert_eq!(
+        (
+            task.body["assignee_id"].as_str(),
+            task.body["priority"].as_str(),
+            task.body["labels"].clone(),
+            task.body["version"].as_i64()
+        ),
+        (Some(triager.to_string().as_str()), Some("high"), json!(["triage"]), Some(2))
+    );
+    let key = task.body["key"].as_str().unwrap().to_owned();
+    let history = h.call(Method::GET, &format!("/api/v1/issues/{key}/history"), &member, None, None).await;
+    let latest = &history.body["items"][0]["changes"];
+    assert!(latest.as_array().unwrap().iter().all(|c| c["rule"] == "Triage new tasks"), "{latest}");
+    let assigned: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE event_type = 'issue.assigned'")
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(assigned, 1, "the assignee is told, as for any assignment");
+    // Conditions: a bug is left alone.
+    let bug = h.create(&member, json!({ "project_key": "PAY", "type": "bug", "summary": "Crash" })).await;
+    assert_eq!((bug.body["priority"].as_str(), bug.body["version"].as_i64()), (Some("medium"), Some(1)));
+
+    // Moving to done fires the transition rule.
+    let done = h.call(Method::PATCH, &format!("/api/v1/issues/{key}"), &member, Some(json!({ "status": "done" })), Some(2)).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_eq!((done.body["labels"].clone(), done.body["version"].as_i64()), (json!(["triage", "shipped"]), Some(4)));
+
+    // A rule that can no longer run is skipped and recorded; the person's change still goes through.
+    let edit = json!({ "name": "Triage new tasks", "enabled": true, "definition": {
+        "trigger": { "type": "issue_created" },
+        "actions": [{ "type": "set_priority", "priority": "highest" }, { "type": "assign", "assignee": { "kind": "user", "user_id": leaver } }]
+    }});
+    let stale = h.call(Method::PUT, &format!("{rules}/{triage_id}"), &admin, Some(edit.clone()), Some(9)).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT);
+    let updated = h.call(Method::PUT, &format!("{rules}/{triage_id}"), &admin, Some(edit), Some(1)).await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.body);
+    h.world.org_members.lock().unwrap().remove(&leaver);
+    let after = h.create(&member, json!({ "project_key": "PAY", "type": "task", "summary": "After" })).await;
+    assert_eq!((after.body["priority"].as_str(), after.body["assignee_id"].as_str()), (Some("medium"), None), "all or nothing");
+    let runs = h.call(Method::GET, &format!("{rules}/{triage_id}/runs"), &admin, None, None).await;
+    let runs = runs.body["items"].as_array().unwrap();
+    assert_eq!(runs.iter().map(|r| r["outcome"].as_str().unwrap()).collect::<Vec<_>>(), ["failed", "applied"]);
+    assert!(runs[0]["detail"].as_str().unwrap().contains("no longer a member"));
+
+    // Disabled rules do nothing; deleted ones are gone, and so is their history.
+    // Saving it again is refused while it still names someone who left.
+    let off = json!({ "name": "Triage new tasks", "enabled": false, "definition": updated.body["definition"] });
+    let refused = h.call(Method::PUT, &format!("{rules}/{triage_id}"), &admin, Some(off), Some(2)).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let off = json!({ "name": "Triage new tasks", "enabled": false, "definition": {
+        "trigger": { "type": "issue_created" }, "actions": [{ "type": "set_priority", "priority": "highest" }]
+    }});
+    assert_eq!(h.call(Method::PUT, &format!("{rules}/{triage_id}"), &admin, Some(off), Some(2)).await.status, StatusCode::OK);
+    let quiet = h.create(&member, json!({ "project_key": "PAY", "type": "task", "summary": "Quiet" })).await;
+    assert_eq!(quiet.body["version"], 1);
+    assert_eq!(h.call(Method::DELETE, &format!("{rules}/{triage_id}"), &member, None, None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.call(Method::DELETE, &format!("{rules}/{triage_id}"), &admin, None, None).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.call(Method::GET, &format!("{rules}/{triage_id}/runs"), &admin, None, None).await.status, StatusCode::NOT_FOUND);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn voting() {
     let h = harness().await;
     let pay = h.project("PAY");

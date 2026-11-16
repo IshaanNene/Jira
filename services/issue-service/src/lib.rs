@@ -1,12 +1,14 @@
 //! Issue service: issue lifecycle, keys, comments, links, history, watchers.
 
 pub mod attachments;
+pub mod automation;
 pub mod custom_fields;
 pub mod directory;
 pub mod domain;
 pub mod dto;
 pub mod grpc;
 pub mod http;
+pub mod http_automation;
 pub mod http_fields;
 pub mod richtext;
 pub mod store;

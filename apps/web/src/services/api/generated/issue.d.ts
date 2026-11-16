@@ -4,6 +4,55 @@
  */
 
 export interface paths {
+    "/api/v1/automation-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update"];
+        post?: never;
+        delete: operations["delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation-rules/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the rule did recently, newest first (the latest 100). */
+        get: operations["runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/custom-fields": {
         parameters: {
             query?: never;
@@ -311,6 +360,31 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Action: {
+            assignee: components["schemas"]["Assignee"];
+            /** @enum {string} */
+            type: "assign";
+        } | {
+            priority: string;
+            /** @enum {string} */
+            type: "set_priority";
+        } | {
+            labels: string[];
+            /** @enum {string} */
+            type: "add_labels";
+        };
+        Assignee: {
+            /** @enum {string} */
+            kind: "reporter";
+        } | {
+            /** @enum {string} */
+            kind: "unassigned";
+        } | {
+            /** @enum {string} */
+            kind: "user";
+            /** Format: uuid */
+            user_id: string;
+        };
         AttachmentDto: {
             content_type: string;
             /** Format: date-time */
@@ -325,6 +399,43 @@ export interface components {
         };
         AttachmentList: {
             items: components["schemas"]["AttachmentDto"][];
+        };
+        AutomationRuleDto: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            definition: components["schemas"]["RuleDefinition"];
+            enabled: boolean;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: int64 */
+            version: number;
+        };
+        AutomationRuleList: {
+            items: components["schemas"]["AutomationRuleDto"][];
+        };
+        AutomationRunDto: {
+            /** Format: uuid */
+            actor_id: string;
+            /** Format: date-time */
+            created_at: string;
+            detail?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            issue_id: string;
+            issue_key: string;
+            /** @description `applied`, `no_change` or `failed`. */
+            outcome: string;
+        };
+        AutomationRunList: {
+            items: components["schemas"]["AutomationRunDto"][];
         };
         CloneIssueRequest: {
             /** @description Defaults to "CLONE - " and the original's summary. */
@@ -346,6 +457,19 @@ export interface components {
         };
         CommentRequest: {
             body: Record<string, never>;
+        };
+        /** @description All must hold; an empty list places no restriction. */
+        Conditions: {
+            issue_types?: string[];
+            /** @description The issue has at least one of these labels. */
+            labels_any?: string[];
+            priorities?: string[];
+        };
+        CreateAutomationRuleRequest: {
+            definition: components["schemas"]["RuleDefinition"];
+            enabled?: boolean;
+            name: string;
+            project_key: string;
         };
         CreateCustomFieldRequest: {
             field_type: string;
@@ -514,6 +638,11 @@ export interface components {
             level: number;
             name: string;
         };
+        RuleDefinition: {
+            actions: components["schemas"]["Action"][];
+            conditions?: components["schemas"]["Conditions"];
+            trigger: components["schemas"]["Trigger"];
+        };
         StatusRef: {
             /** @description todo | in_progress | done */
             category: string;
@@ -529,6 +658,20 @@ export interface components {
         };
         TransitionList: {
             items: components["schemas"]["TransitionDto"][];
+        };
+        /** @description What starts a rule. */
+        Trigger: {
+            /** @enum {string} */
+            type: "issue_created";
+        } | {
+            to_status?: string | null;
+            /** @enum {string} */
+            type: "issue_transitioned";
+        };
+        UpdateAutomationRuleRequest: {
+            definition: components["schemas"]["RuleDefinition"];
+            enabled: boolean;
+            name: string;
         };
         /** @description The field type cannot be changed after creation. */
         UpdateCustomFieldRequest: {
@@ -581,6 +724,193 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list: {
+        parameters: {
+            query: {
+                /** @description Project key. */
+                project: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationRuleList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAutomationRuleRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationRuleDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many rules */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Version the edit is based on */
+                "If-Match": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAutomationRuleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationRuleDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Edited by someone else */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationRunList"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;

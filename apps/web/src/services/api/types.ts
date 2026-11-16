@@ -60,6 +60,12 @@ export type ProjectRole = "administrator" | "member" | "viewer";
 
 export type Issue = IssueApi["IssueDto"];
 export type IssueDetail = IssueApi["IssueDetail"];
+export type AutomationRule = IssueApi["AutomationRuleDto"];
+export type AutomationRuleList = IssueApi["AutomationRuleList"];
+export type AutomationRuleDefinition = IssueApi["RuleDefinition"];
+export type AutomationAction = IssueApi["Action"];
+export type AutomationRun = IssueApi["AutomationRunDto"];
+export type AutomationRunList = IssueApi["AutomationRunList"];
 export type IssuePage = IssueApi["IssuePage"];
 export type IssueMeta = IssueApi["IssueMeta"];
 export type CreateIssueRequest = IssueApi["CreateIssueRequest"];

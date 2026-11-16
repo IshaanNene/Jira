@@ -1,7 +1,7 @@
 # issue-service
 
 **Responsibility.** Issue lifecycle: creation with safe key allocation, editing with optimistic concurrency,
-hierarchy (epic → issue → subtask), comments, links, change history, watchers, votes.
+hierarchy (epic → issue → subtask), comments, links, change history, watchers, votes, project automation rules.
 
 **API.** REST under `/api/v1/issues` — contract at `/openapi.json`. Calls project-service (`GetProject`, cached
 15 s) and user-service (assignee is an organization member).
@@ -11,6 +11,9 @@ hierarchy (epic → issue → subtask), comments, links, change history, watcher
   gap-free under concurrency (tested with 25 parallel creators).
 - *Cloning*: `POST /issues/{key}/clone` copies an issue within its project (fields, not comments, attachments or
   links), starts it in the initial status and links it `clones` → original; stale references are dropped.
+- *Automation*: `automation.rs` interprets declarative project rules (trigger, conditions, actions from a closed
+  set) inside the transaction of the change that triggers them; results are one extra issue version, recorded per
+  rule in `automation_runs`. `http_automation.rs` manages rules (project administrators only).
 - *Concurrency*: `PATCH` requires `If-Match`; the row is locked, the version compared, and a mismatch returns
   `409` with the current issue. No-op edits do not bump the version.
 - *Rich text*: descriptions and comments are structured documents validated against an allow-list of nodes,
@@ -24,7 +27,7 @@ hierarchy (epic → issue → subtask), comments, links, change history, watcher
   executables and markup refused; downloads proxied, authorized and always served as attachments.
 
 **Database.** Owns `issue_db`: `custom_fields`, `attachments`, `issues`, `project_issue_counters`, `comments`, `issue_links`, `issue_history`,
-`watchers`, `votes` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted|mentioned`,
+`watchers`, `votes`, `automation_rules`, `automation_runs` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted|mentioned`,
 `comment.created|deleted`.
 
 **Temporary.** Statuses and transitions are a fixed workflow in `domain.rs` until workflow-service (Phase 3).

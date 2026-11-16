@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Field, Input, Page, RouteTabs, Select, Skeleton, Textarea, toast } from "@/components/ui";
 import { applyServerErrors, FormError } from "@/modules/auth";
 import { can, UserChip, useUserDirectory } from "@/modules/organizations";
+import { AutomationSettings } from "@/modules/automation";
 import { ProjectWorkflowSettings } from "@/modules/workflows";
 import { ApiError, errorMessage, type Project, type ProjectRole } from "@/services/api";
 import { useSession } from "@/state/session";
@@ -41,11 +42,12 @@ export default function ProjectSettingsPage() {
 
   return (
     <Page title="Project settings" description={project.data.name}>
-      <RouteTabs tabs={[{ to: base, label: "Details", end: true }, { to: `${base}/access`, label: "Access" }, { to: `${base}/workflow`, label: "Workflow" }, { to: `${base}/components`, label: "Components" }, { to: `${base}/releases`, label: "Releases" }]} />
+      <RouteTabs tabs={[{ to: base, label: "Details", end: true }, { to: `${base}/access`, label: "Access" }, { to: `${base}/workflow`, label: "Workflow" }, { to: `${base}/automation`, label: "Automation" }, { to: `${base}/components`, label: "Components" }, { to: `${base}/releases`, label: "Releases" }]} />
       <Routes>
         <Route index element={<Details project={project.data} />} />
         <Route path="access" element={<Access project={project.data} />} />
         <Route path="workflow" element={<ProjectWorkflowSettings projectId={project.data.id} />} />
+        <Route path="automation" element={<AutomationSettings projectKey={key} projectId={project.data.id} />} />
         <Route path="components" element={<Components projectKey={key} />} />
         <Route path="releases" element={<Releases projectKey={key} />} />
       </Routes>

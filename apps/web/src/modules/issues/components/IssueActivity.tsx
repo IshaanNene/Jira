@@ -152,7 +152,7 @@ function History({ issueKey, projectKey }: { issueKey: string; projectKey: strin
     return String(value);
   };
   const describe = (entry: HistoryEntry) =>
-    (entry.changes as unknown as { field: string; from: unknown; to: unknown; custom?: boolean }[]).map((c, i) => {
+    (entry.changes as unknown as { field: string; from: unknown; to: unknown; custom?: boolean; rule?: string }[]).map((c, i) => {
       if (c.field === "created") return <div key={i}>created the issue</div>;
       if (c.field === "description") return <div key={i}>updated the <strong className="font-medium">Description</strong></div>;
       if (c.field === "link") return <div key={i}>linked this issue: {String(c.to)}</div>;
@@ -161,6 +161,7 @@ function History({ issueKey, projectKey }: { issueKey: string; projectKey: strin
         <div key={i}>
           changed <strong className="font-medium">{c.custom ? c.field : titleCase(c.field)}</strong>{" "}
           <span className="text-ink-muted">{show(c.field, c.from)}</span> → <span>{show(c.field, c.to)}</span>
+          {c.rule && <span className="text-ink-subtle"> · by automation rule “{c.rule}”</span>}
         </div>
       );
     });

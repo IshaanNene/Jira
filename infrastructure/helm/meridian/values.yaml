@@ -110,6 +110,7 @@ gateway:
     - { prefix: /api/v1/projects, service: project }
     - { prefix: /api/v1/issues, service: issue, timeout: 60s }
     - { prefix: /api/v1/custom-fields, service: issue }
+    - { prefix: /api/v1/automation-rules, service: issue }
     - { prefix: /api/v1/workflow, service: workflow }
     - { prefix: /api/v1/boards, service: agile }
     - { prefix: /api/v1/sprints, service: agile }
