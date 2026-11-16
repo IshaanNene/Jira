@@ -81,7 +81,11 @@ async fn harness() -> Harness {
         db: Arc::clone(&router),
         verifier: Arc::clone(&auth.verifier),
         tenants: provisioner.clone(),
-        settings: Arc::new(Settings { allowed_origins: vec![], web_base_url: "http://web.test".into() }),
+        settings: Arc::new(Settings {
+            allowed_origins: vec![],
+            web_base_url: "http://web.test".into(),
+            scim_base_url: "http://api.test/scim/v2".into(),
+        }),
         mail: Some(Arc::new(user_service::invite_mail::InviteMail { mailer: outbox.clone() })),
     };
     Harness { db, app: http::router(state), auth, router, provisioner, outbox }
@@ -252,7 +256,7 @@ async fn row_level_security_isolates_tenants_in_the_database() {
     let unprotected: Vec<(String,)> = sqlx::query_as(
         "SELECT c.relname::text FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' \
          WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace \
-           AND c.relname NOT IN ('outbox', 'user_org_directory', 'invitation_tokens') \
+           AND c.relname NOT IN ('outbox', 'user_org_directory', 'invitation_tokens', 'scim_token_index') \
            AND NOT (c.relrowsecurity AND c.relforcerowsecurity)",
     )
     .fetch_all(&h.db.owner)
@@ -970,5 +974,257 @@ async fn admin_actions_land_in_a_tamper_evident_audit_log() {
     assert_eq!(broken["intact"], false);
     assert_eq!(broken["broken_at"], 5);
     assert_eq!(broken["entries"], 4);
+    h.db.cleanup().await;
+}
+
+// --- SCIM provisioning -----------------------------------------------------------------------
+
+impl Harness {
+    async fn scim(&self, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> Reply {
+        let mut req = Request::builder().method(method).uri(path).header(header::CONTENT_TYPE, "application/scim+json");
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
+        let response = self.app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        if status != StatusCode::NO_CONTENT {
+            let content_type = response.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_owned());
+            assert_eq!(content_type.as_deref(), Some("application/scim+json"), "{path}");
+        }
+        let location = response.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_owned());
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        Reply { status, body: serde_json::from_slice(&bytes).unwrap_or(Value::Null), etag: location }
+    }
+
+    /// The invitation token in the last email sent to `to`.
+    fn emailed_token(&self, to: &str) -> String {
+        let mails = self.outbox.0.lock().unwrap();
+        let (_, _, text) = mails.iter().rev().find(|(addr, _, _)| addr == to).expect("an email");
+        let start = text.find("/invite/").unwrap() + "/invite/".len();
+        text[start..start + 43].to_owned()
+    }
+
+    /// Emails go out in the background: wait for at least `at_least`, then report how many.
+    async fn mails_to(&self, to: &str, at_least: usize) -> usize {
+        let count = || self.outbox.0.lock().unwrap().iter().filter(|(addr, _, _)| addr == to).count();
+        for _ in 0..50 {
+            if count() >= at_least {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        count()
+    }
+
+    async fn provisioning_token(&self, admin_token: &str) -> String {
+        let reply = self
+            .call(
+                Method::POST,
+                "/api/v1/organizations/current/provisioning/tokens",
+                Some(admin_token),
+                Some(json!({ "name": "Okta" })),
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        assert_eq!(reply.body["base_url"], "http://api.test/scim/v2");
+        reply.body["secret"].as_str().unwrap().to_owned()
+    }
+}
+
+fn scim_user(email: &str, given: &str) -> Value {
+    json!({
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": email,
+        "name": { "givenName": given, "familyName": "Example" },
+        "emails": [{ "value": email, "type": "work", "primary": true }],
+        "externalId": format!("ext-{given}"),
+        "active": true,
+    })
+}
+
+#[tokio::test]
+async fn identity_providers_provision_and_deprovision_people() {
+    let h = harness().await;
+    let (ada, grace, bob, linus, carol) =
+        (User::new("ada"), User::new("grace"), User::new("bob"), User::new("linus"), User::new("carol"));
+    let (org, tenant) = h.create_org(&ada, "Acme").await;
+    let owner = h.org_token(&ada, tenant, org, "owner");
+    h.add_member(&owner, &grace, "admin").await;
+    h.add_member(&owner, &bob, "member").await;
+    let admin = h.org_token(&grace, tenant, org, "admin");
+
+    // Only admins make provisioning tokens; the secret is shown once.
+    let as_member = h
+        .call(
+            Method::POST,
+            "/api/v1/organizations/current/provisioning/tokens",
+            Some(&h.org_token(&bob, tenant, org, "member")),
+            Some(json!({ "name": "x" })),
+            None,
+        )
+        .await;
+    assert_eq!(as_member.status, StatusCode::FORBIDDEN);
+    let token = h.provisioning_token(&admin).await;
+    assert!(token.starts_with("mscim_"));
+    let listed = h.call(Method::GET, "/api/v1/organizations/current/provisioning/tokens", Some(&admin), None, None).await;
+    assert_eq!(listed.body["items"][0]["name"], "Okta");
+    assert!(!listed.body.to_string().contains(&token[6..]), "the secret is never listed");
+
+    // Discovery needs no token; users do.
+    let config = h.scim(Method::GET, "/scim/v2/ServiceProviderConfig", None, None).await;
+    assert_eq!(config.body["patch"]["supported"], true);
+    for bad in [None, Some("mscim_nope"), Some(&*format!("mscim_{}", "A".repeat(43)))] {
+        let denied = h.scim(Method::GET, "/scim/v2/Users", bad, None).await;
+        assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(denied.body["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:Error");
+    }
+
+    // A new person is invited as a member, by email.
+    let created = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&linus.email, "Linus"))).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let linus_scim = created.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(created.etag.as_deref(), Some(&*format!("http://api.test/scim/v2/Users/{linus_scim}")));
+    assert_eq!(created.body["active"], true);
+    assert_eq!(h.mails_to(&linus.email, 1).await, 1);
+    let duplicate = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&linus.email.to_uppercase(), "L"))).await;
+    assert_eq!(duplicate.status, StatusCode::CONFLICT);
+    assert_eq!(duplicate.body["scimType"], "uniqueness");
+    let found = h
+        .scim(
+            Method::GET,
+            &format!("/scim/v2/Users?filter=userName%20eq%20%22{}%22", linus.email.to_uppercase()),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(found.body["totalResults"], 1, "{}", found.body);
+    assert_eq!(found.body["Resources"][0]["id"], linus_scim);
+    let bad_filter = h.scim(Method::GET, "/scim/v2/Users?filter=title%20sw%20%22x%22", Some(&token), None).await;
+    assert_eq!(bad_filter.body["scimType"], "invalidFilter");
+
+    // Accepting the invitation makes them the provisioned member.
+    let accepted = h
+        .call(
+            Method::POST,
+            &format!("/api/v1/invitations/{}/accept", h.emailed_token(&linus.email)),
+            Some(&h.account(&linus)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
+    let people = h.call(Method::GET, "/api/v1/organizations/current/provisioning/users", Some(&admin), None, None).await;
+    assert_eq!(people.body["items"][0]["state"], "member", "{}", people.body);
+    assert_eq!(people.body["items"][0]["user_id"], json!(linus.id));
+
+    // Microsoft Entra style deactivation suspends them; reactivation restores them.
+    let member_status = |user: Uuid| {
+        let h = &h;
+        async move {
+            let (status,): (String,) = sqlx::query_as("SELECT status FROM memberships WHERE user_id = $1")
+                .bind(user)
+                .fetch_one(&h.db.owner)
+                .await
+                .unwrap();
+            status
+        }
+    };
+    let off = json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                      "Operations": [{ "op": "Replace", "path": "active", "value": "False" }] });
+    let patched = h.scim(Method::PATCH, &format!("/scim/v2/Users/{linus_scim}"), Some(&token), Some(off.clone())).await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    assert_eq!(patched.body["active"], false);
+    assert_eq!(member_status(linus.id).await, "suspended");
+    let on = json!({ "Operations": [{ "op": "replace", "value": { "active": true } }] });
+    h.scim(Method::PATCH, &format!("/scim/v2/Users/{linus_scim}"), Some(&token), Some(on)).await;
+    assert_eq!(member_status(linus.id).await, "active");
+
+    // An existing member is linked, not invited again.
+    let bob_scim = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&bob.email, "Bob"))).await;
+    assert_eq!(bob_scim.status, StatusCode::CREATED);
+    assert_eq!(h.mails_to(&bob.email, 1).await, 1, "only the original invitation");
+    // An admin's token cannot touch the owner.
+    let ada_scim = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&ada.email, "Ada"))).await;
+    let ada_id = ada_scim.body["id"].as_str().unwrap();
+    let refused = h.scim(Method::PATCH, &format!("/scim/v2/Users/{ada_id}"), Some(&token), Some(off.clone())).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(member_status(ada.id).await, "active");
+    let refused = h.scim(Method::DELETE, &format!("/scim/v2/Users/{ada_id}"), Some(&token), None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    // Deactivating someone still invited withdraws the invitation.
+    let carol_scim = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&carol.email, "Carol"))).await;
+    assert_eq!(h.mails_to(&carol.email, 1).await, 1);
+    let carol_link = h.emailed_token(&carol.email);
+    let carol_id = carol_scim.body["id"].as_str().unwrap();
+    let put = h
+        .scim(
+            Method::PUT,
+            &format!("/scim/v2/Users/{carol_id}"),
+            Some(&token),
+            Some(json!({ "userName": carol.email, "active": false })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.body);
+    let late =
+        h.call(Method::POST, &format!("/api/v1/invitations/{carol_link}/accept"), Some(&h.account(&carol)), None, None).await;
+    assert_eq!(late.status, StatusCode::NOT_FOUND);
+    let people = h.call(Method::GET, "/api/v1/organizations/current/provisioning/users", Some(&admin), None, None).await;
+    assert_eq!(people.body["total"], 4);
+    assert!(people.body["items"].as_array().unwrap().iter().any(|p| p["state"] == "deactivated"));
+
+    // Deleting a member removes them from the workspace.
+    let deleted = h.scim(Method::DELETE, &format!("/scim/v2/Users/{linus_scim}"), Some(&token), None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.scim(Method::GET, &format!("/scim/v2/Users/{linus_scim}"), Some(&token), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM memberships WHERE user_id = $1")
+        .bind(linus.id)
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+
+    // Membership changes are attributed to the token in the audit trail.
+    let (by_token,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM outbox WHERE event_type IN ('membership.changed', 'user.invited') AND payload::text LIKE '%scim:%'",
+    )
+    .fetch_one(&h.db.owner)
+    .await
+    .unwrap();
+    assert_eq!(by_token, 5, "invite linus, suspend, reactivate, invite carol, remove linus");
+
+    // Another workspace's token sees none of this.
+    let (other_org, other_tenant) = h.create_org(&linus, "Other").await;
+    let other = h.provisioning_token(&h.org_token(&linus, other_tenant, other_org, "owner")).await;
+    assert_eq!(h.scim(Method::GET, &format!("/scim/v2/Users/{ada_id}"), Some(&other), None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.scim(Method::GET, "/scim/v2/Users", Some(&other), None).await.body["totalResults"], 0);
+
+    // The token is only as good as its creator's role, and revoking it ends it.
+    let demoted = h
+        .call(
+            Method::PATCH,
+            &format!("/api/v1/organizations/current/members/{}", grace.id),
+            Some(&owner),
+            Some(json!({ "org_role": "member" })),
+            None,
+        )
+        .await;
+    assert_eq!(demoted.status, StatusCode::OK);
+    assert_eq!(h.scim(Method::GET, "/scim/v2/Users", Some(&token), None).await.status, StatusCode::UNAUTHORIZED);
+    let owners_token = h.provisioning_token(&owner).await;
+    assert_eq!(h.scim(Method::GET, "/scim/v2/Users", Some(&owners_token), None).await.status, StatusCode::OK);
+    let tokens = h.call(Method::GET, "/api/v1/organizations/current/provisioning/tokens", Some(&owner), None, None).await;
+    let newest = tokens.body["items"][0]["id"].as_str().unwrap().to_owned();
+    let revoked = h
+        .call(Method::DELETE, &format!("/api/v1/organizations/current/provisioning/tokens/{newest}"), Some(&owner), None, None)
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.scim(Method::GET, "/scim/v2/Users", Some(&owners_token), None).await.status, StatusCode::UNAUTHORIZED);
     h.db.cleanup().await;
 }

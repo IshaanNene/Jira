@@ -1,6 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, ApiError, type MemberTwoStepList, type SaveSsoConnection, type SsoConnection, type WorkspaceApiTokenList } from "@/services/api";
+import {
+  api,
+  ApiError,
+  type CreatedProvisioningToken,
+  type MemberTwoStepList,
+  type ProvisionedUserList,
+  type ProvisioningTokenList,
+  type SaveSsoConnection,
+  type SsoConnection,
+  type WorkspaceApiTokenList,
+} from "@/services/api";
 import { useSession } from "@/state/session";
 
 const BASE = "/api/v1/auth/admin";
@@ -9,6 +19,7 @@ const keys = {
   twoStep: (orgId: string | undefined, ids: string[]) => ["org", orgId, "admin", "two-step", ids] as const,
   tokens: (orgId: string | undefined) => ["org", orgId, "admin", "api-tokens"] as const,
   sso: (orgId: string | undefined) => ["org", orgId, "admin", "sso"] as const,
+  provisioning: (orgId: string | undefined) => ["org", orgId, "admin", "provisioning"] as const,
 };
 
 /** Which of these members have two-step verification on. The server answers only for active members. */
@@ -76,6 +87,44 @@ export function useSsoConnectionMutations() {
     remove: useMutation({
       mutationFn: () => api.delete("/api/v1/auth/sso/connection"),
       onSuccess: () => qc.setQueryData(keys.sso(orgId), null),
+    }),
+  };
+}
+
+const PROVISIONING = "/api/v1/organizations/current/provisioning";
+
+/** The workspace's SCIM provisioning tokens and the base URL to give the identity provider. */
+export function useProvisioningTokens() {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: [...keys.provisioning(orgId), "tokens"],
+    queryFn: () => api.get<ProvisioningTokenList>(`${PROVISIONING}/tokens`),
+    enabled: Boolean(orgId),
+  });
+}
+
+/** People the identity provider has provisioned, and where each stands in the workspace. */
+export function useProvisionedUsers() {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: [...keys.provisioning(orgId), "users"],
+    queryFn: () => api.get<ProvisionedUserList>(`${PROVISIONING}/users`),
+    enabled: Boolean(orgId),
+  });
+}
+
+export function useProvisioningTokenMutations() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  const refresh = () => qc.invalidateQueries({ queryKey: keys.provisioning(orgId) });
+  return {
+    create: useMutation({
+      mutationFn: (name: string) => api.post<CreatedProvisioningToken>(`${PROVISIONING}/tokens`, { name }),
+      onSettled: refresh,
+    }),
+    revoke: useMutation({
+      mutationFn: (id: string) => api.delete(`${PROVISIONING}/tokens/${id}`),
+      onSettled: refresh,
     }),
   };
 }

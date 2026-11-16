@@ -4,7 +4,7 @@
 organization-creation saga (provision tenant → write organization + owner membership → compensate
 on failure).
 
-**API.** REST under `/api/v1` — contract at `/openapi.json`: `users/me`, `organizations`,
+**API.** REST under `/api/v1` — contract at `/openapi.json`: `users/me`, `organizations`, `.../provisioning/{tokens,users}`,
 `organizations/current`, `.../members`, `.../invitations` (+`/{id}/resend`), `.../audit` (+`/export`, `/verify`; admins and owners),
 `invitations/{token}` (+`/accept`).
 Internal gRPC `Membership`: `CheckMembership` for identity-service, `GetMembers` (people by id: role, status,
@@ -12,9 +12,10 @@ name, email) for notification-service, and `FindMembers` (members whose email or
 ignoring case; no partial matches) for search-service's query language.
 
 **Tenancy.** `organizations`, `memberships`, `invitations` are tenant-owned with forced row-level
-security; all access goes through `DbRouter::begin(tenant_id)`. Three small global tables exist by
-design: `user_profiles`, `user_org_directory` (which organizations a user is in) and
-`invitation_tokens` (token hash → where the invitation lives).
+security; all access goes through `DbRouter::begin(tenant_id)`. Four small global tables exist by
+design: `user_profiles`, `user_org_directory` (which organizations a user is in),
+`invitation_tokens` (token hash → where the invitation lives) and `scim_token_index` (provisioning token hash → its
+workspace).
 
 **Rules.** Admins manage non-owners; only owners touch ownership; an organization always keeps one
 active owner; the actor's role is re-read from the database on every member change; invitations are
@@ -41,7 +42,14 @@ hash chain per tenant, append-only by trigger and revoked grants, de-duplicated 
 `identity.email_changed` to `user_profiles`, only where the profile still has the previous address, so a replayed or
 out-of-date event changes nothing.
 
-**Not built yet.** Teams, departments, groups, avatars, org domains, SCIM, audit retention, bounce
+**SCIM provisioning.** `/scim/v2` (users only) for identity providers, authenticated with a workspace provisioning
+token made under `.../provisioning/tokens` (shown once, SHA-256 stored, at most 5). A token acts with the role of the
+admin who created it, re-read on each request. New people are invited as members (they join by accepting with that
+verified address), existing members are matched by address; `active: false` suspends or withdraws the invitation,
+`DELETE` removes or withdraws. Same membership rules as the app; changes are attributed to `scim:<token id>`.
+`.../provisioning/users` lists provisioned people and their state. See SECURITY_DESIGN.md §2.
+
+**Not built yet.** Teams, departments, groups, avatars, org domains, SCIM groups, audit retention, bounce
 handling for invitation emails, a limit on invitations per workspace per day.
 
 | Variable | Required | Default | Purpose |
@@ -53,6 +61,7 @@ handling for invitation emails, a limit on invitations per workspace per day.
 | `TENANT_SERVICE_GRPC_URL` | no | `http://127.0.0.1:9102` | provisioning and placement |
 | `SMTP_URL`, `EMAIL_FROM` | no | unset: invitations are not emailed; `Meridian <invitations@meridian.localhost>` | invitation email, as for notification-service |
 | `WEB_BASE_URL`, `ALLOWED_ORIGINS` | no | `http://localhost:5173` | invitation links, CORS |
+| `SCIM_BASE_URL` | no | `{WEB_BASE_URL}/scim/v2` | SCIM base URL shown to admins for their identity provider |
 | `HTTP_ADDR` / `GRPC_ADDR` | no | `127.0.0.1:8103` / `:9103` | |
 
 **Run / test / observe / image.** As for tenant-service, with `user-service`.

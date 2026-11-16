@@ -200,6 +200,54 @@ export interface paths {
         patch: operations["update"];
         trace?: never;
     };
+    "/api/v1/organizations/current/provisioning/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_tokens"];
+        put?: never;
+        post: operations["create_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/current/provisioning/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["revoke_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/current/provisioning/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_users"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/me": {
         parameters: {
             query?: never;
@@ -279,6 +327,15 @@ export interface components {
             name: string;
             /** @description URL name. Derived from `name` when omitted. */
             slug?: string | null;
+        };
+        CreateProvisioningToken: {
+            name: string;
+        };
+        CreatedProvisioningToken: {
+            base_url: string;
+            /** @description Shown once; only a hash is kept. */
+            secret: string;
+            token: components["schemas"]["ProvisioningToken"];
         };
         InvitationDto: {
             /**
@@ -361,6 +418,48 @@ export interface components {
             user_id: string;
             /** Format: int64 */
             version: number;
+        };
+        ProvisionedUser: {
+            /** @description What the identity provider says. */
+            active: boolean;
+            display_name?: string | null;
+            email: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description Where they are in the workspace: `member`, `suspended`, `invited`, `invitation_expired`,
+             *     `not_invited` (active, but their invitation was withdrawn in the app) or `deactivated`.
+             */
+            state: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: uuid */
+            user_id?: string | null;
+            user_name: string;
+        };
+        ProvisionedUserList: {
+            items: components["schemas"]["ProvisionedUser"][];
+            /** Format: int64 */
+            total: number;
+        };
+        ProvisioningToken: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            created_by_name?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            name: string;
+            /** @description The start of the token, to tell tokens apart. */
+            prefix: string;
+        };
+        ProvisioningTokenList: {
+            /** @description The SCIM base URL to give the identity provider. */
+            base_url: string;
+            items: components["schemas"]["ProvisioningToken"][];
         };
         UpdateMemberRequest: {
             /** @description owner | admin | member | guest */
@@ -897,6 +996,129 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_tokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisioningTokenList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProvisioningToken"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedProvisioningToken"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Five tokens already */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_users: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisionedUserList"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

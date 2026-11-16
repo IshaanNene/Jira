@@ -81,7 +81,8 @@ describe("public site", () => {
     render(<MemoryRouter><PricingPage /></MemoryRouter>);
     expect(screen.getByRole("note")).toHaveTextContent(/billing isn.t connected yet/i);
     const enterprise = screen.getByRole("listitem", { name: "Enterprise" });
-    expect(within(enterprise).getByText(/SAML and OIDC single sign-on/)).toBeInTheDocument();
+    expect(within(enterprise).getByText(/SAML single sign-on/)).toBeInTheDocument();
+    expect(within(enterprise).getByText("SCIM provisioning")).toBeInTheDocument();
     expect(within(enterprise).getAllByText("(coming soon)")).toHaveLength(2);
   });
 });

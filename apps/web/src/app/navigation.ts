@@ -1,4 +1,4 @@
-import { Bell, Gauge, KeySquare, FolderKanban, LayoutDashboard, GitBranch, Home, ScrollText, Settings, ShieldCheck, SlidersHorizontal, UserRound, Users, Webhook, type LucideIcon } from "lucide-react";
+import { Bell, Gauge, KeySquare, UserPlus, FolderKanban, LayoutDashboard, GitBranch, Home, ScrollText, Settings, ShieldCheck, SlidersHorizontal, UserRound, Users, Webhook, type LucideIcon } from "lucide-react";
 
 import type { OrgPermission } from "@/modules/organizations";
 
@@ -31,6 +31,7 @@ export const SETTINGS_NAV: NavItem[] = [
   { to: "/settings/workflows", label: "Workflows", icon: GitBranch },
   { to: "/settings/custom-fields", label: "Custom fields", icon: SlidersHorizontal, requires: "manageOrganization" },
   { to: "/settings/sso", label: "Single sign-on", icon: KeySquare, requires: "manageOrganization" },
+  { to: "/settings/provisioning", label: "Provisioning", icon: UserPlus, requires: "manageOrganization" },
   { to: "/settings/webhooks", label: "Webhooks", icon: Webhook, requires: "manageOrganization" },
   { to: "/settings/audit-log", label: "Audit log", icon: ScrollText, requires: "viewAuditLog" },
   { to: "/settings/profile", label: "Profile", icon: UserRound },

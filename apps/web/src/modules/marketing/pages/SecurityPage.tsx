@@ -21,7 +21,7 @@ const PRACTICES = [
   {
     icon: KeyRound,
     title: "Accounts and sign-in",
-    body: "Passwords are hashed with Argon2. Two-step verification with an authenticator app, recovery codes, and the option for admins to require it across the workspace.",
+    body: "Passwords are hashed with Argon2. Passkeys, two-step verification with an authenticator app and recovery codes, and the option for admins to require it across the workspace. Single sign-on through your OpenID Connect provider, and SCIM provisioning so people leave the workspace when they leave your company.",
   },
   {
     icon: FileLock2,
@@ -63,7 +63,7 @@ export default function SecurityPage() {
           ))}
         </ul>
       </Section>
-      <Section title="On the roadmap" intro="Not built yet, and listed here so you know: single sign-on with SAML and OIDC, SCIM provisioning, and passkeys.">
+      <Section title="On the roadmap" intro="Not built yet, and listed here so you know: single sign-on with SAML, and provisioning of groups with SCIM.">
         <Button asChild variant="primary"><Link to="/register">Get started free</Link></Button>
       </Section>
     </MarketingLayout>

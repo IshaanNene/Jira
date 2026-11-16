@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": { target: apiTarget, changeOrigin: false },
         "/rt": { target: apiTarget, changeOrigin: false, ws: true },
+        "/scim": { target: apiTarget, changeOrigin: false },
       },
     },
     build: {

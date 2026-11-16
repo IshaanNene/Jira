@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
 import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, SsoCompletePage, SsoSignInPage, VerifyEmailPage } from "@/modules/auth";
-import { AdminConsolePage, SingleSignOnPage } from "@/modules/admin";
+import { AdminConsolePage, ProvisioningPage, SingleSignOnPage } from "@/modules/admin";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { WebhooksPage } from "@/modules/integrations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
@@ -104,6 +104,7 @@ export const router = createBrowserRouter([
                       { path: "/settings/workspace", element: <OrganizationSettingsPage /> },
                       { path: "/settings/admin", element: <AdminConsolePage /> },
                       { path: "/settings/sso", element: <SingleSignOnPage /> },
+                      { path: "/settings/provisioning", element: <ProvisioningPage /> },
                       { path: "/settings/custom-fields", element: <CustomFieldsPage /> },
                       { path: "/settings/audit-log", element: <AuditLogPage /> },
                       { path: "/settings/webhooks", element: <WebhooksPage /> },

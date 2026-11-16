@@ -57,23 +57,44 @@ pub async fn create(
         .ok_or_else(|| ApiError::invalid("org_role", "unknown_role", "Role must be admin, member or guest."))?;
     check_can_invite(ctx.role, role)?;
 
-    let token = new_token();
-    let id = platform_common::new_id();
-
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let org = store::organization(tx.conn(), ctx.tenant_id).await?.ok_or(ApiError::NotFound("organization"))?;
     if store::is_member_email(tx.conn(), ctx.tenant_id, &body.email).await? {
         return Err(ApiError::Conflict("This person is already a member of the organization.".into()));
     }
-    store::revoke_expired_invitations(tx.conn(), ctx.tenant_id, &body.email).await?;
+    let (invitation, token) =
+        issue(tx.conn(), &state, ctx.tenant_id, org.id, &body.email, role, ctx.user_id, Actor::User(ctx.user_id)).await?;
+    tx.commit().await?;
+
+    let accept_url = accept_url(&state, &token);
+    email_invitation(&state, &ctx.name, &org.name, &invitation, &accept_url);
+    Ok((StatusCode::CREATED, Json(InvitationDto::new(invitation, Some(accept_url)))))
+}
+
+/// Create an invitation (role already checked) and its `user.invited` event; returns it with
+/// its secret token. A pending invitation to the same address is a 409.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn issue(
+    conn: &mut sqlx::PgConnection,
+    state: &AppState,
+    tenant_id: Uuid,
+    organization_id: Uuid,
+    email: &str,
+    role: OrgRole,
+    invited_by: Uuid,
+    actor: Actor,
+) -> ApiResult<(store::Invitation, String)> {
+    let token = new_token();
+    let id = platform_common::new_id();
+    store::revoke_expired_invitations(conn, tenant_id, email).await?;
     match store::insert_invitation(
-        tx.conn(),
+        conn,
         id,
-        ctx.tenant_id,
-        org.id,
-        &body.email,
+        tenant_id,
+        organization_id,
+        email,
         role.as_str(),
-        ctx.user_id,
+        invited_by,
         INVITATION_TTL_DAYS,
         &hash(&token),
     )
@@ -86,48 +107,44 @@ pub async fn create(
         Err(err) => return Err(err.into()),
     }
     if state.mail.is_some() {
-        store::mark_invitation_emailed(tx.conn(), ctx.tenant_id, id).await?;
+        store::mark_invitation_emailed(conn, tenant_id, id).await?;
     }
-    let (_, seq) = store::next_membership_seq(tx.conn(), ctx.tenant_id).await?;
+    let (_, seq) = store::next_membership_seq(conn, tenant_id).await?;
     outbox::enqueue(
-        tx.conn(),
+        conn,
         &EventEnvelope::new(
-            Some(ctx.tenant_id),
-            org.id,
+            Some(tenant_id),
+            organization_id,
             seq,
-            Actor::User(ctx.user_id),
+            actor,
             UserInvitedV1 {
                 invitation_id: id,
-                organization_id: org.id,
-                email: body.email.clone(),
+                organization_id,
+                email: email.to_owned(),
                 org_role: role.as_str().to_owned(),
-                invited_by: ctx.user_id,
+                invited_by,
             },
         ),
     )
     .await?;
-    let invitation = store::invitation(tx.conn(), ctx.tenant_id, id, false).await?.ok_or(NOT_FOUND)?;
-    tx.commit().await?;
-
-    let accept_url = accept_url(&state, &token);
-    email_invitation(&state, &ctx, &org.name, &invitation, &accept_url);
-    Ok((StatusCode::CREATED, Json(InvitationDto::new(invitation, Some(accept_url)))))
+    let invitation = store::invitation(conn, tenant_id, id, false).await?.ok_or(NOT_FOUND)?;
+    Ok((invitation, token))
 }
 
-fn accept_url(state: &AppState, token: &str) -> String {
+pub(crate) fn accept_url(state: &AppState, token: &str) -> String {
     format!("{}/invite/{token}", state.settings.web_base_url.trim_end_matches('/'))
 }
 
-fn email_invitation(
+pub(crate) fn email_invitation(
     state: &AppState,
-    ctx: &OrgContext,
+    inviter_name: &str,
     organization_name: &str,
     invitation: &store::Invitation,
     accept_url: &str,
 ) {
     let Some(mail) = &state.mail else { return };
     let rendered = invite_mail::render(&invite_mail::InviteEmail {
-        inviter_name: &ctx.name,
+        inviter_name,
         organization_name,
         role_label: invite_mail::role_label(&invitation.org_role),
         accept_url,
@@ -170,7 +187,7 @@ pub async fn resend(State(state): State<AppState>, ctx: OrgContext, Path(id): Pa
     tx.commit().await?;
 
     let accept_url = accept_url(&state, &token);
-    email_invitation(&state, &ctx, &org.name, &invitation, &accept_url);
+    email_invitation(&state, &ctx.name, &org.name, &invitation, &accept_url);
     tracing::info!(invitation_id = %id, "invitation renewed");
     Ok(Json(InvitationDto::new(invitation, Some(accept_url))))
 }
@@ -258,6 +275,8 @@ pub async fn accept(
     let org = store::organization(tx.conn(), tenant_id).await?.ok_or(NOT_FOUND)?;
     let joined = store::insert_membership(tx.conn(), tenant_id, org.id, auth.user_id, &invitation.org_role).await?;
     store::mark_invitation_accepted(tx.conn(), tenant_id, invitation_id, auth.user_id).await?;
+    // A person provisioned by the workspace's identity provider is now that member.
+    crate::http::scim::link_accepted(tx.conn(), tenant_id, invitation_id, auth.user_id).await?;
     if joined {
         emit_membership_changed(tx.conn(), tenant_id, auth.user_id, auth.user_id, "joined", Some(&invitation.org_role)).await?;
     }

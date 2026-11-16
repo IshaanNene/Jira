@@ -6,6 +6,7 @@ pub mod grpc;
 pub mod http;
 pub mod invite_mail;
 pub mod profile_sync;
+pub mod scim;
 pub mod store;
 pub mod tenants;
 
@@ -29,6 +30,9 @@ pub struct Settings {
     pub allowed_origins: Vec<String>,
     /// Public base URL of the web app; used to build invitation links.
     pub web_base_url: String,
+    /// Public SCIM base URL given to identity providers (`SCIM_BASE_URL`; default
+    /// `{WEB_BASE_URL}/scim/v2`, for when the web host also serves the API).
+    pub scim_base_url: String,
 }
 
 #[derive(Clone)]
@@ -72,9 +76,13 @@ impl Config {
             jwks_url: config::required("JWKS_URL")?,
             smtp: config::optional("SMTP_URL")
                 .map(|url| (url, config::or("EMAIL_FROM", "Meridian <invitations@meridian.localhost>"))),
-            settings: Settings {
-                allowed_origins: config::list("ALLOWED_ORIGINS"),
-                web_base_url: config::or("WEB_BASE_URL", "http://localhost:5173"),
+            settings: {
+                let web_base_url = config::or("WEB_BASE_URL", "http://localhost:5173");
+                Settings {
+                    allowed_origins: config::list("ALLOWED_ORIGINS"),
+                    scim_base_url: config::or("SCIM_BASE_URL", &format!("{}/scim/v2", web_base_url.trim_end_matches('/'))),
+                    web_base_url,
+                }
             },
         })
     }

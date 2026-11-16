@@ -79,7 +79,13 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET | `/organizations/current/audit` | audit log, newest first (`category`, `actor`, `from`, `to`, `limit`, `cursor`); admins and owners | ✅ |
 | GET | `/organizations/current/audit/export` | same filters as CSV (≤ 50 000 rows) | ✅ |
 | GET | `/organizations/current/audit/verify` | recompute the hash chain; first broken entry and why | ✅ |
-| … | `/scim/v2/*`, `/groups`, `/domains` | Phase 6 | ⬜ |
+| GET / POST | `/organizations/current/provisioning/tokens` | SCIM provisioning tokens (admins); the secret only in the create response, with the SCIM base URL | ✅ |
+| DELETE | `/organizations/current/provisioning/tokens/{id}` | revoke a provisioning token | ✅ |
+| GET | `/organizations/current/provisioning/users` | provisioned people and where each stands (`member`, `suspended`, `invited`, `invitation_expired`, `not_invited`, `deactivated`) | ✅ |
+| GET | `/scim/v2/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | SCIM discovery (no token needed) | ✅ |
+| GET / POST | `/scim/v2/Users` | list (`filter=userName eq "…"` and `externalId`, `emails.value`, `id`; `startIndex`, `count` ≤ 200) and provision; provisioning token, `application/scim+json` | ✅ |
+| GET / PUT / PATCH / DELETE | `/scim/v2/Users/{id}` | read, replace, patch (`add`/`replace`/`remove`), deprovision | ✅ |
+| … | `/scim/v2/Groups`, `/groups`, `/domains` | Phase 6 | ⬜ |
 
 ### Later phases (paths fixed now so the frontend router and gateway routes are stable)
 | Area | Paths |

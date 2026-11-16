@@ -111,6 +111,17 @@ static_resources:
                           route: { cluster: user, timeout: 15s }
                         - match: { prefix: /api/v1/invitations/ }
                           route: { cluster: user, timeout: 15s }
+                        # SCIM provisioning: identity providers with a workspace provisioning token, checked
+                        # by user-service (no platform JWT); a tight bucket damps token guessing.
+                        - match: { prefix: /scim/v2/ }
+                          route: { cluster: user, timeout: 15s }
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: provisioning
+                              token_bucket: { max_tokens: 20, tokens_per_fill: 10, fill_interval: 1s }
+                              filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                              filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
                         - match: { prefix: /api/v1/projects }
                           route: { cluster: project, timeout: 15s }
                         - match: { prefix: /api/v1/issues }

@@ -145,6 +145,9 @@ Cross-database references (by id, no FK): `MEMBERSHIP.user_id → ACCOUNT`, `ORG
 | `organizations` | `id`, `tenant_id UNIQUE`, `name`, `slug UNIQUE`, `logo_key`, `settings jsonb`, `security_policy jsonb`, `version` |
 | `memberships` | `(tenant_id, user_id)`, `org_role` (owner/admin/member/guest), `status` (active/suspended), `joined_at` |
 | `invitations` | `id`, `email`, `org_role`, `token_hash`, `invited_by`, `expires_at`, `accepted_at`, `revoked_at` |
+| `scim_tokens` | `id`, `name`, `prefix`, `created_by` (the token acts with this admin's current role), `last_used_at`, `revoked_at` |
+| `scim_token_index` (global) | `token_hash` → `tenant_id`, `token_id`: finds the workspace of a provisioning token, like `invitation_tokens` |
+| `scim_users` | `id` (the SCIM id), `user_name` (unique per workspace, citext), `email`, `external_id`, `display_name`, `given_name`, `family_name`, `active`, `user_id` (once a member), `invitation_id` (while invited), `version` |
 | `teams`, `team_members` | `parent_team_id`, `kind` (team/department), `lead_user_id`; member `role` (lead/member) |
 | `org_domains`, `user_groups`, `group_members`, `audit_log` | Phase 6 (audit rows hash-chained: `prev_hash`, `hash`) |
 

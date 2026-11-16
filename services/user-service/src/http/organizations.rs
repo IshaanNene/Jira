@@ -205,6 +205,17 @@ pub(super) async fn emit_membership_changed(
     change: &str,
     role: Option<&str>,
 ) -> ApiResult<()> {
+    emit_membership_changed_by(conn, tenant_id, Actor::User(actor), user_id, change, role).await
+}
+
+pub(super) async fn emit_membership_changed_by(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    actor: Actor,
+    user_id: Uuid,
+    change: &str,
+    role: Option<&str>,
+) -> ApiResult<()> {
     let (organization_id, seq) = store::next_membership_seq(conn, tenant_id).await?;
     outbox::enqueue(
         conn,
@@ -212,7 +223,7 @@ pub(super) async fn emit_membership_changed(
             Some(tenant_id),
             organization_id,
             seq,
-            Actor::User(actor),
+            actor,
             MembershipChangedV1 { organization_id, user_id, change: change.to_owned(), org_role: role.map(str::to_owned) },
         ),
     )

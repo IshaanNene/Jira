@@ -107,6 +107,9 @@ gateway:
     - { prefix: /api/v1/users, service: user }
     - { prefix: /api/v1/organizations, service: user }
     - { prefix: /api/v1/invitations/, service: user }
+    # SCIM provisioning (identity providers, with a workspace provisioning token checked by the
+    # service): no platform JWT, and the tight bucket damps token guessing.
+    - { prefix: /scim/v2/, service: user, credentials: true }
     - { prefix: /api/v1/projects, service: project }
     - { prefix: /api/v1/issues, service: issue, timeout: 60s }
     - { prefix: /api/v1/custom-fields, service: issue }

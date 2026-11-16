@@ -102,7 +102,8 @@ export const FEATURE_AREAS: FeatureArea[] = [
     summary: "Every workspace's data is isolated in the database itself, and every action is checked and recorded.",
     points: [
       "Tenant isolation enforced by row-level security",
-      "Two-step verification, which admins can require for everyone",
+      "Passkeys and two-step verification, which admins can require for everyone",
+      "Single sign-on with OpenID Connect, and SCIM provisioning from your identity provider",
       "Personal API tokens, signed outgoing webhooks and session management",
       "A tamper-evident audit log of administrative changes",
     ],
@@ -155,8 +156,16 @@ export const PLANS: Plan[] = [
     price: "Talk to us",
     cadence: "annual agreement",
     blurb: "For organisations with compliance needs.",
-    features: ["Everything in Team", "Audit log", "API tokens", "Outgoing webhooks", "Self-hosting on your Kubernetes"],
-    soon: ["SAML and OIDC single sign-on", "SCIM provisioning"],
+    features: [
+      "Everything in Team",
+      "OpenID Connect single sign-on",
+      "SCIM provisioning",
+      "Audit log",
+      "API tokens",
+      "Outgoing webhooks",
+      "Self-hosting on your Kubernetes",
+    ],
+    soon: ["SAML single sign-on", "SCIM groups"],
     cta: "Contact sales",
   },
 ];
