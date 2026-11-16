@@ -75,6 +75,10 @@ async fn harness() -> Harness {
         policy: Arc::clone(&policy),
         allowed_origins: Arc::new(vec![]),
         unsubscribe: Arc::clone(&unsubscribe),
+        webhooks: Arc::new(notification_service::webhooks::Settings {
+            secrets: notification_service::webhooks::SecretBox::derive("test-secret-for-webhooks"),
+            reach: notification_service::webhooks::Reach { allow_http: true, allow_private: true },
+        }),
     };
     let notifier = Notifier {
         db: router,

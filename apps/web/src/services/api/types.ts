@@ -114,6 +114,12 @@ type NotificationApi = NotificationComponents["schemas"];
 export type AppNotification = NotificationApi["NotificationDto"];
 export type NotificationList = NotificationApi["NotificationList"];
 export type UnreadCount = NotificationApi["UnreadCount"];
+export type Webhook = NotificationApi["WebhookDto"];
+export type WebhookList = NotificationApi["WebhookList"];
+export type WebhookWithSecret = NotificationApi["WebhookWithSecret"];
+export type WebhookEventTypeList = NotificationApi["WebhookEventTypeList"];
+export type WebhookDelivery = NotificationApi["WebhookDeliveryDto"];
+export type WebhookDeliveryList = NotificationApi["WebhookDeliveryList"];
 export type NotificationPreferences = NotificationApi["NotificationPreferences"];
 export type UnsubscribeLink = NotificationApi["UnsubscribeLink"];
 

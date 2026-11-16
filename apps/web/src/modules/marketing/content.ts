@@ -103,7 +103,7 @@ export const FEATURE_AREAS: FeatureArea[] = [
     points: [
       "Tenant isolation enforced by row-level security",
       "Two-step verification, which admins can require for everyone",
-      "Personal API tokens and session management",
+      "Personal API tokens, signed outgoing webhooks and session management",
       "A tamper-evident audit log of administrative changes",
     ],
   },
@@ -155,7 +155,7 @@ export const PLANS: Plan[] = [
     price: "Talk to us",
     cadence: "annual agreement",
     blurb: "For organisations with compliance needs.",
-    features: ["Everything in Team", "Audit log", "API tokens", "Self-hosting on your Kubernetes"],
+    features: ["Everything in Team", "Audit log", "API tokens", "Outgoing webhooks", "Self-hosting on your Kubernetes"],
     soon: ["SAML and OIDC single sign-on", "SCIM provisioning"],
     cta: "Contact sales",
   },

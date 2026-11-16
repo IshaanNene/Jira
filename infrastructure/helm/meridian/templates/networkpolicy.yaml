@@ -91,5 +91,25 @@ spec:
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
     {{- end }}
+{{- if .Values.networkPolicy.egress.webhooks }}
+---
+# Outgoing webhooks: notification-service may reach public addresses on 443 (and 80 when
+# plain-HTTP webhooks are allowed). Private ranges stay closed here as well as in the service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notification-webhooks-egress
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "meridian.selector" (dict "root" . "name" "notification") | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{ port: 443 }, { port: 80 }]
+{{- end }}
 {{- end }}
 {{- end }}

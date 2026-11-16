@@ -116,6 +116,7 @@ gateway:
     - { prefix: /api/v1/sprints, service: agile }
     - { prefix: /api/v1/rt/, service: realtime, timeout: 0s, idleTimeout: 120s }
     - { prefix: /api/v1/notifications, service: notification }
+    - { prefix: /api/v1/webhooks, service: notification }
     - { prefix: /api/v1/search, service: search }
     - { prefix: /api/v1/dashboards, service: analytics }
     - { prefix: /api/v1/analytics, service: analytics }
@@ -134,6 +135,8 @@ networkPolicy:
     # SMTP relay and object storage endpoints).
     enabled: true
     cidrs: []
+    # Let notification-service deliver outgoing webhooks to public addresses.
+    webhooks: true
 
 podDisruptionBudget: { maxUnavailable: 1 }
 

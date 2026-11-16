@@ -5,12 +5,15 @@ pub mod directory;
 pub mod domain;
 pub mod email;
 pub mod http;
+pub mod http_webhooks;
 /// Re-exported so callers keep `notification_service::mailer::…`.
 pub use smtp_mailer as mailer;
 pub mod notifier;
 pub mod sender;
 pub mod store;
 pub mod unsubscribe;
+pub mod webhook_sender;
+pub mod webhooks;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -33,6 +36,7 @@ pub struct AppState {
     pub policy: Arc<PolicyClient>,
     pub allowed_origins: Arc<Vec<String>>,
     pub unsubscribe: Arc<unsubscribe::UnsubscribeKey>,
+    pub webhooks: Arc<webhooks::Settings>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -66,6 +70,9 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let policy = Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis.clone()));
 
     let unsubscribe = Arc::new(unsubscribe::UnsubscribeKey::derive(&secret));
+    let webhook_settings =
+        Arc::new(webhooks::Settings { secrets: webhooks::SecretBox::derive(&secret), reach: webhooks::Reach::from_env() });
+    webhook_sender::spawn(db.pools(), Arc::clone(&webhook_settings));
     // Email is optional: without SMTP_URL notifications are in-app only.
     let email = match config::optional("SMTP_URL") {
         Some(url) => {
@@ -91,9 +98,16 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
                 policy: Arc::clone(&policy),
                 email,
             });
+            let dispatcher = Arc::new(webhooks::Dispatcher { db: Arc::clone(&db) });
+            let webhook_consumer = settings.clone();
             tokio::spawn(async move {
                 if let Err(error) = run_consumer(&settings, notifier::CONSUMER, &[topics::ISSUE, topics::SEARCH], handler).await {
                     tracing::error!(%error, "notification consumer stopped");
+                }
+            });
+            tokio::spawn(async move {
+                if let Err(error) = run_consumer(&webhook_consumer, webhooks::CONSUMER, &[topics::ISSUE], dispatcher).await {
+                    tracing::error!(%error, "webhook consumer stopped");
                 }
             });
         }
@@ -108,6 +122,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         policy,
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
         unsubscribe,
+        webhooks: webhook_settings,
     };
     let health = server::health_router(move || {
         let db = Arc::clone(&db);

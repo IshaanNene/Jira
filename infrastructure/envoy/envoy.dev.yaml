@@ -132,6 +132,8 @@ static_resources:
                           route: { cluster: realtime, timeout: 0s, idle_timeout: 120s }
                         - match: { prefix: /api/v1/notifications }
                           route: { cluster: notification, timeout: 15s }
+                        - match: { prefix: /api/v1/webhooks }
+                          route: { cluster: notification, timeout: 15s }
                         - match: { prefix: /api/v1/search }
                           route: { cluster: search, timeout: 15s }
                         - match: { prefix: /api/v1/dashboards }

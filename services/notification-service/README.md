@@ -28,6 +28,18 @@ are deleted after 7 days. All names and summaries are HTML-escaped and flattened
 are built only from keys of the form `ABC-123` under `APP_URL`. Addresses are never logged. Locally, Mailpit
 catches everything (inbox at http://localhost:58025).
 
+**Webhooks.** Workspace admins subscribe endpoints (`/api/v1/webhooks`) to issue and comment events, optionally for
+some projects only. A second consumer group (`notification-service.webhooks`, issue topic) queues one row per
+matching enabled webhook in `webhook_deliveries` (unique per webhook and event, so redelivery is harmless; events
+older than a day or than the webhook are skipped). A sender loop per database leases due rows like email and POSTs
+`{id, type, occurred_at, data}` with `X-Meridian-Event`, `X-Meridian-Delivery` and
+`X-Meridian-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`. Endpoints must be HTTPS; the host is resolved at
+send time, every address must be public (no loopback, private, link-local, CGNAT, metadata or IPv4-mapped
+addresses), the connection is pinned to the checked address, and redirects are not followed; 10 s timeout. Non-2xx
+answers are retried after 1, 2, 4, 8 and 16 minutes, then marked `failed`; 15 failed deliveries in a row, or one
+`410 Gone`, turn the webhook off with the reason. Signing secrets (`whsec_…`) are shown once and stored encrypted
+(AES-256-GCM, key derived from `INTERNAL_SERVICE_SECRET`). URLs and secrets are never logged.
+
 **Filter digests.** The consumer also reads `platform.search.v1`: a `filter.digest` from search-service (a
 subscribed saved filter ran) becomes one email to the subscriber listing the issues it matched, at most 20, with
 the total and a link to the filter. search-service has already limited the issues to what the subscriber can see.
@@ -65,9 +77,11 @@ see now (losing access hides them):
 | `APP_URL` | with `SMTP_URL` | base URL for links in emails |
 | `EMAIL_FROM`, `EMAIL_DELAY_SECONDS` | no | `Meridian <notifications@meridian.localhost>`, 60 |
 | `TENANT_SERVICE_GRPC_URL`, `PERMISSION_SERVICE_GRPC_URL`, `ISSUE_SERVICE_GRPC_URL`, `USER_SERVICE_GRPC_URL` | no | local ports 9102 / 9108 / 9105 / 9103 |
+| `WEBHOOKS_ALLOW_HTTP`, `WEBHOOKS_ALLOW_PRIVATE_NETWORKS` | no | unset (HTTPS to public addresses only); `true` for local development only |
 | `ALLOWED_ORIGINS`, `HTTP_ADDR` | no | –, `127.0.0.1:8110` |
 
 **Tests:** `cargo test -p notification-service` (PostgreSQL and Mailpit from `make infra`).
 
 **Not built yet.** Digests of several notifications in one email (one email per notification today); the comment text in comment emails; bounce and complaint handling from the
-mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications.
+mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications; webhooks for
+sprint, project or workflow events, delivery ordering guarantees, manual redelivery, a payload format other than the event contract.

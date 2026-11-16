@@ -289,14 +289,40 @@ pub async fn unsubscribe(
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Notifications API", version = "1.0.0", description = "The signed-in person's in-app notifications."),
-    paths(list, unread, read_one, read_all, get_preferences, put_preferences, describe_unsubscribe, unsubscribe),
+    paths(
+        list,
+        unread,
+        read_one,
+        read_all,
+        get_preferences,
+        put_preferences,
+        describe_unsubscribe,
+        unsubscribe,
+        crate::http_webhooks::event_types,
+        crate::http_webhooks::list,
+        crate::http_webhooks::create,
+        crate::http_webhooks::update,
+        crate::http_webhooks::remove,
+        crate::http_webhooks::rotate,
+        crate::http_webhooks::test,
+        crate::http_webhooks::deliveries
+    ),
     components(schemas(
         NotificationDto,
         NotificationList,
         UnreadCount,
         NotificationPreferences,
         UnsubscribeLink,
-        UnsubscribeRequest
+        UnsubscribeRequest,
+        crate::http_webhooks::WebhookDto,
+        crate::http_webhooks::WebhookList,
+        crate::http_webhooks::WebhookWithSecret,
+        crate::http_webhooks::CreateWebhookRequest,
+        crate::http_webhooks::UpdateWebhookRequest,
+        crate::http_webhooks::WebhookEventType,
+        crate::http_webhooks::WebhookEventTypeList,
+        crate::http_webhooks::WebhookDeliveryDto,
+        crate::http_webhooks::WebhookDeliveryList
     ))
 )]
 pub struct ApiDoc;
@@ -308,11 +334,12 @@ pub fn router(state: AppState) -> Router {
         .route("/notifications/read-all", post(read_all))
         .route("/notifications/preferences", get(get_preferences).put(put_preferences))
         .route("/notifications/unsubscribe", get(describe_unsubscribe).post(unsubscribe))
-        .route("/notifications/{id}/read", post(read_one));
+        .route("/notifications/{id}/read", post(read_one))
+        .merge(crate::http_webhooks::routes());
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::PUT])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
     Router::new()
         .nest("/api/v1", api)
