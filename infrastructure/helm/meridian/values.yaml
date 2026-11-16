@@ -102,7 +102,7 @@ gateway:
     limits: { memory: 512Mi }
   # Path routing to services. First match wins.
   routes:
-    - { regex: "^/api/v1/auth/(login|login/mfa|register|token/api|password/forgot|password/reset|email/verify)$", service: identity, credentials: true }
+    - { regex: "^/api/v1/auth/(login|login/mfa|register|token/api|password/forgot|password/reset|email/verify|email/change|email/change/confirm)$", service: identity, credentials: true }
     - { prefix: /api/v1/auth/, service: identity }
     - { prefix: /api/v1/users, service: user }
     - { prefix: /api/v1/organizations, service: user }

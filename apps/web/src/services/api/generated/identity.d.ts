@@ -52,6 +52,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/email/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email a link to `new_email` that moves the caller's account there. Needs the current password;
+         *     nothing changes until the link is used.
+         */
+        post: operations["change"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/change/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move the link's account to the address it was sent to, which then counts as verified. Works
+         *     signed out. The old address is told; access tokens carry the new one from the next refresh.
+         */
+        post: operations["confirm_change"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/email/verification": {
         parameters: {
             query?: never;
@@ -402,6 +442,11 @@ export interface components {
         ApiTokenList: {
             items: components["schemas"]["ApiTokenDto"][];
         };
+        ChangeEmailRequest: {
+            new_email: string;
+            /** @description The current password, so an unattended session cannot move the account. */
+            password: string;
+        };
         CodeConfirmation: {
             code: string;
         };
@@ -625,6 +670,90 @@ export interface operations {
             };
             /** @description No such token for this account */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    change: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description Link sent to the new address */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The address has an account */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid address or wrong password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Email is not set up */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    confirm_change: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailTokenRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The address has since been taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid, used or expired link */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

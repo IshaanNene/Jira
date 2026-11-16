@@ -35,7 +35,7 @@ One topic per aggregate type, so that all events of one aggregate are totally or
 
 | Topic | Event types | Key | Producers |
 |---|---|---|---|
-| `platform.identity.v1` | `identity.user_registered`, `identity.login_succeeded`, `identity.login_failed`, `identity.session_revoked` | `account_id` | identity |
+| `platform.identity.v1` | `identity.user_registered`, `identity.login_succeeded`, `identity.login_failed`, `identity.session_revoked`, `identity.email_changed` | `account_id` | identity (user-service keeps profile addresses from `identity.email_changed`) |
 | `platform.tenant.v1` | `tenant.provisioned`, `tenant.placement_changed`, `tenant.suspended` | `tenant_id` | tenant |
 | `platform.organization.v1` | `organization.created`, `organization.updated`, `organization.two_step_changed`, `user.invited`, `membership.changed`, `team.changed` | `tenant_id` | user |
 | `platform.project.v1` | `project.created`, `project.updated`, `project.archived`, `version.released` | `tenant_id:project_id` | project |

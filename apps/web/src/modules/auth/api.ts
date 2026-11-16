@@ -94,6 +94,17 @@ export function useVerifyEmail() {
   return useMutation({ mutationFn: (token: string) => api.post("/api/v1/auth/email/verify", { token }, { auth: false }) });
 }
 
+/** Emails a link to the new address; nothing changes until it is opened. */
+export function useChangeEmail() {
+  return useMutation({
+    mutationFn: (input: { new_email: string; password: string }) => api.post("/api/v1/auth/email/change", input),
+  });
+}
+
+export function useConfirmEmailChange() {
+  return useMutation({ mutationFn: (token: string) => api.post("/api/v1/auth/email/change/confirm", { token }, { auth: false }) });
+}
+
 export function useForgotPassword() {
   return useMutation({ mutationFn: (email: string) => api.post("/api/v1/auth/password/forgot", { email }, { auth: false }) });
 }

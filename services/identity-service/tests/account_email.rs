@@ -308,3 +308,77 @@ async fn without_a_mail_server_links_cannot_be_requested() {
     );
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn changing_the_address_needs_the_password_and_a_link_sent_to_the_new_one() {
+    let h = harness(true).await;
+    let (old, new) = ("ada@example.com", "ada@new.example");
+    let reply = h.post("/api/v1/auth/register", json!({ "email": old, "password": PASSWORD, "display_name": "Ada" })).await;
+    let access = reply.body["access_token"].as_str().unwrap().to_owned();
+    let verify_link = link_token(&h.mails_to(old, 1).await[0].1);
+    h.post("/api/v1/auth/register", json!({ "email": "taken@example.com", "password": PASSWORD, "display_name": "T" })).await;
+    let change = |body: Value| async { h.call(Method::POST, "/api/v1/auth/email/change", Some(body), Some(&access), None).await };
+
+    // The password, a real and different address, and one that is free.
+    assert_eq!(change(json!({ "new_email": new, "password": "wrong-password" })).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        change(json!({ "new_email": "not an address", "password": PASSWORD })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        change(json!({ "new_email": " ADA@example.com", "password": PASSWORD })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(change(json!({ "new_email": "taken@example.com", "password": PASSWORD })).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        h.call(Method::POST, "/api/v1/auth/email/change", Some(json!({ "new_email": new, "password": PASSWORD })), None, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A first request, then one for another address: only the latest link works.
+    assert_eq!(change(json!({ "new_email": "first@new.example", "password": PASSWORD })).await.status, StatusCode::ACCEPTED);
+    assert_eq!(change(json!({ "new_email": new, "password": PASSWORD })).await.status, StatusCode::TOO_MANY_REQUESTS);
+    h.age_links().await;
+    assert_eq!(change(json!({ "new_email": new, "password": PASSWORD })).await.status, StatusCode::ACCEPTED);
+    let stale = link_token(&h.mails_to("first@new.example", 1).await[0].1);
+    let mails = h.mails_to(new, 1).await;
+    assert_eq!(mails[0].0, "Confirm your new email address");
+    assert!(mails[0].1.contains("https://app.example.com/confirm-email?token="));
+    let link = link_token(&mails[0].1);
+    assert_eq!(
+        h.post("/api/v1/auth/email/change/confirm", json!({ "token": stale })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(h.mails_to(old, 2).await.len() == 1, "nothing has changed yet");
+
+    // Confirming moves the account; the old address is told, without the whole new one.
+    assert_eq!(h.post("/api/v1/auth/email/change/confirm", json!({ "token": link })).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.post("/api/v1/auth/email/change/confirm", json!({ "token": link })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let notice = h.mails_to(old, 2).await;
+    assert_eq!(notice[1].0, "Your email address was changed");
+    assert!(notice[1].1.contains("a•••@new.example") && !notice[1].1.contains(new));
+    assert_eq!(h.login(old, PASSWORD).await.status, StatusCode::UNAUTHORIZED);
+    let login = h.login(new, PASSWORD).await;
+    assert_eq!(login.status, StatusCode::OK);
+    assert_eq!(login.body["account"]["email"], new);
+    assert_eq!(verified_claim(login.body["access_token"].as_str().unwrap()), true, "the link proved the new address");
+    // Links sent to the old address died with it.
+    assert_eq!(
+        h.post("/api/v1/auth/email/verify", json!({ "token": verify_link })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Other services learn the new address, and the one it replaced.
+    let (payload,): (Value,) =
+        sqlx::query_as("SELECT payload->'payload' FROM outbox WHERE event_type = 'identity.email_changed'")
+            .fetch_one(&h.db.owner)
+            .await
+            .unwrap();
+    assert_eq!((payload["email"].as_str(), payload["previous_email"].as_str()), (Some(new), Some(old)));
+    h.db.cleanup().await;
+}

@@ -3,7 +3,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
-import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, VerifyEmailPage } from "@/modules/auth";
+import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, VerifyEmailPage } from "@/modules/auth";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
 import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notifications";
@@ -48,6 +48,7 @@ export const router = createBrowserRouter([
       // From account emails; work signed in or out.
       { path: "/verify-email", element: <VerifyEmailPage /> },
       { path: "/reset-password", element: <ResetPasswordPage /> },
+      { path: "/confirm-email", element: <ConfirmEmailChangePage /> },
       // From notification emails; works signed out.
       { path: "/unsubscribe", element: <UnsubscribePage /> },
       {

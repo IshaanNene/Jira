@@ -37,6 +37,10 @@ project, workflow, agile, issue and audit topics and appends admin-relevant even
 hash chain per tenant, append-only by trigger and revoked grants, de-duplicated by event id. See
 [SECURITY_DESIGN.md](../../docs/SECURITY_DESIGN.md) §7.
 
+**Profile addresses.** The `user-service.profiles` consumer reads the identity topic and applies
+`identity.email_changed` to `user_profiles`, only where the profile still has the previous address, so a replayed or
+out-of-date event changes nothing.
+
 **Not built yet.** Teams, departments, groups, avatars, org domains, SCIM, audit retention, bounce
 handling for invitation emails, a limit on invitations per workspace per day.
 

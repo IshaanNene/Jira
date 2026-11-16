@@ -7,7 +7,7 @@ rotation, organization-scoped token exchange, signing keys (JWKS).
 through the gateway): `register`, `login`, `token/refresh`, `token/exchange`, `logout`, `me`,
 `sessions`, `.well-known/jwks.json`, and two-step verification: `login/mfa`, `mfa`, `mfa/totp/setup`,
 `mfa/totp/confirm`, `mfa/totp/disable`, `mfa/recovery-codes`, and account email: `email/verification`
-(send a link), `email/verify`, `password/forgot`, `password/reset`. Calls user-service over gRPC (`CheckMembership`) before signing
+(send a link), `email/verify`, `password/forgot`, `password/reset`, `email/change`, `email/change/confirm`. Calls user-service over gRPC (`CheckMembership`) before signing
 an organization token.
 
 **Security notes.** Argon2id (19 MiB, t=2) off the async runtime; identical response for unknown
@@ -28,7 +28,14 @@ address verified and ends every session; two-step verification still applies at 
 keep working. Access tokens carry `email_verified`, and user-service refuses an invitation to anyone whose token
 lacks it, so registering an invited address first no longer gets anyone in. Emails go out over SMTP through the
 shared `smtp-mailer` crate; logs name the user id and the kind of link, never the address or the token. The gateway
-puts `login/mfa`, `password/forgot`, `password/reset` and `email/verify` in the tight credential bucket.
+puts `login/mfa`, `password/forgot`, `password/reset`, `email/verify` and both `email/change` routes in the tight
+credential bucket.
+
+**Changing the address.** `email/change` takes the new address and the current password and emails a link to the
+new address (the same rules as other links; asking again voids the previous change link, so only the latest address
+can be confirmed). Confirming moves the account, marks the address verified, emits `identity.email_changed` with the
+previous address, and tells the old address, showing only the first letter and domain of the new one. Links sent to
+the old address stop working with it.
 
 **Database.** Owns `identity_db`: `accounts`, `sessions`, `refresh_tokens`, `signing_keys`,
 `login_events`, `email_tokens`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `outbox`, `inbox`. Accounts are global, not tenant-owned.

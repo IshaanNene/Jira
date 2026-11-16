@@ -5,6 +5,7 @@ pub mod domain;
 pub mod grpc;
 pub mod http;
 pub mod invite_mail;
+pub mod profile_sync;
 pub mod store;
 pub mod tenants;
 
@@ -113,13 +114,23 @@ pub async fn run(config: Config, telemetry: Telemetry) -> anyhow::Result<Telemet
             use event_contracts::topics;
             let handler = Arc::new(audit::Recorder { db: Arc::clone(&db) });
             let topics = [topics::ORGANIZATION, topics::PROJECT, topics::WORKFLOW, topics::AGILE, topics::ISSUE, topics::AUDIT];
+            let profiles = Arc::new(profile_sync::ProfileSync { db: Arc::clone(&db) });
+            let identity_settings = settings.clone();
             tokio::spawn(async move {
                 if let Err(error) = event_bus::run_consumer(&settings, audit::CONSUMER, &topics, handler).await {
                     tracing::error!(%error, "audit recorder stopped");
                 }
             });
+            tokio::spawn(async move {
+                let topics = [topics::IDENTITY];
+                if let Err(error) = event_bus::run_consumer(&identity_settings, profile_sync::CONSUMER, &topics, profiles).await {
+                    tracing::error!(%error, "profile sync stopped");
+                }
+            });
         }
-        None => tracing::warn!("KAFKA_BROKERS is not set: the audit log will not be recorded"),
+        None => tracing::warn!(
+            "KAFKA_BROKERS is not set: the audit log will not be recorded and email changes will not reach profiles"
+        ),
     }
     let redis = RedisHandle::connect_in_background(&config.redis_url)?;
     let verifier = Arc::new(TokenVerifier::remote(config.token_issuer.clone(), config.jwks_url.clone())?.with_revocations(redis));

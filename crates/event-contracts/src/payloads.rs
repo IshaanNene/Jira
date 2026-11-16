@@ -40,6 +40,16 @@ pub struct SessionRevokedV1 {
 }
 payload!(SessionRevokedV1, "identity.session_revoked", 1, topics::IDENTITY, "account");
 
+/// An account moved to a new, verified address.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EmailChangedV1 {
+    pub user_id: Uuid,
+    pub email: String,
+    /// Consumers apply the change only over this address, so a replayed or stale event is a no-op.
+    pub previous_email: String,
+}
+payload!(EmailChangedV1, "identity.email_changed", 1, topics::IDENTITY, "account");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TenantProvisionedV1 {
     pub tenant_id: Uuid,

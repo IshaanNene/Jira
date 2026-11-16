@@ -4,7 +4,7 @@ import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Avatar, Button, Card, CardHeader, ErrorState, Field, Input, Page, Select, Skeleton, toast } from "@/components/ui";
-import { applyServerErrors, FormError } from "@/modules/auth";
+import { applyServerErrors, ChangeEmailDialog, FormError } from "@/modules/auth";
 import type { Profile } from "@/services/api";
 
 import { useMyProfile, useUpdateProfile } from "../api";
@@ -81,10 +81,11 @@ function ProfileForm({ profile }: { profile: Profile }) {
         <FormError message={formError} />
         <div className="flex items-center gap-3">
           <Avatar name={watch("display_name") || profile.display_name} seed={profile.user_id} size="lg" />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="truncate text-base font-medium text-ink">{profile.email}</div>
-            <div className="text-sm text-ink-subtle">Your sign-in email. It can't be changed here.</div>
+            <div className="text-sm text-ink-subtle">Your sign-in email.</div>
           </div>
+          <ChangeEmailDialog current={profile.email} />
         </div>
         <Field label="Full name" error={errors.display_name?.message}>
           <Input autoComplete="name" {...register("display_name")} />

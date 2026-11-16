@@ -3,6 +3,7 @@
 use auth_middleware::AuthContext;
 use axum::{extract::State, http::StatusCode, Json};
 use error_handling::{ApiError, ApiResult, FieldError};
+use event_contracts::{outbox, payloads::EmailChangedV1, Actor, EventEnvelope};
 use serde::Deserialize;
 use utoipa::ToSchema;
 use validator::Validate;
@@ -36,6 +37,15 @@ pub struct ResetPasswordRequest {
     /// From the link in the email.
     pub token: String,
     #[validate(length(min = 10, max = 128, message = "Password must be between 10 and 128 characters."))]
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangeEmailRequest {
+    #[validate(email(message = "Enter a valid email address."), length(max = 254, message = "Email is too long."))]
+    pub new_email: String,
+    /// The current password, so an unattended session cannot move the account.
     pub password: String,
 }
 
@@ -137,5 +147,75 @@ pub async fn reset(State(state): State<AppState>, Json(body): Json<ResetPassword
         publish_revocation(&state, *session_id).await;
     }
     tracing::info!(user_id = %account_id, sessions = sessions.len(), "password reset");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Email a link to `new_email` that moves the caller's account there. Needs the current password;
+/// nothing changes until the link is used.
+#[utoipa::path(post, path = "/api/v1/auth/email/change", request_body = ChangeEmailRequest, security(("bearer" = [])),
+    responses((status = 202, description = "Link sent to the new address"), (status = 409, description = "The address has an account"),
+        (status = 422, description = "Invalid address or wrong password"), (status = 429), (status = 503, description = "Email is not set up")))]
+pub async fn change(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(mut body): Json<ChangeEmailRequest>,
+) -> ApiResult<StatusCode> {
+    require_session(&auth)?;
+    body.new_email = normalize_email(&body.new_email);
+    body.validate()?;
+    let account = store::account_by_id(&state.pool, auth.user_id).await?.ok_or(ApiError::NotFound("account"))?;
+    if !crypto::verify_password(std::mem::take(&mut body.password), account.password_hash.clone()).await? {
+        return Err(ApiError::Validation(vec![FieldError::new("password", "incorrect", "The password is not right.")]));
+    }
+    if body.new_email == account.email {
+        return Err(ApiError::Validation(vec![FieldError::new("new_email", "unchanged", "This is already your address.")]));
+    }
+    // Registration already says when an address is taken, so saying it here reveals nothing new.
+    if store::account_by_email(&state.pool, &body.new_email).await?.is_some() {
+        return Err(ApiError::Conflict("An account with this email already exists.".into()));
+    }
+    let mail = state.mail.as_ref().ok_or(MAIL_OFF)?;
+    match account_email::issue_change(&state.pool, &account, &body.new_email).await? {
+        Ok(token) => {
+            account_email::send_to(mail, &account, Purpose::ChangeEmail, token, body.new_email);
+            Ok(StatusCode::ACCEPTED)
+        }
+        Err(wait) => Err(ApiError::RateLimited { retry_after_secs: wait.whole_seconds().max(1) as u64 }),
+    }
+}
+
+/// Move the link's account to the address it was sent to, which then counts as verified. Works
+/// signed out. The old address is told; access tokens carry the new one from the next refresh.
+#[utoipa::path(post, path = "/api/v1/auth/email/change/confirm", request_body = EmailTokenRequest,
+    responses((status = 204), (status = 409, description = "The address has since been taken"), (status = 422, description = "Invalid, used or expired link")))]
+pub async fn confirm_change(State(state): State<AppState>, Json(body): Json<EmailTokenRequest>) -> ApiResult<StatusCode> {
+    let mut tx = state.pool.begin().await?;
+    let (account_id, new_email) = account_email::consume_change(&mut tx, body.token.trim()).await?.ok_or_else(invalid_link)?;
+    let (previous_email, display_name): (String, String) =
+        sqlx::query_as("SELECT email::text, display_name FROM accounts WHERE id = $1 FOR UPDATE")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let moved = sqlx::query("UPDATE accounts SET email = $2, email_verified_at = now(), updated_at = now() WHERE id = $1")
+        .bind(account_id)
+        .bind(&new_email)
+        .execute(&mut *tx)
+        .await;
+    match moved {
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            return Err(ApiError::Conflict("Another account has started using this address. Choose a different one.".into()));
+        }
+        other => {
+            other?;
+        }
+    }
+    let changed = EmailChangedV1 { user_id: account_id, email: new_email.clone(), previous_email: previous_email.clone() };
+    outbox::enqueue(&mut tx, &EventEnvelope::new(None, account_id, 1, Actor::User(account_id), changed)).await?;
+    tx.commit().await?;
+    tracing::info!(user_id = %account_id, "email address changed");
+    if let Some(mail) = &state.mail {
+        let notice = account_email::render_changed(&display_name, &new_email);
+        account_email::deliver(mail, account_id, "email_changed", previous_email, notice);
+    }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2,7 +2,8 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { VerifyEmailBanner } from "@/modules/auth";
+import { ChangeEmailDialog, VerifyEmailBanner } from "@/modules/auth";
+import ConfirmEmailChangePage from "@/modules/auth/pages/ConfirmEmailChangePage";
 import ForgotPasswordPage from "@/modules/auth/pages/ForgotPasswordPage";
 import ResetPasswordPage from "@/modules/auth/pages/ResetPasswordPage";
 import VerifyEmailPage from "@/modules/auth/pages/VerifyEmailPage";
@@ -128,5 +129,49 @@ describe("email verification", () => {
     await waitFor(() => expect(api.calls.some((c: Call) => c.path === "/api/v1/auth/token/refresh")).toBe(true));
     expect(await screen.findByText("Verify your email address first: use the link we emailed you, then try again.")).toBeInTheDocument();
     expect(api.sent("POST", "/api/v1/invitations/inv-token/accept")).toHaveLength(2);
+  });
+});
+
+describe("changing the sign-in address", () => {
+  const WRONG = { code: "validation_failed", detail: "invalid", errors: [{ field: "password", code: "incorrect", message: "The password is not right." }] };
+
+  it("needs the password and says a link went to the new address", async () => {
+    signIn();
+    let attempts = 0;
+    const api = fakeApi({
+      "POST /api/v1/auth/email/change": () => ((attempts += 1), attempts === 1 ? { status: 422, body: WRONG } : { status: 202 }),
+    });
+    renderAt(<ChangeEmailDialog current="ada@example.com" />, "/settings/profile", "/settings/profile");
+    await userEvent.click(screen.getByRole("button", { name: "Change email" }));
+    await userEvent.type(screen.getByLabelText("New email address"), "ADA@example.com");
+    await userEvent.type(screen.getByLabelText("Current password"), "nope");
+    await userEvent.click(screen.getByRole("button", { name: "Send link" }));
+    expect(await screen.findByText("This is already your address.")).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/auth/email/change")).toHaveLength(0);
+
+    await userEvent.clear(screen.getByLabelText("New email address"));
+    await userEvent.type(screen.getByLabelText("New email address"), "Ada@New.example");
+    await userEvent.click(screen.getByRole("button", { name: "Send link" }));
+    expect(await screen.findByText("The password is not right.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Send link" }));
+    expect(await screen.findByRole("heading", { name: "Check your inbox" })).toBeInTheDocument();
+    expect(screen.getByText("ada@new.example")).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/auth/email/change")[1]!.body).toEqual({ new_email: "ada@new.example", password: "nope" });
+  });
+
+  it("confirms with the link, and explains a spent one", async () => {
+    let spent = false;
+    const api = fakeApi({
+      "POST /api/v1/auth/email/change/confirm": () => (spent ? { status: 422, body: INVALID } : ((spent = true), { status: 204 })),
+    });
+    const first = renderAt(<ConfirmEmailChangePage />, "/confirm-email", "/confirm-email?token=tok-9");
+    expect(await screen.findByRole("heading", { name: "Email changed" })).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/auth/email/change/confirm")[0]!.body).toEqual({ token: "tok-9" });
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    first.unmount();
+
+    renderAt(<ConfirmEmailChangePage />, "/confirm-email", "/confirm-email?token=tok-9");
+    expect(await screen.findByRole("heading", { name: "We couldn't change your email" })).toBeInTheDocument();
+    expect(screen.getByText(/already used or has expired/)).toBeInTheDocument();
   });
 });

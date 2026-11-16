@@ -8,6 +8,7 @@ export {
   useDisableTotp, useMfaStatus, useSendVerification, useRegenerateRecoveryCodes, useRevokeSession, useSessions, useStartTotpSetup } from "./api";
 export { AuthLayout } from "./components/AuthLayout";
 export { ResendButton, VerifyEmailBanner } from "./components/VerifyEmailBanner";
+export { ChangeEmailDialog } from "./components/ChangeEmailDialog";
 export { FormError } from "./components/FormError";
 export { applyServerErrors } from "./form-errors";
 export { safeNext, twoStepRequiredPath } from "./navigation";
@@ -18,3 +19,4 @@ export const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 export const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
 export const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
 export const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
+export const ConfirmEmailChangePage = lazy(() => import("./pages/ConfirmEmailChangePage"));

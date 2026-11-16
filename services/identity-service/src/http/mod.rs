@@ -34,6 +34,8 @@ use crate::AppState;
         account_email::verify,
         account_email::forgot,
         account_email::reset,
+        account_email::change,
+        account_email::confirm_change,
         mfa::login,
         mfa::status,
         mfa::setup,
@@ -52,6 +54,7 @@ use crate::AppState;
         account_email::EmailTokenRequest,
         account_email::ForgotPasswordRequest,
         account_email::ResetPasswordRequest,
+        account_email::ChangeEmailRequest,
         dto::LoginRequest,
         dto::RefreshRequest,
         dto::ExchangeRequest,
@@ -92,6 +95,8 @@ pub fn router(state: AppState) -> Router {
         .route("/email/verify", post(account_email::verify))
         .route("/password/forgot", post(account_email::forgot))
         .route("/password/reset", post(account_email::reset))
+        .route("/email/change", post(account_email::change))
+        .route("/email/change/confirm", post(account_email::confirm_change))
         .route("/mfa", get(mfa::status))
         .route("/mfa/totp/setup", post(mfa::setup))
         .route("/mfa/totp/confirm", post(mfa::confirm))
