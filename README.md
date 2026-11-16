@@ -373,7 +373,7 @@ a capacity claim. The full results, including what the test found, are in the
 | 3 | Workflow engine and visual designer | ✅ |
 | 4 | Boards, backlog, sprints, reports | ✅ |
 | 5 | Kafka pipeline, search, live updates, notifications | ✅ |
-| 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users and groups, admin console, automation rules (including scheduled rules that move issues and comment) and webhooks done; chat and source-control integrations still to do | 🚧 |
+| 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users and groups, admin console, automation rules (including scheduled rules that move issues and comment), webhooks, Slack channels and GitHub commits, branches and pull requests on issues | ✅ |
 | 7 | ClickHouse pipeline and dashboards | ✅ |
 | 8 | Images, Helm, CI, observability, load and failure tests done; Terraform never applied, no Argo CD | 🚧 |
 

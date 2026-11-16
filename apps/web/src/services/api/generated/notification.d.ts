@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/v1/development": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What source control has linked to an issue: commits, branches and pull requests that
+         *     mention its key. Visible to anyone who can see the issue's project.
+         */
+        get: operations["development"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications": {
         parameters: {
             query?: never;
@@ -103,6 +123,56 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["read_one"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes the connection and every link it made. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-connections/{id}/secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace the secret; deliveries signed with the old one are refused at once. */
+        post: operations["rotate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -209,16 +279,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/hooks/github/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Public: GitHub's webhook deliveries. The connection id finds the workspace; the delivery
+         *     counts only if `X-Hub-Signature-256` matches the connection's secret.
+         */
+        post: operations["github_hook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        CreateSourceConnectionRequest: {
+            name: string;
+            /** @description Keys of the projects whose issues commits, branches and pull requests may name. */
+            project_keys: string[];
+            /** @description `github`. */
+            provider: string;
+        };
         CreateWebhookRequest: {
             events: string[];
+            kind?: null | components["schemas"]["Kind"];
             name: string;
             project_ids?: string[];
             url: string;
         };
+        DevLinkDto: {
+            author?: string | null;
+            /** @description `commit`, `branch` or `pull_request`. */
+            kind: string;
+            /** Format: date-time */
+            occurred_at: string;
+            /** @description Commit SHA, branch name or pull request number. */
+            ref: string;
+            repository: string;
+            /** @description Pull requests: `open`, `closed` or `merged`. */
+            state?: string | null;
+            title: string;
+            url: string;
+        };
+        Development: {
+            /** @description Whether any source-control connection covers the issue's project. */
+            connected: boolean;
+            /** @description Newest first, at most 100. */
+            items: components["schemas"]["DevLinkDto"][];
+        };
+        HookReceipt: {
+            /** @description Links saved or refreshed. */
+            links: number;
+            /** @description What was done: `pong`, `linked`, `ignored`. */
+            result: string;
+        };
+        /**
+         * @description What a webhook delivers.
+         * @enum {string}
+         */
+        Kind: "webhook" | "slack";
         NotificationDto: {
             /** Format: uuid */
             actor_id?: string | null;
@@ -256,6 +385,31 @@ export interface components {
             email_filter_digest?: boolean;
             email_mentioned: boolean;
             email_status_changed: boolean;
+        };
+        SourceConnectionDto: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_event_at?: string | null;
+            name: string;
+            /** @description Where the provider delivers, relative to the API's address: `/hooks/github/{id}`. */
+            payload_path: string;
+            project_keys: string[];
+            /** @description `github`. */
+            provider: string;
+        };
+        SourceConnectionList: {
+            items: components["schemas"]["SourceConnectionDto"][];
+        };
+        /** @description Returned once, when a connection is made or its secret replaced. */
+        SourceConnectionWithSecret: {
+            connection: components["schemas"]["SourceConnectionDto"];
+            /** @description Entered as the webhook's secret at the provider. Not shown again. */
+            secret: string;
         };
         UnreadCount: {
             /** Format: int64 */
@@ -315,11 +469,14 @@ export interface components {
             events: string[];
             /** Format: uuid */
             id: string;
+            /** @description `webhook` (signed JSON) or `slack` (a message to a Slack channel). */
+            kind: string;
             name: string;
             /** @description Empty: every project. */
             project_ids: string[];
             /** Format: date-time */
             updated_at: string;
+            /** @description For Slack channels, only a redacted form: the URL is the credential. */
             url: string;
         };
         WebhookEventType: {
@@ -334,8 +491,11 @@ export interface components {
         };
         /** @description Returned once, when a webhook is created or its secret replaced. */
         WebhookWithSecret: {
-            /** @description Used to verify `X-Meridian-Signature`. Not shown again. */
-            secret: string;
+            /**
+             * @description Used to verify `X-Meridian-Signature`. Not shown again. Absent for Slack channels,
+             *     which are not signed.
+             */
+            secret?: string | null;
             webhook: components["schemas"]["WebhookDto"];
         };
     };
@@ -347,6 +507,34 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    development: {
+        parameters: {
+            query: {
+                /** @description Issue key, e.g. `PAY-12`. */
+                issue: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Development"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: {
@@ -525,6 +713,125 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceConnectionList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSourceConnectionRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceConnectionWithSecret"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many connections */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceConnectionWithSecret"];
+                };
             };
             404: {
                 headers: {
@@ -761,6 +1068,57 @@ export interface operations {
             };
             /** @description The webhook is off */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    github_hook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description GitHub's event payload, as GitHub signed it */
+        requestBody: {
+            content: {
+                "application/json": string;
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HookReceipt"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad or missing signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

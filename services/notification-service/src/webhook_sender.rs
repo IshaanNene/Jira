@@ -57,7 +57,16 @@ fn truncate(mut s: String) -> String {
     s
 }
 
-async fn post(url: &str, secret: &str, delivery: &Claimed, reach: Reach) -> Outcome {
+/// Where and how a delivery goes.
+struct Target {
+    slack: bool,
+    url: String,
+    /// The signing secret; empty for Slack, whose URL is the credential.
+    secret: String,
+}
+
+async fn post(target: &Target, delivery: &Claimed, reach: Reach) -> Outcome {
+    let (url, secret) = (target.url.as_str(), target.secret.as_str());
     let Ok(url) = Url::parse(url) else { return Outcome::Retry(None, "The URL is not valid.".into()) };
     let addr = match webhooks::resolve(&url, reach).await {
         Ok(addr) => addr,
@@ -78,18 +87,19 @@ async fn post(url: &str, secret: &str, delivery: &Claimed, reach: Reach) -> Outc
     };
     let body = serde_json::to_vec(&delivery.body).unwrap_or_default();
     let now = OffsetDateTime::now_utc().unix_timestamp();
-    let result = client
-        .post(url)
-        .header("content-type", "application/json")
-        .header("x-meridian-event", &delivery.event_type)
-        .header("x-meridian-delivery", delivery.id.to_string())
-        .header("x-meridian-signature", webhooks::signature(secret, now, &body))
-        .body(body)
-        .send()
-        .await;
+    let mut request = client.post(url).header("content-type", "application/json");
+    if !target.slack {
+        request = request
+            .header("x-meridian-event", &delivery.event_type)
+            .header("x-meridian-delivery", delivery.id.to_string())
+            .header("x-meridian-signature", webhooks::signature(secret, now, &body));
+    }
+    let result = request.body(body).send().await;
     match result {
         Ok(resp) if resp.status().is_success() => Outcome::Delivered(resp.status().as_u16()),
         Ok(resp) if resp.status() == StatusCode::GONE => Outcome::Gone,
+        // Slack answers 404 (`no_service`) for an incoming webhook that was removed.
+        Ok(resp) if target.slack && resp.status() == StatusCode::NOT_FOUND => Outcome::Gone,
         Ok(resp) if resp.status().is_redirection() => {
             Outcome::Retry(Some(resp.status().as_u16()), "The endpoint redirected; redirects are not followed.".into())
         }
@@ -147,13 +157,20 @@ async fn health(pool: &PgPool, tenant_id: Uuid, webhook_id: Uuid, success: bool,
     tx.commit().await
 }
 
-/// The webhook's URL and secret if it is still on.
-async fn target(pool: &PgPool, secrets: &SecretBox, tenant_id: Uuid, webhook_id: Uuid) -> sqlx::Result<Option<(String, String)>> {
+/// Where the webhook delivers, if it is still on.
+async fn target(pool: &PgPool, secrets: &SecretBox, tenant_id: Uuid, webhook_id: Uuid) -> sqlx::Result<Option<Target>> {
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('app.tenant_id', $1, true)").bind(tenant_id.to_string()).execute(&mut *tx).await?;
     let hook = webhooks::get(&mut tx, tenant_id, webhook_id).await?;
     tx.commit().await?;
-    Ok(hook.filter(|h| h.enabled).and_then(|h| secrets.open(&h.secret_sealed).map(|s| (h.url, s))))
+    Ok(hook.filter(|h| h.enabled).and_then(|h| {
+        let sealed = secrets.open(&h.secret_sealed)?;
+        Some(if h.kind == webhooks::Kind::Slack.as_str() {
+            Target { slack: true, url: sealed, secret: String::new() }
+        } else {
+            Target { slack: false, url: h.url, secret: sealed }
+        })
+    }))
 }
 
 /// Deliver what is due on this database; returns how many rows were handled.
@@ -171,11 +188,11 @@ pub async fn run_once(pool: &PgPool, secrets: &SecretBox, reach: Reach) -> sqlx:
     .await?;
 
     for d in &claimed {
-        let Some((url, secret)) = target(pool, secrets, d.tenant_id, d.webhook_id).await? else {
+        let Some(target) = target(pool, secrets, d.tenant_id, d.webhook_id).await? else {
             finish(pool, d.id, "skipped", None, Some("The webhook was turned off.")).await?;
             continue;
         };
-        match post(&url, &secret, d, reach).await {
+        match post(&target, d, reach).await {
             Outcome::Delivered(status) => {
                 finish(pool, d.id, "delivered", Some(status), None).await?;
                 health(pool, d.tenant_id, d.webhook_id, true, false).await?;

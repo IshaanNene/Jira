@@ -1,4 +1,5 @@
-//! `/api/v1/webhooks`: workspace administrators manage outgoing webhooks.
+//! `/api/v1/webhooks`: workspace administrators manage outgoing webhooks, including Slack
+//! channels (kind `slack`).
 
 use auth_middleware::{OrgContext, OrgPermission};
 use axum::{
@@ -15,7 +16,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    webhooks::{self, Webhook, EVENTS, MAX_PROJECTS, MAX_WEBHOOKS, PING},
+    webhooks::{self, Kind, Webhook, EVENTS, MAX_PROJECTS, MAX_WEBHOOKS, PING},
     AppState,
 };
 
@@ -24,7 +25,10 @@ const NOT_FOUND: ApiError = ApiError::NotFound("webhook");
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WebhookDto {
     pub id: Uuid,
+    /// `webhook` (signed JSON) or `slack` (a message to a Slack channel).
+    pub kind: String,
     pub name: String,
+    /// For Slack channels, only a redacted form: the URL is the credential.
     pub url: String,
     pub events: Vec<String>,
     /// Empty: every project.
@@ -46,6 +50,7 @@ impl From<Webhook> for WebhookDto {
     fn from(w: Webhook) -> Self {
         Self {
             id: w.id,
+            kind: w.kind,
             name: w.name,
             url: w.url,
             events: w.events,
@@ -69,13 +74,17 @@ pub struct WebhookList {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WebhookWithSecret {
     pub webhook: WebhookDto,
-    /// Used to verify `X-Meridian-Signature`. Not shown again.
-    pub secret: String,
+    /// Used to verify `X-Meridian-Signature`. Not shown again. Absent for Slack channels,
+    /// which are not signed.
+    pub secret: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateWebhookRequest {
+    /// Default `webhook`.
+    #[serde(default)]
+    pub kind: Option<Kind>,
     pub name: String,
     pub url: String,
     pub events: Vec<String>,
@@ -157,10 +166,30 @@ fn projects(mut list: Vec<Uuid>) -> ApiResult<Vec<Uuid>> {
     Ok(list)
 }
 
-fn url(state: &AppState, raw: &str) -> ApiResult<String> {
-    webhooks::validate_url(raw, state.webhooks.reach)
-        .map(String::from)
-        .map_err(|why| ApiError::invalid("url", "invalid_url", why))
+/// What is stored for an endpoint URL of `kind`: `(url column, sealed secret)`. A Slack URL
+/// is the credential, so it is sealed and only a redacted form kept in the clear; any other
+/// webhook gets a new signing secret (returned so it can be shown once).
+fn endpoint(state: &AppState, kind: Kind, raw: &str) -> ApiResult<(String, Vec<u8>, Option<String>)> {
+    let invalid = |why| ApiError::invalid("url", "invalid_url", why);
+    match kind {
+        Kind::Webhook => {
+            let url = webhooks::validate_url(raw, state.webhooks.reach).map_err(invalid)?;
+            let secret = webhooks::new_secret();
+            Ok((url.to_string(), state.webhooks.secrets.seal(&secret), Some(secret)))
+        }
+        Kind::Slack => {
+            let url = webhooks::validate_slack_url(raw, state.webhooks.reach).map_err(invalid)?;
+            Ok((webhooks::redact(&url), state.webhooks.secrets.seal(url.as_str()), None))
+        }
+    }
+}
+
+fn kind_of(hook: &Webhook) -> Kind {
+    if hook.kind == Kind::Slack.as_str() {
+        Kind::Slack
+    } else {
+        Kind::Webhook
+    }
 }
 
 fn admin(ctx: &OrgContext) -> ApiResult<()> {
@@ -194,9 +223,9 @@ pub async fn create(
     Json(body): Json<CreateWebhookRequest>,
 ) -> ApiResult<(StatusCode, Json<WebhookWithSecret>)> {
     admin(&ctx)?;
-    let (name, url, events, projects) =
-        (name(&body.name)?, url(&state, &body.url)?, events(body.events)?, projects(body.project_ids)?);
-    let secret = webhooks::new_secret();
+    let kind = body.kind.unwrap_or(Kind::Webhook);
+    let (name, events, projects) = (name(&body.name)?, events(body.events)?, projects(body.project_ids)?);
+    let (url, sealed, secret) = endpoint(&state, kind, &body.url)?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM webhooks WHERE tenant_id = $1").bind(ctx.tenant_id).fetch_one(tx.conn()).await?;
@@ -204,8 +233,8 @@ pub async fn create(
         return Err(ApiError::Conflict(format!("A workspace can have at most {MAX_WEBHOOKS} webhooks.")));
     }
     let hook: Webhook = sqlx::query_as(&format!(
-        "INSERT INTO webhooks (id, tenant_id, name, url, events, project_ids, secret_sealed, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {}",
+        "INSERT INTO webhooks (id, tenant_id, name, url, events, project_ids, secret_sealed, created_by, kind) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {}",
         webhooks::WEBHOOK
     ))
     .bind(platform_common::new_id())
@@ -214,8 +243,9 @@ pub async fn create(
     .bind(&url)
     .bind(&events)
     .bind(&projects)
-    .bind(state.webhooks.secrets.seal(&secret))
+    .bind(sealed)
     .bind(ctx.user_id)
+    .bind(kind.as_str())
     .fetch_one(tx.conn())
     .await?;
     tx.commit().await?;
@@ -232,12 +262,29 @@ pub async fn update(
 ) -> ApiResult<Json<WebhookDto>> {
     admin(&ctx)?;
     let name = body.name.as_deref().map(name).transpose()?;
-    let url = body.url.as_deref().map(|u| url(&state, u)).transpose()?;
     let events = body.events.map(events).transpose()?;
     let projects = body.project_ids.map(projects).transpose()?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let current = webhooks::get(tx.conn(), ctx.tenant_id, id).await?.ok_or(NOT_FOUND)?;
+    // A new URL for a Slack channel is a new credential: sealed like the first. A signed
+    // webhook keeps its signing secret.
+    let (url, sealed) = match body.url.as_deref() {
+        None => (None, None),
+        Some(raw) => match kind_of(&current) {
+            Kind::Slack => {
+                let (url, sealed, _) = endpoint(&state, Kind::Slack, raw)?;
+                (Some(url), Some(sealed))
+            }
+            Kind::Webhook => {
+                let url = webhooks::validate_url(raw, state.webhooks.reach)
+                    .map_err(|why| ApiError::invalid("url", "invalid_url", why))?;
+                (Some(url.to_string()), None)
+            }
+        },
+    };
     let hook: Option<Webhook> = sqlx::query_as(&format!(
         "UPDATE webhooks SET name = COALESCE($3, name), url = COALESCE($4, url), events = COALESCE($5, events), \
+                secret_sealed = COALESCE($8, secret_sealed), \
                 project_ids = COALESCE($6, project_ids), enabled = COALESCE($7, enabled), \
                 disabled_reason = CASE WHEN $7 THEN NULL ELSE disabled_reason END, \
                 consecutive_failures = CASE WHEN $7 THEN 0 ELSE consecutive_failures END, updated_at = now() \
@@ -251,6 +298,7 @@ pub async fn update(
     .bind(events)
     .bind(projects)
     .bind(body.enabled)
+    .bind(sealed)
     .fetch_optional(tx.conn())
     .await?;
     tx.commit().await?;
@@ -280,6 +328,10 @@ pub async fn rotate(State(state): State<AppState>, ctx: OrgContext, Path(id): Pa
     admin(&ctx)?;
     let secret = webhooks::new_secret();
     let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let current = webhooks::get(tx.conn(), ctx.tenant_id, id).await?.ok_or(NOT_FOUND)?;
+    if kind_of(&current) == Kind::Slack {
+        return Err(ApiError::Conflict("Slack channels are not signed; paste a new channel URL instead.".into()));
+    }
     let hook: Option<Webhook> = sqlx::query_as(&format!(
         "UPDATE webhooks SET secret_sealed = $3, updated_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING {}",
         webhooks::WEBHOOK
@@ -290,7 +342,7 @@ pub async fn rotate(State(state): State<AppState>, ctx: OrgContext, Path(id): Pa
     .fetch_optional(tx.conn())
     .await?;
     tx.commit().await?;
-    Ok(Json(WebhookWithSecret { webhook: hook.ok_or(NOT_FOUND)?.into(), secret }))
+    Ok(Json(WebhookWithSecret { webhook: hook.ok_or(NOT_FOUND)?.into(), secret: Some(secret) }))
 }
 
 /// Queue a `webhook.ping` delivery, to check the endpoint and its signature handling.
@@ -304,7 +356,7 @@ pub async fn test(State(state): State<AppState>, ctx: OrgContext, Path(id): Path
         return Err(ApiError::Conflict("Turn the webhook on before sending a test.".into()));
     }
     let event_id = platform_common::new_id();
-    let body = webhooks::body(event_id, PING, OffsetDateTime::now_utc(), &json!({ "webhook_id": hook.id }));
+    let body = webhooks::body_for(&hook.kind, event_id, PING, OffsetDateTime::now_utc(), &json!({ "webhook_id": hook.id }), None);
     webhooks::enqueue(tx.conn(), ctx.tenant_id, hook.id, event_id, PING, &body).await?;
     tx.commit().await?;
     Ok(StatusCode::ACCEPTED)

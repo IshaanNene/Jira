@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ afterEach(() => {
 const hook = (overrides: Partial<Webhook> = {}): Webhook => ({
   id: "w1",
   name: "Deploy bot",
+  kind: "webhook",
   url: "https://hooks.example.com/meridian",
   events: ["issue.created"],
   project_ids: [],
@@ -67,7 +68,35 @@ describe("webhooks", () => {
       url: "https://ci.example.com/hook",
       events: ["issue.created", "comment.created"],
       project_ids: [],
+      kind: "webhook",
     });
+  });
+
+  it("connects a Slack channel without a secret, and never shows its URL back", async () => {
+    signIn("admin");
+    const slack = hook({ id: "s1", name: "Team channel", kind: "slack", url: "https://hooks.slack.com/…WXYZ" });
+    const api = fakeApi(routes([], {
+      "POST /api/v1/webhooks": () => ({ status: 201, body: { webhook: slack, secret: null } }),
+    }));
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /new webhook/i }));
+    const dialog = await screen.findByRole("dialog", { name: "New webhook" });
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Slack channel" }));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Team channel");
+    await userEvent.type(within(dialog).getByLabelText(/Slack webhook URL/), "https://hooks.slack.com/services/T0/B0/abcWXYZ");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect channel" }));
+    await waitFor(() => expect(api.sent("POST", "/api/v1/webhooks")).toHaveLength(1));
+    expect(api.sent("POST", "/api/v1/webhooks")[0]!.body).toMatchObject({ kind: "slack", url: "https://hooks.slack.com/services/T0/B0/abcWXYZ" });
+    expect(screen.queryByRole("dialog", { name: "Signing secret" })).not.toBeInTheDocument();
+  });
+
+  it("marks Slack channels and offers no signing secret for them", async () => {
+    signIn("admin");
+    fakeApi(routes([hook({ kind: "slack", url: "https://hooks.slack.com/…WXYZ" })]));
+    show();
+    const list = await screen.findByRole("list", { name: "Webhooks" });
+    expect(within(list).getByText("Slack")).toBeInTheDocument();
+    expect(within(list).queryByRole("button", { name: "New secret" })).not.toBeInTheDocument();
   });
 
   it("explains why the service turned a webhook off, and turns it back on", async () => {

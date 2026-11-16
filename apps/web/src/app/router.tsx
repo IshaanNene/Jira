@@ -6,7 +6,7 @@ import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
 import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, SsoCompletePage, SsoSignInPage, VerifyEmailPage } from "@/modules/auth";
 import { AdminConsolePage, ProvisioningPage, SingleSignOnPage } from "@/modules/admin";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
-import { WebhooksPage } from "@/modules/integrations";
+import { SourceControlPage, WebhooksPage } from "@/modules/integrations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
 import { NotificationSettingsPage, UnsubscribePage } from "@/modules/notifications";
 import { SearchPage } from "@/modules/search";
@@ -108,6 +108,7 @@ export const router = createBrowserRouter([
                       { path: "/settings/custom-fields", element: <CustomFieldsPage /> },
                       { path: "/settings/audit-log", element: <AuditLogPage /> },
                       { path: "/settings/webhooks", element: <WebhooksPage /> },
+                      { path: "/settings/source-control", element: <SourceControlPage /> },
                       { path: "/settings/workflows", element: <WorkflowsPage /> },
                       { path: "/settings/profile", element: <ProfilePage /> },
                       { path: "/settings/notifications", element: <NotificationSettingsPage /> },

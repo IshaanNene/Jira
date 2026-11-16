@@ -3,6 +3,7 @@ import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, ErrorState, Skeleton, toast } from "@/components/ui";
+import { DevelopmentPanel } from "@/modules/integrations";
 import { roleAtLeast, useProject } from "@/modules/projects";
 import { ApiError, errorMessage, type IssueDetail, type RichDoc } from "@/services/api";
 import { cn } from "@/utils/cn";
@@ -54,6 +55,7 @@ export default function IssuePage() {
           <Attachments issue={data} canEdit={canEdit} canModerate={roleAtLeast(data.my_role, "administrator")} />
           <ChildIssues issue={data} canEdit={canEdit} />
           <LinkedIssues issue={data} canEdit={canEdit} />
+          <DevelopmentPanel issueKey={data.key} />
           <IssueActivity issue={data} canComment={canEdit} canModerate={roleAtLeast(data.my_role, "administrator")} />
         </div>
         <aside className="space-y-3">

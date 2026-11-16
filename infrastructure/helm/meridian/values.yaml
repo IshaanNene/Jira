@@ -122,6 +122,11 @@ gateway:
     - { prefix: /api/v1/rt/, service: realtime, timeout: 0s, idleTimeout: 120s }
     - { prefix: /api/v1/notifications, service: notification }
     - { prefix: /api/v1/webhooks, service: notification }
+    - { prefix: /api/v1/source-connections, service: notification }
+    - { prefix: /api/v1/development, service: notification }
+    # Source-control deliveries (GitHub), signed with the connection's secret and checked by
+    # the service: no platform JWT, and the tight bucket.
+    - { prefix: /hooks/, service: notification, credentials: true }
     - { prefix: /api/v1/search, service: search }
     - { prefix: /api/v1/dashboards, service: analytics }
     - { prefix: /api/v1/analytics, service: analytics }

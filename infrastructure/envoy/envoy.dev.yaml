@@ -155,6 +155,21 @@ static_resources:
                           route: { cluster: notification, timeout: 15s }
                         - match: { prefix: /api/v1/webhooks }
                           route: { cluster: notification, timeout: 15s }
+                        - match: { prefix: /api/v1/source-connections }
+                          route: { cluster: notification, timeout: 15s }
+                        - match: { prefix: /api/v1/development }
+                          route: { cluster: notification, timeout: 15s }
+                        # Source-control deliveries (GitHub): no platform JWT; each is signed with the
+                        # connection's secret and checked by notification-service. A tight bucket.
+                        - match: { prefix: /hooks/ }
+                          route: { cluster: notification, timeout: 15s }
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: hooks
+                              token_bucket: { max_tokens: 50, tokens_per_fill: 25, fill_interval: 1s }
+                              filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                              filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
                         - match: { prefix: /api/v1/search }
                           route: { cluster: search, timeout: 15s }
                         - match: { prefix: /api/v1/dashboards }

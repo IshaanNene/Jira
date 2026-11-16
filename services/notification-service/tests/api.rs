@@ -79,6 +79,7 @@ async fn harness() -> Harness {
             secrets: notification_service::webhooks::SecretBox::derive("test-secret-for-webhooks"),
             reach: notification_service::webhooks::Reach { allow_http: true, allow_private: true },
         }),
+        projects: Arc::new(NoProjects),
     };
     let notifier = Notifier {
         db: router,
@@ -669,4 +670,13 @@ async fn filter_digests_are_emailed_to_active_subscribers_who_want_them() {
     deliver_digest(&h, t, ada, 3, time::Duration::ZERO).await;
     assert_eq!(h.deliveries().await.len(), 1);
     h.db.cleanup().await;
+}
+
+struct NoProjects;
+
+#[async_trait::async_trait]
+impl notification_service::projects::Projects for NoProjects {
+    async fn id_of(&self, _tenant_id: Uuid, _key: &str) -> error_handling::ApiResult<Option<Uuid>> {
+        Ok(None)
+    }
 }

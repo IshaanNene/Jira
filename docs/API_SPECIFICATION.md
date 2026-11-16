@@ -103,7 +103,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | Notifications ✅ | `/notifications` (`?unread=true`), `/notifications/unread-count`, `/notifications/{id}/read`, `/notifications/read-all`, `/notifications/preferences` (GET/PUT email choices), `/notifications/unsubscribe?token=` (public, GET describes / POST turns off; RFC 8058) |
 | Realtime ✅ | `GET /rt/stream?channel=project:{id}\|user:{id}\|org` (Server-Sent Events: `ready`, `change`, `resync`, `expired`, `denied`; resume with `Last-Event-ID`) |
 | Automation ✅ | `/automation-rules?project=` (GET, POST), `/automation-rules/{id}` (PUT with `If-Match`, DELETE), `/automation-rules/{id}/runs` (latest 100); project administrators only |
-| Integrations | `/integrations`, `/webhooks`, `/webhooks/{id}/deliveries`, `/hooks/{provider}` (inbound) |
+| Integrations ✅ | `/webhooks` (GET, POST with `kind`: `webhook` or `slack`), `/webhooks/events`, `/webhooks/{id}` (PATCH, DELETE), `/webhooks/{id}/secret` (signed webhooks only), `/webhooks/{id}/test`, `/webhooks/{id}/deliveries`; `/source-connections` (GET, POST), `/source-connections/{id}` (DELETE), `/source-connections/{id}/secret`; workspace admins and owners only. `GET /development?issue=KEY` (people who can browse the project). Inbound, outside `/api/v1` and its JWT filter: `POST /hooks/github/{id}` (authenticated by `X-Hub-Signature-256`) |
 | Analytics ✅ | `/dashboards` (GET, POST), `/dashboards/{id}` (GET, PATCH name / description / shared / `widget_order`, DELETE), `/dashboards/{id}/widgets` (POST), `/dashboards/{id}/widgets/{widget_id}` (PATCH, DELETE), `POST /analytics/query` (a widget query → its numbers; 503 when ClickHouse is down) |
 | Jobs | `/imports`, `/exports`, `/jobs/{id}` |
 

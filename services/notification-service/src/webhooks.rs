@@ -1,5 +1,7 @@
 //! Outgoing webhooks: a workspace's administrators subscribe an HTTPS endpoint to the
-//! workspace's events, and each matching event is POSTed to it, signed.
+//! workspace's events, and each matching event is POSTed to it, signed. A webhook of kind
+//! `slack` instead posts a short message to a Slack channel through the channel's incoming
+//! webhook; that URL is the credential, so it is stored sealed and shown only redacted.
 //!
 //! Safety: endpoints must be HTTPS on public addresses. The host is resolved at delivery
 //! time, every address it resolves to must be public, and the request is pinned to the
@@ -67,6 +69,25 @@ pub struct Settings {
     pub reach: Reach,
 }
 
+/// What a webhook delivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Signed JSON to any HTTPS endpoint.
+    Webhook,
+    /// A message to a Slack channel's incoming webhook.
+    Slack,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Webhook => "webhook",
+            Kind::Slack => "slack",
+        }
+    }
+}
+
 // --- addresses ---------------------------------------------------------------------
 
 pub use platform_common::net::is_public;
@@ -99,6 +120,33 @@ pub fn validate_url(raw: &str, reach: Reach) -> Result<Url, &'static str> {
         }
     }
     Ok(url)
+}
+
+/// Check a Slack incoming-webhook URL: in production, `https://hooks.slack.com/services/…`
+/// and nothing else (development and tests may point it at a local receiver).
+pub fn validate_slack_url(raw: &str, reach: Reach) -> Result<Url, &'static str> {
+    const WRONG: &str = "Paste the channel's incoming webhook URL, https://hooks.slack.com/services/…";
+    let url = validate_url(raw, reach).map_err(|_| WRONG)?;
+    if reach.allow_private {
+        return Ok(url);
+    }
+    let path_ok = url.path().starts_with("/services/") && url.path().len() > "/services/".len();
+    if url.scheme() != "https"
+        || url.host_str() != Some("hooks.slack.com")
+        || url.port().is_some()
+        || !path_ok
+        || url.query().is_some()
+    {
+        return Err(WRONG);
+    }
+    Ok(url)
+}
+
+/// What is shown for a Slack webhook's URL: the host and the last four characters.
+pub fn redact(url: &Url) -> String {
+    let path = url.path();
+    let tail: String = path.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{}://{}/…{tail}", url.scheme(), url.host_str().unwrap_or_default())
 }
 
 fn literal_ip(url: &Url) -> Option<IpAddr> {
@@ -191,11 +239,70 @@ pub fn body(event_id: Uuid, event_type: &str, occurred_at: OffsetDateTime, data:
     })
 }
 
+// --- Slack messages --------------------------------------------------------------------
+
+/// Escape text for Slack's mrkdwn: `&`, `<` and `>` are control characters there, so a
+/// summary can never become a link, a mention or `@channel`.
+pub fn slack_escape(text: &str) -> String {
+    let flat: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    flat.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn readable(status: &str) -> String {
+    let words = status.replace('_', " ");
+    let mut chars = words.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+}
+
+/// The message posted to Slack for an event: one line, the issue key linked when the app's
+/// address is configured. Names of people are left out: events carry only their ids.
+pub fn slack_message(event_type: &str, data: &Value, app_url: Option<&str>) -> Value {
+    let field = |name: &str| data.get(name).and_then(Value::as_str).unwrap_or_default();
+    let key = field("key");
+    // Keys are `PROJECT-123`; anything else is not linked.
+    let well_formed = key.split_once('-').is_some_and(|(p, n)| {
+        !p.is_empty() && p.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) && n.parse::<u64>().is_ok()
+    });
+    let issue = match (app_url, well_formed) {
+        (Some(base), true) => format!("<{base}/issues/{key}|{key}>"),
+        _ => format!("*{}*", slack_escape(key)),
+    };
+    let text = match event_type {
+        "issue.created" => format!("{issue} was created: {}", slack_escape(field("summary"))),
+        "issue.updated" => {
+            let fields: Vec<String> = data
+                .get("changed_fields")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(|f| slack_escape(&f.replace('_', " "))).collect())
+                .unwrap_or_default();
+            if fields.is_empty() {
+                format!("{issue} was updated")
+            } else {
+                format!("{issue} was updated: {}", fields.join(", "))
+            }
+        }
+        "issue.transitioned" => format!(
+            "{issue} moved from {} to {}",
+            slack_escape(&readable(field("from_status"))),
+            slack_escape(&readable(field("to_status")))
+        ),
+        "issue.assigned" if data.get("assignee_id").is_some_and(Value::is_null) => format!("{issue} was unassigned"),
+        "issue.assigned" => format!("{issue} was assigned"),
+        "issue.deleted" => format!("{} was deleted", slack_escape(key)),
+        "comment.created" => format!("New comment on {issue}"),
+        "comment.deleted" => format!("A comment on {issue} was deleted"),
+        PING => "Meridian is connected to this channel.".to_owned(),
+        other => format!("{} on {issue}", slack_escape(other)),
+    };
+    json!({ "text": text })
+}
+
 // --- storage -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, FromRow)]
 pub struct Webhook {
     pub id: Uuid,
+    pub kind: String,
     pub name: String,
     pub url: String,
     pub events: Vec<String>,
@@ -209,7 +316,8 @@ pub struct Webhook {
     pub updated_at: OffsetDateTime,
 }
 
-pub const WEBHOOK: &str = "id, name, url, events, project_ids, secret_sealed, enabled, disabled_reason, consecutive_failures, \
+pub const WEBHOOK: &str =
+    "id, kind, name, url, events, project_ids, secret_sealed, enabled, disabled_reason, consecutive_failures, \
                            created_by, created_at, updated_at";
 
 pub async fn list(conn: &mut PgConnection, tenant_id: Uuid) -> sqlx::Result<Vec<Webhook>> {
@@ -257,6 +365,24 @@ pub async fn enqueue(
 /// subscribes to it (and to its project, when limited), created before the event happened.
 pub struct Dispatcher {
     pub db: Arc<DbRouter>,
+    /// The web app's address, for links in Slack messages; none links nothing.
+    pub app_url: Option<String>,
+}
+
+/// What a webhook of `kind` is sent for an event.
+pub fn body_for(
+    kind: &str,
+    event_id: Uuid,
+    event_type: &str,
+    occurred_at: OffsetDateTime,
+    data: &Value,
+    app_url: Option<&str>,
+) -> Value {
+    if kind == Kind::Slack.as_str() {
+        slack_message(event_type, data, app_url)
+    } else {
+        body(event_id, event_type, occurred_at, data)
+    }
 }
 
 pub fn project_of(payload: &Value) -> Option<Uuid> {
@@ -290,8 +416,15 @@ impl Handler for Dispatcher {
         }
         let project = project_of(&envelope.payload);
         let hooks = list(tx.conn(), tenant_id).await?;
-        let body = body(event.event_id(), event_type, envelope.occurred_at, &envelope.payload);
         for hook in hooks.iter().filter(|h| wants(h, event_type, project, envelope.occurred_at)) {
+            let body = body_for(
+                &hook.kind,
+                event.event_id(),
+                event_type,
+                envelope.occurred_at,
+                &envelope.payload,
+                self.app_url.as_deref(),
+            );
             enqueue(tx.conn(), tenant_id, hook.id, event.event_id(), event_type, &body).await?;
         }
         tx.commit().await?;
@@ -371,5 +504,47 @@ mod tests {
         assert_ne!(s, signature("whsec_abc", 1_700_000_001, b"{\"a\":1}"));
         assert_ne!(s, signature("whsec_abc", 1_700_000_000, b"{\"a\":2}"));
         assert_ne!(s, signature("whsec_abd", 1_700_000_000, b"{\"a\":1}"));
+    }
+
+    #[test]
+    fn slack_urls_are_slack_only_and_shown_redacted() {
+        let strict = Reach::default();
+        let ok = validate_slack_url("https://hooks.slack.com/services/T000/B000/XXXXabcd", strict).unwrap();
+        assert_eq!(redact(&ok), "https://hooks.slack.com/…abcd");
+        for bad in [
+            "https://hooks.slack.com.evil.example/services/T/B/X",
+            "https://example.com/services/T/B/X",
+            "http://hooks.slack.com/services/T/B/X",
+            "https://hooks.slack.com/api/chat.postMessage",
+            "https://hooks.slack.com/services/",
+            "https://hooks.slack.com:8443/services/T/B/X",
+            "https://hooks.slack.com/services/T/B/X?redirect=1",
+        ] {
+            assert!(validate_slack_url(bad, strict).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn slack_messages_escape_everything_they_did_not_write() {
+        let created = slack_message(
+            "issue.created",
+            &json!({ "key": "PAY-12", "summary": "<!channel> & <https://evil|click>" }),
+            Some("https://meridian.example"),
+        );
+        assert_eq!(
+            created["text"],
+            "<https://meridian.example/issues/PAY-12|PAY-12> was created: &lt;!channel&gt; &amp; &lt;https://evil|click&gt;"
+        );
+        let moved = slack_message(
+            "issue.transitioned",
+            &json!({ "key": "PAY-1", "from_status": "in_progress", "to_status": "done" }),
+            None,
+        );
+        assert_eq!(moved["text"], "*PAY-1* moved from In progress to Done");
+        let odd = slack_message("comment.created", &json!({ "key": "<x|y>" }), Some("https://m.example"));
+        assert_eq!(odd["text"], "New comment on *&lt;x|y&gt;*", "only well-formed keys are linked");
+        let updated =
+            slack_message("issue.updated", &json!({ "key": "PAY-2", "changed_fields": ["story_points", "labels"] }), None);
+        assert_eq!(updated["text"], "*PAY-2* was updated: story points, labels");
     }
 }

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui";
 import { can } from "@/modules/organizations";
 import { useProjects } from "@/modules/projects";
-import { errorMessage, type Webhook } from "@/services/api";
+import { errorMessage, type Webhook, type WebhookKind } from "@/services/api";
 import { useSession } from "@/state/session";
 import { formatRelative } from "@/utils/format";
 
@@ -49,7 +49,7 @@ function Webhooks() {
   return (
     <Page
       title="Webhooks"
-      description="Send issue and comment events to other systems as they happen. Each request is signed with the webhook's secret."
+      description="Send issue and comment events to Slack channels or other systems as they happen. Each request to a webhook is signed with its secret."
       actions={<Button variant="primary" onClick={() => setEditing("new")}><Plus className="h-4 w-4" aria-hidden /> New webhook</Button>}
     >
       <Card>
@@ -58,7 +58,7 @@ function Webhooks() {
         ) : hooks.isError ? (
           <ErrorState error={hooks.error} onRetry={() => void hooks.refetch()} />
         ) : hooks.data.length === 0 ? (
-          <EmptyState icon={WebhookIcon} title="No webhooks yet" description="Connect chat, CI or your own services: they receive a signed POST for each event you choose." />
+          <EmptyState icon={WebhookIcon} title="No webhooks yet" description="Post to a Slack channel, or connect CI and your own services: they receive a signed POST for each event you choose." />
         ) : (
           <ul className="divide-y divide-line" aria-label="Webhooks">
             {hooks.data.map((hook) => (
@@ -66,6 +66,7 @@ function Webhooks() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-ink">{hook.name}</span>
+                    {hook.kind === "slack" && <Badge tone="neutral">Slack</Badge>}
                     {hook.enabled ? <Badge tone="success">On</Badge> : <Badge tone={hook.disabled_reason ? "danger" : "neutral"}>Off</Badge>}
                   </div>
                   <p className="truncate font-mono text-xs text-ink-muted">{hook.url}</p>
@@ -93,17 +94,17 @@ function Webhooks() {
                 >
                   <Send className="h-4 w-4" aria-hidden />
                 </Button>
-                <Button
+                {hook.kind !== "slack" && <Button
                   size="sm"
                   variant="ghost"
                   onClick={() => {
                     if (window.confirm(`Replace the signing secret of "${hook.name}"? The current secret stops working at once.`)) {
-                      rotate.mutate(hook.id, { onSuccess: (r) => setSecret({ name: hook.name, secret: r.secret }), onError: fail("Couldn't replace the secret") });
+                      rotate.mutate(hook.id, { onSuccess: (r) => r.secret && setSecret({ name: hook.name, secret: r.secret }), onError: fail("Couldn't replace the secret") });
                     }
                   }}
                 >
                   New secret
-                </Button>
+                </Button>}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -124,7 +125,7 @@ function Webhooks() {
         <WebhookDialog
           hook={editing === "new" ? null : editing}
           onClose={() => setEditing(null)}
-          onCreated={(name, s) => setSecret({ name, secret: s })}
+          onCreated={(name, s) => (s ? setSecret({ name, secret: s }) : toast.success("Channel connected", `${name} now gets the events you chose.`))}
         />
       )}
       {logOf && <DeliveriesDialog hook={logOf} onClose={() => setLogOf(null)} />}
@@ -147,17 +148,20 @@ function SigningHelp() {
   );
 }
 
-function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onClose: () => void; onCreated: (name: string, secret: string) => void }) {
+function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onClose: () => void; onCreated: (name: string, secret: string | null) => void }) {
   const { create, update } = useWebhookMutations();
   const events = useWebhookEvents();
   const projects = useProjects();
   const [input, setInput] = useState<WebhookInput>({
     name: hook?.name ?? "",
-    url: hook?.url ?? "https://",
+    // A Slack channel's address is a credential: it is never shown again, only replaced.
+    url: hook?.kind === "slack" ? "" : (hook?.url ?? "https://"),
+    kind: hook ? (hook.kind as WebhookKind) : "webhook",
     events: hook?.events ?? ["issue.created"],
     project_ids: hook?.project_ids ?? [],
   });
   const [error, setError] = useState<string | null>(null);
+  const slack = input.kind === "slack";
   const toggle = (name: string) =>
     setInput({ ...input, events: input.events.includes(name) ? input.events.filter((e) => e !== name) : [...input.events, name] });
 
@@ -165,12 +169,16 @@ function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onC
     e.preventDefault();
     setError(null);
     const onError = (err: unknown) => setError(errorMessage(err));
-    if (hook) update.mutate({ id: hook.id, ...input }, { onSuccess: onClose, onError });
+    if (hook) {
+      // The kind is fixed once made; an empty Slack URL keeps the stored one.
+      const { name, events, project_ids, url } = input;
+      update.mutate({ id: hook.id, name, events, project_ids, ...(url.trim() ? { url } : {}) }, { onSuccess: onClose, onError });
+    }
     else
       create.mutate(input, {
         onSuccess: (r) => {
           onClose();
-          onCreated(r.webhook.name, r.secret);
+          onCreated(r.webhook.name, r.secret ?? null);
         },
         onError,
       });
@@ -183,9 +191,36 @@ function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onC
           <Field label="Name">
             <Input value={input.name} maxLength={100} onChange={(e) => setInput({ ...input, name: e.target.value })} placeholder="e.g. Deploy bot" />
           </Field>
-          <Field label="Endpoint URL" hint="HTTPS, on a public address.">
-            <Input value={input.url} maxLength={2000} onChange={(e) => setInput({ ...input, url: e.target.value })} />
-          </Field>
+          {!hook && (
+            <fieldset>
+              <legend className="text-sm font-medium text-ink">Send to</legend>
+              <div className="mt-2 flex gap-4 text-sm">
+                {KINDS.map((k) => (
+                  <label key={k.value} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="kind"
+                      checked={input.kind === k.value}
+                      onChange={() => setInput({ ...input, kind: k.value, url: k.value === "slack" ? "" : "https://" })}
+                    />
+                    {k.label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
+          {slack ? (
+            <Field
+              label="Slack webhook URL"
+              hint={hook ? `Now ${hook.url}. Leave empty to keep it.` : "From a Slack app's Incoming Webhooks page: https://hooks.slack.com/services/…"}
+            >
+              <Input value={input.url} maxLength={2000} autoComplete="off" onChange={(e) => setInput({ ...input, url: e.target.value })} />
+            </Field>
+          ) : (
+            <Field label="Endpoint URL" hint="HTTPS, on a public address.">
+              <Input value={input.url} maxLength={2000} onChange={(e) => setInput({ ...input, url: e.target.value })} />
+            </Field>
+          )}
           <fieldset>
             <legend className="text-sm font-medium text-ink">Events</legend>
             <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
@@ -213,8 +248,8 @@ function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onC
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="primary" disabled={!input.name.trim() || input.events.length === 0} loading={create.isPending || update.isPending}>
-              {hook ? "Save" : "Create webhook"}
+            <Button type="submit" variant="primary" disabled={!input.name.trim() || input.events.length === 0 || (!hook && !input.url.trim())} loading={create.isPending || update.isPending}>
+              {hook ? "Save" : slack ? "Connect channel" : "Create webhook"}
             </Button>
           </DialogFooter>
         </form>
@@ -222,6 +257,11 @@ function WebhookDialog({ hook, onClose, onCreated }: { hook: Webhook | null; onC
     </Dialog>
   );
 }
+
+const KINDS: { value: WebhookKind; label: string }[] = [
+  { value: "webhook", label: "Webhook" },
+  { value: "slack", label: "Slack channel" },
+];
 
 function SecretDialog({ name, secret, onClose }: { name: string; secret: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);

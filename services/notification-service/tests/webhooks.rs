@@ -69,6 +69,7 @@ fn state(db: &PgPool, auth: &TestAuth, reach: Reach) -> AppState {
         allowed_origins: Arc::new(vec![]),
         unsubscribe: Arc::new(notification_service::unsubscribe::UnsubscribeKey::derive(SECRET)),
         webhooks: Arc::new(Settings { secrets: SecretBox::derive(SECRET), reach }),
+        projects: Arc::new(NoProjects),
     }
 }
 
@@ -84,7 +85,7 @@ async fn harness() -> Harness {
     Harness {
         app: http::router(state(&db.app, &auth, dev)),
         strict: http::router(state(&db.app, &auth, Reach::default())),
-        dispatcher: Dispatcher { db: Arc::new(DbRouter::single(db.app.clone())) },
+        dispatcher: Dispatcher { db: Arc::new(DbRouter::single(db.app.clone())), app_url: None },
         db,
         auth,
         receiver,
@@ -283,4 +284,13 @@ async fn webhooks_deliver_signed_events_to_subscribed_endpoints() {
     let left: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_deliveries").fetch_one(&h.db.owner).await.unwrap();
     assert_eq!(left, 0);
     h.db.cleanup().await;
+}
+
+struct NoProjects;
+
+#[async_trait::async_trait]
+impl notification_service::projects::Projects for NoProjects {
+    async fn id_of(&self, _tenant_id: Uuid, _key: &str) -> error_handling::ApiResult<Option<Uuid>> {
+        Ok(None)
+    }
 }

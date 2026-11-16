@@ -5,11 +5,14 @@ pub mod directory;
 pub mod domain;
 pub mod email;
 pub mod http;
+pub mod http_source;
 pub mod http_webhooks;
 /// Re-exported so callers keep `notification_service::mailer::…`.
 pub use smtp_mailer as mailer;
 pub mod notifier;
+pub mod projects;
 pub mod sender;
+pub mod source;
 pub mod store;
 pub mod unsubscribe;
 pub mod webhook_sender;
@@ -37,6 +40,7 @@ pub struct AppState {
     pub allowed_origins: Arc<Vec<String>>,
     pub unsubscribe: Arc<unsubscribe::UnsubscribeKey>,
     pub webhooks: Arc<webhooks::Settings>,
+    pub projects: Arc<dyn projects::Projects>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -60,6 +64,9 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let permission = config::or("PERMISSION_SERVICE_GRPC_URL", "http://127.0.0.1:9108");
     let issue = config::or("ISSUE_SERVICE_GRPC_URL", "http://127.0.0.1:9105");
     let user = config::or("USER_SERVICE_GRPC_URL", "http://127.0.0.1:9103");
+    let project = config::or("PROJECT_SERVICE_GRPC_URL", "http://127.0.0.1:9104");
+    // Links in Slack messages; optional.
+    let app_url = config::optional("APP_URL").map(|u| u.trim_end_matches('/').to_owned());
 
     let db = Arc::new(DbRouter::new(
         pools_from_env(&PoolSettings::from_env()?)?,
@@ -98,7 +105,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
                 policy: Arc::clone(&policy),
                 email,
             });
-            let dispatcher = Arc::new(webhooks::Dispatcher { db: Arc::clone(&db) });
+            let dispatcher = Arc::new(webhooks::Dispatcher { db: Arc::clone(&db), app_url: app_url.clone() });
             let webhook_consumer = settings.clone();
             tokio::spawn(async move {
                 if let Err(error) = run_consumer(&settings, notifier::CONSUMER, &[topics::ISSUE, topics::SEARCH], handler).await {
@@ -123,6 +130,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
         unsubscribe,
         webhooks: webhook_settings,
+        projects: Arc::new(projects::GrpcProjects::new(&project, &secret)?),
     };
     let health = server::health_router(move || {
         let db = Arc::clone(&db);

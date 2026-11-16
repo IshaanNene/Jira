@@ -288,7 +288,11 @@ pub async fn unsubscribe(
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "Notifications API", version = "1.0.0", description = "The signed-in person's in-app notifications."),
+    info(
+        title = "Notifications API",
+        version = "1.0.0",
+        description = "The signed-in person's in-app notifications, outgoing webhooks and Slack channels, and source-control links."
+    ),
     paths(
         list,
         unread,
@@ -305,7 +309,13 @@ pub async fn unsubscribe(
         crate::http_webhooks::remove,
         crate::http_webhooks::rotate,
         crate::http_webhooks::test,
-        crate::http_webhooks::deliveries
+        crate::http_webhooks::deliveries,
+        crate::http_source::list,
+        crate::http_source::create,
+        crate::http_source::remove,
+        crate::http_source::rotate,
+        crate::http_source::github_hook,
+        crate::http_source::development
     ),
     components(schemas(
         NotificationDto,
@@ -322,7 +332,15 @@ pub async fn unsubscribe(
         crate::http_webhooks::WebhookEventType,
         crate::http_webhooks::WebhookEventTypeList,
         crate::http_webhooks::WebhookDeliveryDto,
-        crate::http_webhooks::WebhookDeliveryList
+        crate::http_webhooks::WebhookDeliveryList,
+        crate::webhooks::Kind,
+        crate::http_source::SourceConnectionDto,
+        crate::http_source::SourceConnectionList,
+        crate::http_source::SourceConnectionWithSecret,
+        crate::http_source::CreateSourceConnectionRequest,
+        crate::http_source::DevLinkDto,
+        crate::http_source::Development,
+        crate::http_source::HookReceipt
     ))
 )]
 pub struct ApiDoc;
@@ -335,7 +353,8 @@ pub fn router(state: AppState) -> Router {
         .route("/notifications/preferences", get(get_preferences).put(put_preferences))
         .route("/notifications/unsubscribe", get(describe_unsubscribe).post(unsubscribe))
         .route("/notifications/{id}/read", post(read_one))
-        .merge(crate::http_webhooks::routes());
+        .merge(crate::http_webhooks::routes())
+        .merge(crate::http_source::routes());
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
@@ -343,6 +362,7 @@ pub fn router(state: AppState) -> Router {
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
     Router::new()
         .nest("/api/v1", api)
+        .merge(crate::http_source::hook_routes())
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .layer(cors)
         .with_state(state)

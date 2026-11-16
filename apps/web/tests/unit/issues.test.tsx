@@ -84,6 +84,38 @@ describe("IssueListPage", () => {
 });
 
 describe("IssuePage", () => {
+  it("lists the pull requests, branches and commits that mention the issue, when a repository is connected", async () => {
+    signIn();
+    const api = fakeApi(issueRoutes(detail(), {
+      "GET /api/v1/development": {
+        connected: true,
+        items: [
+          { kind: "pull_request", repository: "acme/pay", ref: "7", title: "PAY-1 retry saved cards", url: "https://github.com/acme/pay/pull/7", state: "merged", author: "grace", occurred_at: "2026-01-02T00:00:00Z" },
+          { kind: "branch", repository: "acme/pay", ref: "pay-1-retry", title: "pay-1-retry", url: "https://github.com/acme/pay/tree/pay-1-retry", state: null, author: null, occurred_at: "2026-01-01T12:00:00Z" },
+          { kind: "commit", repository: "acme/pay", ref: "0123456789abcdef0123456789abcdef01234567", title: "Fix PAY-1", url: "https://github.com/acme/pay/commit/0123456789abcdef0123456789abcdef01234567", state: null, author: "grace", occurred_at: "2026-01-01T00:00:00Z" },
+        ],
+      },
+    }));
+    renderIssue();
+    const panel = await screen.findByRole("region", { name: "Development" });
+    expect(api.sent("GET", "/api/v1/development")[0]!.query.get("issue")).toBe("PAY-1");
+    const pr = within(panel).getByRole("link", { name: /PAY-1 retry saved cards/ });
+    expect(pr).toHaveAttribute("href", "https://github.com/acme/pay/pull/7");
+    expect(pr).toHaveAttribute("rel", "noopener noreferrer");
+    expect(within(panel).getByText("Merged")).toBeInTheDocument();
+    expect(within(panel).getByText("0123456")).toBeInTheDocument();
+    expect(within(panel).getByText("#7")).toBeInTheDocument();
+  });
+
+  it("shows no development panel when no repository is connected", async () => {
+    signIn();
+    const api = fakeApi(issueRoutes(detail(), { "GET /api/v1/development": { connected: false, items: [] } }));
+    renderIssue();
+    expect(await screen.findByLabelText("Summary")).toBeInTheDocument();
+    await waitFor(() => expect(api.sent("GET", "/api/v1/development")).toHaveLength(1));
+    expect(screen.queryByRole("region", { name: "Development" })).not.toBeInTheDocument();
+  });
+
   it("shows the issue and only the custom fields that apply to it", async () => {
     signIn();
     fakeApi(issueRoutes(detail({ custom_fields: { f1: "Globex" } })));

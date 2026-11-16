@@ -1,6 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, type Webhook, type WebhookDeliveryList, type WebhookEventTypeList, type WebhookList, type WebhookWithSecret } from "@/services/api";
+import {
+  api,
+  type Development,
+  type SourceConnectionList,
+  type SourceConnectionWithSecret,
+  type Webhook,
+  type WebhookDeliveryList,
+  type WebhookEventTypeList,
+  type WebhookKind,
+  type WebhookList,
+  type WebhookWithSecret,
+} from "@/services/api";
 import { useSession } from "@/state/session";
 
 const BASE = "/api/v1/webhooks";
@@ -36,6 +47,8 @@ export interface WebhookInput {
   url: string;
   events: string[];
   project_ids: string[];
+  /** Only when creating: what the endpoint is. */
+  kind?: WebhookKind;
 }
 
 export function useWebhookMutations() {
@@ -55,4 +68,39 @@ export function useWebhookMutations() {
       onSettled: (_d, _e, id) => qc.invalidateQueries({ queryKey: keys.deliveries(orgId, id) }),
     }),
   };
+}
+
+const SOURCES = "/api/v1/source-connections";
+const sourceKeys = (orgId: string | undefined) => ["org", orgId, "source-connections"] as const;
+
+export function useSourceConnections() {
+  const orgId = useOrgId();
+  return useQuery({ queryKey: sourceKeys(orgId), queryFn: () => api.get<SourceConnectionList>(SOURCES), select: (d) => d.items, enabled: Boolean(orgId) });
+}
+
+export interface SourceConnectionInput {
+  provider: "github";
+  name: string;
+  project_keys: string[];
+}
+
+export function useSourceConnectionMutations() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  const refresh = () => qc.invalidateQueries({ queryKey: sourceKeys(orgId) });
+  return {
+    create: useMutation({ mutationFn: (input: SourceConnectionInput) => api.post<SourceConnectionWithSecret>(SOURCES, input), onSettled: refresh }),
+    remove: useMutation({ mutationFn: (id: string) => api.delete(`${SOURCES}/${id}`), onSettled: refresh }),
+    rotate: useMutation({ mutationFn: (id: string) => api.post<SourceConnectionWithSecret>(`${SOURCES}/${id}/secret`), onSettled: refresh }),
+  };
+}
+
+/** Commits, branches and pull requests that name the issue. */
+export function useDevelopment(issueKey: string) {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: ["org", orgId, "development", issueKey],
+    queryFn: () => api.get<Development>("/api/v1/development", { query: { issue: issueKey } }),
+    enabled: Boolean(orgId && issueKey),
+  });
 }

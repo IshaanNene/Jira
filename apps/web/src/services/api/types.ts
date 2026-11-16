@@ -139,6 +139,12 @@ export type WebhookWithSecret = NotificationApi["WebhookWithSecret"];
 export type WebhookEventTypeList = NotificationApi["WebhookEventTypeList"];
 export type WebhookDelivery = NotificationApi["WebhookDeliveryDto"];
 export type WebhookDeliveryList = NotificationApi["WebhookDeliveryList"];
+export type WebhookKind = NotificationApi["Kind"];
+export type SourceConnection = NotificationApi["SourceConnectionDto"];
+export type SourceConnectionList = NotificationApi["SourceConnectionList"];
+export type SourceConnectionWithSecret = NotificationApi["SourceConnectionWithSecret"];
+export type DevLink = NotificationApi["DevLinkDto"];
+export type Development = NotificationApi["Development"];
 export type NotificationPreferences = NotificationApi["NotificationPreferences"];
 export type UnsubscribeLink = NotificationApi["UnsubscribeLink"];
 
