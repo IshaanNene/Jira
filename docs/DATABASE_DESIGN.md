@@ -147,7 +147,9 @@ Cross-database references (by id, no FK): `MEMBERSHIP.user_id → ACCOUNT`, `ORG
 | `invitations` | `id`, `email`, `org_role`, `token_hash`, `invited_by`, `expires_at`, `accepted_at`, `revoked_at` |
 | `scim_tokens` | `id`, `name`, `prefix`, `created_by` (the token acts with this admin's current role), `last_used_at`, `revoked_at` |
 | `scim_token_index` (global) | `token_hash` → `tenant_id`, `token_id`: finds the workspace of a provisioning token, like `invitation_tokens` |
-| `scim_users` | `id` (the SCIM id), `user_name` (unique per workspace, citext), `email`, `external_id`, `display_name`, `given_name`, `family_name`, `active`, `user_id` (once a member), `invitation_id` (while invited), `version` |
+| `scim_users` | `id` (the SCIM id), `user_name` (unique per workspace, citext), `email`, `external_id`, `display_name`, `given_name`, `family_name`, `active`, `user_id` (once a member), `invitation_id` (while invited), `version`, `group_role` (what groups last decided; null when no group with a role holds them) |
+| `scim_groups` | `id`, `display_name` (unique per workspace, citext), `external_id`, `org_role` (set by an admin: `admin`, `member`, `guest` or null), `version` |
+| `scim_group_members` | `group_id`, `scim_user_id` (both cascade on delete) |
 | `teams`, `team_members` | `parent_team_id`, `kind` (team/department), `lead_user_id`; member `role` (lead/member) |
 | `org_domains`, `user_groups`, `group_members`, `audit_log` | Phase 6 (audit rows hash-chained: `prev_hash`, `hash`) |
 

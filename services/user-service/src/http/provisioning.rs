@@ -1,7 +1,8 @@
-//! Admin side of SCIM provisioning: the workspace's provisioning tokens, and who has been
-//! provisioned. The protocol endpoints themselves are in `scim.rs`.
+//! Admin side of SCIM provisioning: the workspace's provisioning tokens, who has been
+//! provisioned, and the roles given to the provider's groups. The protocol endpoints
+//! themselves are in `scim.rs`.
 
-use auth_middleware::{OrgContext, OrgPermission};
+use auth_middleware::{OrgContext, OrgPermission, OrgRole};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -17,7 +18,7 @@ use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::scim::{token_hash, TOKEN_PREFIX};
+use super::scim::{sync_roles, token_hash, Acting, TOKEN_PREFIX};
 use crate::AppState;
 
 /// Most active provisioning tokens per workspace.
@@ -70,6 +71,8 @@ pub struct ProvisionedUser {
     /// `not_invited` (active, but their invitation was withdrawn in the app) or `deactivated`.
     pub state: String,
     pub user_id: Option<Uuid>,
+    /// The role their groups give them, when any of their groups has one.
+    pub group_role: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
@@ -210,6 +213,7 @@ struct ProvisionedRow {
     display_name: Option<String>,
     active: bool,
     user_id: Option<Uuid>,
+    group_role: Option<String>,
     updated_at: OffsetDateTime,
     member_status: Option<String>,
     invitation_open: Option<bool>,
@@ -224,7 +228,7 @@ pub async fn list_users(State(state): State<AppState>, ctx: OrgContext) -> ApiRe
     let (total,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM scim_users WHERE tenant_id = $1").bind(ctx.tenant_id).fetch_one(tx.conn()).await?;
     let rows = sqlx::query_as::<_, ProvisionedRow>(
-        "SELECT s.id, s.user_name::text AS user_name, s.email::text AS email, s.display_name, s.active, s.user_id, s.updated_at, \
+        "SELECT s.id, s.user_name::text AS user_name, s.email::text AS email, s.display_name, s.active, s.user_id, s.group_role, s.updated_at, \
                 m.status AS member_status, \
                 (i.id IS NOT NULL AND i.accepted_at IS NULL AND i.revoked_at IS NULL) AS invitation_open, \
                 (i.expires_at <= now()) AS invitation_expired \
@@ -256,9 +260,127 @@ pub async fn list_users(State(state): State<AppState>, ctx: OrgContext) -> ApiRe
                 active: r.active,
                 state: state.to_owned(),
                 user_id: r.user_id,
+                group_role: r.group_role,
                 updated_at: r.updated_at,
             }
         })
         .collect();
     Ok(Json(ProvisionedUserList { items, total }))
+}
+
+/// A group the identity provider pushed, and the role a workspace admin gave it.
+#[derive(Debug, Serialize, ToSchema, FromRow)]
+pub struct ProvisionedGroup {
+    pub id: Uuid,
+    pub display_name: String,
+    pub members: i64,
+    /// `admin`, `member`, `guest`, or none: membership of the group then changes nobody's role.
+    pub org_role: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProvisionedGroupList {
+    pub items: Vec<ProvisionedGroup>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetGroupRole {
+    /// `admin`, `member`, `guest`, or null to stop the group deciding roles.
+    pub org_role: Option<String>,
+}
+
+const GROUP_SELECT: &str = "SELECT g.id, g.display_name::text AS display_name, \
+     (SELECT count(*) FROM scim_group_members gm WHERE gm.group_id = g.id) AS members, g.org_role, g.updated_at \
+     FROM scim_groups g";
+
+#[utoipa::path(get, path = "/api/v1/organizations/current/provisioning/groups", security(("bearer" = [])),
+    responses((status = 200, body = ProvisionedGroupList), (status = 403)))]
+pub async fn list_groups(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<Json<ProvisionedGroupList>> {
+    ctx.require(OrgPermission::ManageMembers)?;
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let items = sqlx::query_as::<_, ProvisionedGroup>(&format!(
+        "{GROUP_SELECT} WHERE g.tenant_id = $1 ORDER BY g.display_name LIMIT 1000"
+    ))
+    .bind(ctx.tenant_id)
+    .fetch_all(tx.conn())
+    .await?;
+    tx.commit().await?;
+    Ok(Json(ProvisionedGroupList { items }))
+}
+
+/// Give a group a role (or take it away). Its members' roles change at once, under the app's
+/// rules for the admin doing it; owners and the admin themselves are left alone.
+#[utoipa::path(put, path = "/api/v1/organizations/current/provisioning/groups/{id}/role", request_body = SetGroupRole,
+    security(("bearer" = [])), params(("id" = Uuid, Path)),
+    responses((status = 200, body = ProvisionedGroup), (status = 403), (status = 404), (status = 422)))]
+pub async fn set_group_role(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetGroupRole>,
+) -> ApiResult<Json<ProvisionedGroup>> {
+    ctx.require(OrgPermission::ManageMembers)?;
+    let role = match body.org_role.as_deref() {
+        None => None,
+        Some(r) => match OrgRole::parse(r) {
+            Some(role @ (OrgRole::Admin | OrgRole::Member | OrgRole::Guest)) => Some(role),
+            _ => return Err(ApiError::invalid("org_role", "unknown_role", "A group's role is admin, member or guest.")),
+        },
+    };
+    // Giving a group a role is giving it to everyone in it: no stronger than your own.
+    if role.is_some_and(|r| r > ctx.role) {
+        return Err(ApiError::Forbidden);
+    }
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    // Serialised with provisioning requests, which lock the organization row too.
+    sqlx::query("SELECT 1 FROM organizations WHERE tenant_id = $1 FOR UPDATE").bind(ctx.tenant_id).execute(tx.conn()).await?;
+    let updated: Option<(String, Option<String>)> = sqlx::query_as(
+        "UPDATE scim_groups g SET org_role = $3, updated_at = now() FROM scim_groups old \
+         WHERE old.id = g.id AND g.tenant_id = $1 AND g.id = $2 RETURNING g.display_name::text, old.org_role",
+    )
+    .bind(ctx.tenant_id)
+    .bind(id)
+    .bind(role.map(OrgRole::as_str))
+    .fetch_optional(tx.conn())
+    .await?;
+    let Some((name, previous)) = updated else { return Err(ApiError::NotFound("group")) };
+    if previous.as_deref() != role.map(OrgRole::as_str) {
+        let members: Vec<(Uuid,)> =
+            sqlx::query_as("SELECT scim_user_id FROM scim_group_members WHERE tenant_id = $1 AND group_id = $2")
+                .bind(ctx.tenant_id)
+                .bind(id)
+                .fetch_all(tx.conn())
+                .await?;
+        let members: Vec<Uuid> = members.into_iter().map(|(m,)| m).collect();
+        let acting =
+            Acting { tenant_id: ctx.tenant_id, actor_id: ctx.user_id, actor_role: ctx.role, actor: Actor::User(ctx.user_id) };
+        sync_roles(tx.conn(), &acting, &members).await?;
+        outbox::enqueue(
+            tx.conn(),
+            &EventEnvelope::new(
+                Some(ctx.tenant_id),
+                id,
+                0,
+                Actor::User(ctx.user_id),
+                AuditRecordedV1 {
+                    action: "provisioning.group_role_set".into(),
+                    resource_type: "provisioning_group".into(),
+                    resource_id: id.to_string(),
+                    resource_label: name,
+                    details: [("org_role".to_owned(), role.map_or("none", OrgRole::as_str).to_owned())].into(),
+                },
+            ),
+        )
+        .await?;
+    }
+    let group = sqlx::query_as::<_, ProvisionedGroup>(&format!("{GROUP_SELECT} WHERE g.tenant_id = $1 AND g.id = $2"))
+        .bind(ctx.tenant_id)
+        .bind(id)
+        .fetch_one(tx.conn())
+        .await?;
+    tx.commit().await?;
+    Ok(Json(group))
 }

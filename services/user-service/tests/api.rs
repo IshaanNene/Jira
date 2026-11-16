@@ -1,7 +1,10 @@
 //! HTTP + database tests for the user/organization service against a real PostgreSQL,
 //! connected as an unprivileged role so row-level security is genuinely enforced.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use api_contracts::user::v1::{membership_server::Membership, CheckMembershipRequest, FindMembersRequest, GetMembersRequest};
 use async_trait::async_trait;
@@ -1227,4 +1230,136 @@ async fn identity_providers_provision_and_deprovision_people() {
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
     assert_eq!(h.scim(Method::GET, "/scim/v2/Users", Some(&owners_token), None).await.status, StatusCode::UNAUTHORIZED);
     h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn identity_provider_groups_decide_workspace_roles() {
+    let h = harness().await;
+    let (ada, grace, bob, linus) = (User::new("ada"), User::new("grace"), User::new("bob"), User::new("linus"));
+    let (org, tenant) = h.create_org(&ada, "Acme").await;
+    let owner = h.org_token(&ada, tenant, org, "owner");
+    h.add_member(&owner, &grace, "admin").await;
+    h.add_member(&owner, &bob, "member").await;
+    let admin = h.org_token(&grace, tenant, org, "admin");
+    let token = h.provisioning_token(&admin).await;
+    let role_of = |user: Uuid| {
+        let h = &h;
+        async move {
+            let (role,): (String,) = sqlx::query_as("SELECT org_role FROM memberships WHERE user_id = $1")
+                .bind(user)
+                .fetch_one(&h.db.owner)
+                .await
+                .unwrap();
+            role
+        }
+    };
+    let mut ids = HashMap::new();
+    for (user, name) in [(&ada, "Ada"), (&grace, "Grace"), (&bob, "Bob"), (&linus, "Linus")] {
+        let created = h.scim(Method::POST, "/scim/v2/Users", Some(&token), Some(scim_user(&user.email, name))).await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        ids.insert(name, created.body["id"].as_str().unwrap().to_owned());
+    }
+    let member = |name: &str| json!({ "value": ids[name] });
+
+    // The provider pushes a group; its members must be provisioned users of this workspace.
+    let types = h.scim(Method::GET, "/scim/v2/ResourceTypes", None, None).await;
+    assert_eq!(types.body["Resources"][1]["endpoint"], "/Groups");
+    let unknown = h
+        .scim(
+            Method::POST,
+            "/scim/v2/Groups",
+            Some(&token),
+            Some(json!({ "displayName": "Admins", "members": [{ "value": Uuid::now_v7() }] })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST, "{}", unknown.body);
+    let everyone = json!({ "displayName": "Admins", "externalId": "00g1",
+        "members": [member("Ada"), member("Grace"), member("Bob"), member("Linus")] });
+    let created = h.scim(Method::POST, "/scim/v2/Groups", Some(&token), Some(everyone.clone())).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["members"].as_array().unwrap().len(), 4);
+    let group = created.body["id"].as_str().unwrap().to_owned();
+    let duplicate = h.scim(Method::POST, "/scim/v2/Groups", Some(&token), Some(json!({ "displayName": "ADMINS" }))).await;
+    assert_eq!(duplicate.body["scimType"], "uniqueness");
+    let found = h
+        .scim(
+            Method::GET,
+            "/scim/v2/Groups?filter=displayName%20eq%20%22admins%22&excludedAttributes=members",
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(found.body["totalResults"], 1, "{}", found.body);
+    assert!(found.body["Resources"][0].get("members").is_none());
+
+    // Without a role the group changes nothing.
+    assert_eq!(role_of(bob.id).await, "member");
+
+    // Only admins see and map groups, never to owner.
+    let groups_path = "/api/v1/organizations/current/provisioning/groups";
+    let role_path = format!("{groups_path}/{group}/role");
+    let as_member = h.call(Method::GET, groups_path, Some(&h.org_token(&bob, tenant, org, "member")), None, None).await;
+    assert_eq!(as_member.status, StatusCode::FORBIDDEN);
+    let listed = h.call(Method::GET, groups_path, Some(&admin), None, None).await;
+    assert_eq!(listed.body["items"][0]["members"], 4, "{}", listed.body);
+    let to_owner = h.call(Method::PUT, &role_path, Some(&admin), Some(json!({ "org_role": "owner" })), None).await;
+    assert_eq!(to_owner.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Mapped to admin: members become admins at once; the owner and the token's creator are left
+    // alone; the invited person's invitation carries the role.
+    let mapped = h.call(Method::PUT, &role_path, Some(&admin), Some(json!({ "org_role": "admin" })), None).await;
+    assert_eq!(mapped.status, StatusCode::OK, "{}", mapped.body);
+    assert_eq!(mapped.body["org_role"], "admin");
+    assert_eq!(role_of(bob.id).await, "admin");
+    assert_eq!(role_of(ada.id).await, "owner");
+    assert_eq!(role_of(grace.id).await, "admin");
+    let accepted = h
+        .call(
+            Method::POST,
+            &format!("/api/v1/invitations/{}/accept", h.emailed_token(&linus.email)),
+            Some(&h.account(&linus)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
+    assert_eq!(role_of(linus.id).await, "admin");
+    let people = h.call(Method::GET, "/api/v1/organizations/current/provisioning/users", Some(&admin), None, None).await;
+    assert!(people.body["items"].as_array().unwrap().iter().all(|p| p["group_role"] == "admin"), "{}", people.body);
+
+    // Okta removes Bob from the group: back to member. Entra ID adds him again: admin.
+    let remove_bob = json!({ "Operations": [{ "op": "remove", "path": "members", "value": [member("Bob")] }] });
+    let patched = h.scim(Method::PATCH, &format!("/scim/v2/Groups/{group}"), Some(&token), Some(remove_bob)).await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    assert_eq!(role_of(bob.id).await, "member");
+    let add_bob = json!({ "Operations": [{ "op": "Add", "path": "members", "value": [member("Bob")] }] });
+    h.scim(Method::PATCH, &format!("/scim/v2/Groups/{group}"), Some(&token), Some(add_bob)).await;
+    assert_eq!(role_of(bob.id).await, "admin");
+    let remove_by_path = json!({ "Operations": [{ "op": "Remove", "path": format!("members[value eq \"{}\"]", ids["Bob"]) }] });
+    h.scim(Method::PATCH, &format!("/scim/v2/Groups/{group}"), Some(&token), Some(remove_by_path)).await;
+    assert_eq!(role_of(bob.id).await, "member");
+
+    // The strongest of a person's groups wins; deleting a group drops what it gave.
+    let guests = h
+        .scim(
+            Method::POST,
+            "/scim/v2/Groups",
+            Some(&token),
+            Some(json!({ "displayName": "Contractors", "members": [member("Linus")] })),
+        )
+        .await;
+    let guests_id = guests.body["id"].as_str().unwrap();
+    h.call(Method::PUT, &format!("{groups_path}/{guests_id}/role"), Some(&admin), Some(json!({ "org_role": "guest" })), None)
+        .await;
+    assert_eq!(role_of(linus.id).await, "admin");
+    let deleted = h.scim(Method::DELETE, &format!("/scim/v2/Groups/{group}"), Some(&token), None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(role_of(linus.id).await, "guest");
+
+    // Taking the role away returns its members to member.
+    let unmapped = h
+        .call(Method::PUT, &format!("{groups_path}/{guests_id}/role"), Some(&admin), Some(json!({ "org_role": null })), None)
+        .await;
+    assert_eq!(unmapped.status, StatusCode::OK, "{}", unmapped.body);
+    assert_eq!(role_of(linus.id).await, "member");
 }

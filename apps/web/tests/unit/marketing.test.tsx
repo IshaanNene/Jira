@@ -82,8 +82,8 @@ describe("public site", () => {
     expect(screen.getByRole("note")).toHaveTextContent(/billing isn.t connected yet/i);
     const enterprise = screen.getByRole("listitem", { name: "Enterprise" });
     expect(within(enterprise).getByText("Single sign-on (OpenID Connect or SAML)")).toBeInTheDocument();
-    expect(within(enterprise).getByText(/SCIM groups/)).toBeInTheDocument();
-    expect(within(enterprise).getByText("SCIM provisioning")).toBeInTheDocument();
+    expect(within(enterprise).getByText("SCIM provisioning, with roles from your groups")).toBeInTheDocument();
+    expect(within(enterprise).getByText(/Single logout/)).toBeInTheDocument();
     expect(within(enterprise).getAllByText("(coming soon)")).toHaveLength(2);
   });
 });

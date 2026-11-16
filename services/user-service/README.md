@@ -42,14 +42,16 @@ hash chain per tenant, append-only by trigger and revoked grants, de-duplicated 
 `identity.email_changed` to `user_profiles`, only where the profile still has the previous address, so a replayed or
 out-of-date event changes nothing.
 
-**SCIM provisioning.** `/scim/v2` (users only) for identity providers, authenticated with a workspace provisioning
+**SCIM provisioning.** `/scim/v2` (users and groups) for identity providers, authenticated with a workspace provisioning
 token made under `.../provisioning/tokens` (shown once, SHA-256 stored, at most 5). A token acts with the role of the
 admin who created it, re-read on each request. New people are invited as members (they join by accepting with that
 verified address), existing members are matched by address; `active: false` suspends or withdraws the invitation,
 `DELETE` removes or withdraws. Same membership rules as the app; changes are attributed to `scim:<token id>`.
-`.../provisioning/users` lists provisioned people and their state. See SECURITY_DESIGN.md §2.
+`.../provisioning/users` lists provisioned people and their state. Groups are kept as sent; an admin gives a group a role
+with `.../provisioning/groups/{id}/role`, and members get the strongest role among their groups (owners and the
+acting admin excepted; leaving them all returns someone to member). See SECURITY_DESIGN.md §2.
 
-**Not built yet.** Teams, departments, groups, avatars, org domains, SCIM groups, audit retention, bounce
+**Not built yet.** Teams, departments, groups beyond SCIM role mapping, avatars, org domains, audit retention, bounce
 handling for invitation emails, a limit on invitations per workspace per day.
 
 | Variable | Required | Default | Purpose |

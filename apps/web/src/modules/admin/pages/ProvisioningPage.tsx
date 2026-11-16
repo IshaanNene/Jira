@@ -1,13 +1,13 @@
-import { Check, Copy, KeyRound, Lock, Plus, UserPlus } from "lucide-react";
+import { Check, Copy, KeyRound, Lock, Plus, UserPlus, Users } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
 import { Badge, Button, Card, CardHeader, Dialog, DialogContent, DialogFooter, EmptyState, ErrorState, Field, Input, Page, Skeleton, toast } from "@/components/ui";
 import { can } from "@/modules/organizations";
-import { ApiError, errorMessage, type ProvisionedUser, type ProvisioningToken } from "@/services/api";
+import { ApiError, errorMessage, type ProvisionedGroup, type ProvisionedUser, type ProvisioningToken } from "@/services/api";
 import { useSession } from "@/state/session";
 import { formatDate, formatRelative } from "@/utils/format";
 
-import { useProvisionedUsers, useProvisioningTokenMutations, useProvisioningTokens } from "../api";
+import { useGroupRoleMutation, useProvisionedGroups, useProvisionedUsers, useProvisioningTokenMutations, useProvisioningTokens } from "../api";
 
 /** Settings → Provisioning: let the identity provider add, update and remove people with SCIM. */
 export default function ProvisioningPage() {
@@ -27,6 +27,7 @@ export default function ProvisioningPage() {
     >
       <div className="space-y-5">
         <Tokens />
+        <Groups />
         <People />
       </div>
     </Page>
@@ -218,13 +219,77 @@ function People() {
   );
 }
 
+const ROLE_NAMES: Record<string, string> = { admin: "Admin", member: "Member", guest: "Guest" };
+
+function Groups() {
+  const groups = useProvisionedGroups();
+  return (
+    <Card>
+      <CardHeader
+        title="Groups"
+        description="Give a group from your provider a role, and its members get that role here (the strongest, if they are in several). Leaving every group with a role makes someone a member again. Owners keep their role."
+      />
+      {groups.isPending ? (
+        <div className="space-y-2 p-4" aria-busy><Skeleton className="h-10" /></div>
+      ) : groups.isError ? (
+        <ErrorState error={groups.error} onRetry={() => void groups.refetch()} />
+      ) : groups.data.items.length === 0 ? (
+        <EmptyState icon={Users} title="No groups yet" description="Assign or push groups to the Meridian app at your provider and they appear here." />
+      ) : (
+        <ul aria-label="Provisioned groups" className="divide-y divide-line">
+          {groups.data.items.map((group) => <GroupRow key={group.id} group={group} />)}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function GroupRow({ group }: { group: ProvisionedGroup }) {
+  const setRole = useGroupRoleMutation();
+  const myRole = useSession((s) => s.organization?.role);
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-base font-medium text-ink">{group.display_name}</div>
+        <div className="text-sm text-ink-muted">{group.members} {group.members === 1 ? "member" : "members"}</div>
+      </div>
+      <select
+        aria-label={`Role for ${group.display_name}`}
+        className="h-8 rounded border border-line-strong bg-surface px-2 text-sm text-ink disabled:opacity-60"
+        value={group.org_role ?? ""}
+        disabled={setRole.isPending}
+        onChange={(e) =>
+          setRole.mutate(
+            { id: group.id, role: e.target.value || null },
+            {
+              onSuccess: (saved) =>
+                toast.success(
+                  saved.org_role ? `${group.display_name} members are now ${ROLE_NAMES[saved.org_role]?.toLowerCase()}s` : `${group.display_name} no longer sets roles`,
+                ),
+              onError: (error) => toast.error("Couldn't change the group's role", errorMessage(error)),
+            },
+          )
+        }
+      >
+        <option value="">No role</option>
+        <option value="guest">Guest</option>
+        <option value="member">Member</option>
+        <option value="admin" disabled={myRole !== "admin" && myRole !== "owner"}>Admin</option>
+      </select>
+    </li>
+  );
+}
+
 function PersonRow({ person }: { person: ProvisionedUser }) {
   const state = STATES[person.state] ?? { label: person.state, tone: "neutral" as const };
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-medium text-ink">{person.display_name ?? person.user_name}</div>
-        <div className="truncate text-sm text-ink-muted">{person.email} · Updated {formatRelative(person.updated_at)}</div>
+        <div className="truncate text-sm text-ink-muted">
+          {person.email}
+          {person.group_role && <> · {ROLE_NAMES[person.group_role] ?? person.group_role} through groups</>} · Updated {formatRelative(person.updated_at)}
+        </div>
       </div>
       <Badge tone={state.tone}>{state.label}</Badge>
     </li>

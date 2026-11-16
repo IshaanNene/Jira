@@ -5,6 +5,8 @@ import {
   ApiError,
   type CreatedProvisioningToken,
   type MemberTwoStepList,
+  type ProvisionedGroup,
+  type ProvisionedGroupList,
   type ProvisionedUserList,
   type ProvisioningTokenList,
   type SaveSsoConnection,
@@ -110,6 +112,30 @@ export function useProvisionedUsers() {
     queryKey: [...keys.provisioning(orgId), "users"],
     queryFn: () => api.get<ProvisionedUserList>(`${PROVISIONING}/users`),
     enabled: Boolean(orgId),
+  });
+}
+
+/** The identity provider's groups, and the role each gives its members. */
+export function useProvisionedGroups() {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: [...keys.provisioning(orgId), "groups"],
+    queryFn: () => api.get<ProvisionedGroupList>(`${PROVISIONING}/groups`),
+    enabled: Boolean(orgId),
+  });
+}
+
+/** Give a group a role (or none); its members' roles change at once. */
+export function useGroupRoleMutation() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: ({ id, role }: { id: string; role: string | null }) =>
+      api.put<ProvisionedGroup>(`${PROVISIONING}/groups/${id}/role`, { org_role: role }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: keys.provisioning(orgId) });
+      void qc.invalidateQueries({ queryKey: ["org", orgId, "members"] });
+    },
   });
 }
 

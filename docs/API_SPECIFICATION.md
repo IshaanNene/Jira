@@ -81,11 +81,15 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET | `/organizations/current/audit/verify` | recompute the hash chain; first broken entry and why | ✅ |
 | GET / POST | `/organizations/current/provisioning/tokens` | SCIM provisioning tokens (admins); the secret only in the create response, with the SCIM base URL | ✅ |
 | DELETE | `/organizations/current/provisioning/tokens/{id}` | revoke a provisioning token | ✅ |
-| GET | `/organizations/current/provisioning/users` | provisioned people and where each stands (`member`, `suspended`, `invited`, `invitation_expired`, `not_invited`, `deactivated`) | ✅ |
+| GET | `/organizations/current/provisioning/users` | provisioned people and where each stands (`member`, `suspended`, `invited`, `invitation_expired`, `not_invited`, `deactivated`), and the role their groups give them | ✅ |
 | GET | `/scim/v2/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | SCIM discovery (no token needed) | ✅ |
 | GET / POST | `/scim/v2/Users` | list (`filter=userName eq "…"` and `externalId`, `emails.value`, `id`; `startIndex`, `count` ≤ 200) and provision; provisioning token, `application/scim+json` | ✅ |
 | GET / PUT / PATCH / DELETE | `/scim/v2/Users/{id}` | read, replace, patch (`add`/`replace`/`remove`), deprovision | ✅ |
-| … | `/scim/v2/Groups`, `/groups`, `/domains` | Phase 6 | ⬜ |
+| GET / POST | `/scim/v2/Groups` | list (`filter=displayName eq "…"` and `externalId`, `id`; `excludedAttributes=members`) and create; members must be provisioned users | ✅ |
+| GET / PUT / PATCH / DELETE | `/scim/v2/Groups/{id}` | read, replace, patch (members `add`/`remove` with value lists or `members[value eq "…"]`, `replace`), delete | ✅ |
+| GET | `/organizations/current/provisioning/groups` | the provider's groups with member counts and roles (admins) | ✅ |
+| PUT | `/organizations/current/provisioning/groups/{id}/role` | `{org_role: "admin" \| "member" \| "guest" \| null}`; members' roles change at once; audited | ✅ |
+| … | `/groups`, `/domains` | Phase 6 | ⬜ |
 
 ### Later phases (paths fixed now so the frontend router and gateway routes are stable)
 | Area | Paths |

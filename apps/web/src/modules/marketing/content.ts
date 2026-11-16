@@ -103,7 +103,7 @@ export const FEATURE_AREAS: FeatureArea[] = [
     points: [
       "Tenant isolation enforced by row-level security",
       "Passkeys and two-step verification, which admins can require for everyone",
-      "Single sign-on with OpenID Connect or SAML, and SCIM provisioning from your identity provider",
+      "Single sign-on with OpenID Connect or SAML, and SCIM provisioning of people and groups from your identity provider",
       "Personal API tokens, signed outgoing webhooks and session management",
       "A tamper-evident audit log of administrative changes",
     ],
@@ -159,13 +159,13 @@ export const PLANS: Plan[] = [
     features: [
       "Everything in Team",
       "Single sign-on (OpenID Connect or SAML)",
-      "SCIM provisioning",
+      "SCIM provisioning, with roles from your groups",
       "Audit log",
       "API tokens",
       "Outgoing webhooks",
       "Self-hosting on your Kubernetes",
     ],
-    soon: ["SCIM groups", "Signed SAML requests and encrypted assertions"],
+    soon: ["Signed SAML requests and encrypted assertions", "Single logout"],
     cta: "Contact sales",
   },
 ];

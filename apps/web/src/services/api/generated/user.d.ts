@@ -200,6 +200,42 @@ export interface paths {
         patch: operations["update"];
         trace?: never;
     };
+    "/api/v1/organizations/current/provisioning/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_groups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organizations/current/provisioning/groups/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Give a group a role (or take it away). Its members' roles change at once, under the app's
+         *     rules for the admin doing it; owners and the admin themselves are left alone.
+         */
+        put: operations["set_group_role"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations/current/provisioning/tokens": {
         parameters: {
             query?: never;
@@ -419,11 +455,28 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        /** @description A group the identity provider pushed, and the role a workspace admin gave it. */
+        ProvisionedGroup: {
+            display_name: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            members: number;
+            /** @description `admin`, `member`, `guest`, or none: membership of the group then changes nobody's role. */
+            org_role?: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ProvisionedGroupList: {
+            items: components["schemas"]["ProvisionedGroup"][];
+        };
         ProvisionedUser: {
             /** @description What the identity provider says. */
             active: boolean;
             display_name?: string | null;
             email: string;
+            /** @description The role their groups give them, when any of their groups has one. */
+            group_role?: string | null;
             /** Format: uuid */
             id: string;
             /**
@@ -460,6 +513,10 @@ export interface components {
             /** @description The SCIM base URL to give the identity provider. */
             base_url: string;
             items: components["schemas"]["ProvisioningToken"][];
+        };
+        SetGroupRole: {
+            /** @description `admin`, `member`, `guest`, or null to stop the group deciding roles. */
+            org_role?: string | null;
         };
         UpdateMemberRequest: {
             /** @description owner | admin | member | guest */
@@ -996,6 +1053,74 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisionedGroupList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_group_role: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetGroupRole"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisionedGroup"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

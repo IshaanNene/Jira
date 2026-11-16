@@ -5,17 +5,24 @@
 //! core User schema's `userName`, `name.givenName`, `name.familyName`, `displayName`, `emails`,
 //! `externalId` and `active`, and `eq` filters on `userName`, `externalId`, `emails.value` and
 //! `id`. Attributes we do not keep (titles, phone numbers, the enterprise extension) are accepted
-//! and ignored, as the RFC allows. Groups are not supported.
+//! and ignored, as the RFC allows. Groups: `displayName`, `externalId` and `members` (users
+//! only, no nested groups), with the member operations Okta and Entra ID send, and `eq` filters
+//! on `displayName`, `externalId` and `id`.
 
 use axum::{
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use std::collections::BTreeSet;
+
 use serde_json::{json, Map, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 pub const USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
+pub const GROUP_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:Group";
+/// Most members one group may have.
+pub const MAX_GROUP_MEMBERS: usize = 10_000;
 pub const LIST_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 pub const ERROR_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
 pub const CONTENT_TYPE: &str = "application/scim+json";
@@ -44,6 +51,9 @@ impl ScimError {
     }
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, None, "No such user.")
+    }
+    pub fn group_not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, None, "No such group.")
     }
     pub fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, None, "The provisioning token is missing, revoked or no longer valid.")
@@ -115,14 +125,7 @@ impl Person {
 
     /// Apply a PatchOp request (RFC 7644 §3.5.2) and return the result.
     pub fn patched(&self, body: &Value) -> Result<Self, ScimError> {
-        let operations = body
-            .get("Operations")
-            .or_else(|| body.get("operations"))
-            .and_then(Value::as_array)
-            .ok_or_else(|| ScimError::new(StatusCode::BAD_REQUEST, Some("invalidSyntax"), "Operations is required."))?;
-        if operations.len() > MAX_OPERATIONS {
-            return Err(ScimError::new(StatusCode::BAD_REQUEST, Some("tooMany"), "Too many operations in one request."));
-        }
+        let operations = operations(body)?;
         let mut next = self.clone();
         for operation in operations {
             let op = operation.get("op").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
@@ -249,6 +252,191 @@ impl Person {
     }
 }
 
+/// The `Operations` of a PatchOp request, bounded.
+fn operations(body: &Value) -> Result<&Vec<Value>, ScimError> {
+    let operations = body
+        .get("Operations")
+        .or_else(|| body.get("operations"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| ScimError::new(StatusCode::BAD_REQUEST, Some("invalidSyntax"), "Operations is required."))?;
+    if operations.len() > MAX_OPERATIONS {
+        return Err(ScimError::new(StatusCode::BAD_REQUEST, Some("tooMany"), "Too many operations in one request."));
+    }
+    Ok(operations)
+}
+
+/// A group as the identity provider describes it. Members are SCIM user ids, as sent; the
+/// handler checks they are users of this workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub display_name: String,
+    pub external_id: Option<String>,
+    pub members: BTreeSet<String>,
+}
+
+/// A member of a group, for rendering.
+pub struct GroupMember {
+    pub id: Uuid,
+    pub display: String,
+}
+
+impl Group {
+    /// Read a full Group resource (POST and PUT).
+    pub fn from_resource(body: &Value) -> Result<Self, ScimError> {
+        let object = body.as_object().ok_or_else(|| ScimError::invalid_value("The body must be a Group resource."))?;
+        let mut group = Group { display_name: String::new(), external_id: None, members: BTreeSet::new() };
+        for (key, value) in object {
+            group.set(key, value, true)?;
+        }
+        group.check()
+    }
+
+    fn check(self) -> Result<Self, ScimError> {
+        if self.display_name.is_empty() {
+            return Err(ScimError::invalid_value("displayName is required."));
+        }
+        if self.members.len() > MAX_GROUP_MEMBERS {
+            return Err(ScimError::invalid_value(format!("A group can have at most {MAX_GROUP_MEMBERS} members.")));
+        }
+        Ok(self)
+    }
+
+    /// Set an attribute; for `members`, `replace` sets the list and otherwise adds to it.
+    fn set(&mut self, key: &str, value: &Value, replace: bool) -> Result<(), ScimError> {
+        let key = key.trim();
+        let key = key
+            .get(..GROUP_SCHEMA.len() + 1)
+            .filter(|p| p.eq_ignore_ascii_case(&format!("{GROUP_SCHEMA}:")))
+            .map_or(key, |_| &key[GROUP_SCHEMA.len() + 1..]);
+        match key.to_ascii_lowercase().as_str() {
+            "displayname" => self.display_name = text(value, "displayName", 200)?.unwrap_or_default(),
+            "externalid" => self.external_id = text(value, "externalId", 200)?,
+            "members" => {
+                let ids = member_ids(value)?;
+                if replace {
+                    self.members = ids;
+                } else {
+                    self.members.extend(ids);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Apply a PatchOp request. Okta sends `add`/`remove` on `members` and `replace` without a
+    /// path; Entra ID sends `Add`/`Remove` on `members` with a value list, and
+    /// `members[value eq "…"]` paths.
+    pub fn patched(&self, body: &Value) -> Result<Self, ScimError> {
+        let mut next = self.clone();
+        for operation in operations(body)? {
+            let op = operation.get("op").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
+            let path = operation.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty());
+            let value = operation.get("value").unwrap_or(&Value::Null);
+            let lower = path.map(str::to_ascii_lowercase);
+            match (op.as_str(), lower.as_deref()) {
+                ("add" | "replace", None) => {
+                    let object = value
+                        .as_object()
+                        .ok_or_else(|| ScimError::invalid_value("An operation without a path needs an object value."))?;
+                    for (key, value) in object {
+                        next.set(key, value, op == "replace")?;
+                    }
+                }
+                ("add" | "replace", Some(_)) => next.set(path.unwrap_or_default(), value, op == "replace")?,
+                ("remove", Some("members")) => {
+                    if value.is_null() {
+                        next.members.clear();
+                    } else {
+                        for id in member_ids(value)? {
+                            next.members.remove(&id);
+                        }
+                    }
+                }
+                ("remove", Some(p)) if p.starts_with("members[") => {
+                    let id = member_path_id(path.unwrap_or_default())?;
+                    next.members.remove(&id);
+                }
+                ("remove", Some(_)) => next.set(path.unwrap_or_default(), &Value::Null, true)?,
+                ("remove", None) => {
+                    return Err(ScimError::new(StatusCode::BAD_REQUEST, Some("noTarget"), "remove needs a path."));
+                }
+                _ => {
+                    return Err(ScimError::new(
+                        StatusCode::BAD_REQUEST,
+                        Some("invalidSyntax"),
+                        "op must be add, replace or remove.",
+                    ))
+                }
+            }
+        }
+        if next.display_name.is_empty() {
+            return Err(ScimError::new(StatusCode::BAD_REQUEST, Some("mutability"), "displayName cannot be removed."));
+        }
+        next.check()
+    }
+
+    /// The Group resource; `members` is `None` when the caller excluded them.
+    pub fn to_resource(&self, stored: &Stored, location: &str, users_base: &str, members: Option<&[GroupMember]>) -> Value {
+        let mut resource = Map::new();
+        resource.insert("schemas".into(), json!([GROUP_SCHEMA]));
+        resource.insert("id".into(), json!(stored.id));
+        if let Some(external_id) = &self.external_id {
+            resource.insert("externalId".into(), json!(external_id));
+        }
+        resource.insert("displayName".into(), json!(self.display_name));
+        if let Some(members) = members {
+            let list: Vec<Value> = members
+                .iter()
+                .map(|m| json!({ "value": m.id, "display": m.display, "$ref": format!("{users_base}/Users/{}", m.id) }))
+                .collect();
+            resource.insert("members".into(), Value::Array(list));
+        }
+        resource.insert(
+            "meta".into(),
+            json!({
+                "resourceType": "Group",
+                "created": rfc3339(stored.created_at),
+                "lastModified": rfc3339(stored.updated_at),
+                "location": location,
+                "version": format!("W/\"{}\"", stored.version),
+            }),
+        );
+        Value::Object(resource)
+    }
+}
+
+/// The `value`s of a members list (or of a single member object).
+fn member_ids(value: &Value) -> Result<BTreeSet<String>, ScimError> {
+    let items: Vec<&Value> = match value {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => return Err(ScimError::invalid_value("members must be a list of objects with a value.")),
+    };
+    if items.len() > MAX_GROUP_MEMBERS {
+        return Err(ScimError::invalid_value(format!("A group can have at most {MAX_GROUP_MEMBERS} members.")));
+    }
+    items
+        .into_iter()
+        .map(|item| {
+            text(item.get("value").unwrap_or(&Value::Null), "members.value", 64)?
+                .ok_or_else(|| ScimError::invalid_value("Each member needs a value (the user's id)."))
+        })
+        .collect()
+}
+
+/// The id in a `members[value eq "…"]` path.
+fn member_path_id(path: &str) -> Result<String, ScimError> {
+    let bad = || ScimError::new(StatusCode::BAD_REQUEST, Some("invalidPath"), "Use a path like members[value eq \"<id>\"].");
+    let inner = path.get(8..).and_then(|p| p.strip_suffix(']')).ok_or_else(bad)?;
+    let (attribute, value) = split_eq(inner).ok_or_else(bad)?;
+    if !attribute.eq_ignore_ascii_case("value") {
+        return Err(bad());
+    }
+    Ok(value)
+}
+
 /// What the service keeps about a provisioned person besides the attributes.
 #[derive(Debug, Clone)]
 pub struct Stored {
@@ -321,6 +509,46 @@ pub enum Filter {
     Nothing,
 }
 
+/// `attribute eq "value"`, with the value a JSON string literal of at most 320 characters.
+fn split_eq(raw: &str) -> Option<(String, String)> {
+    let (attribute, rest) = raw.trim().split_once(char::is_whitespace)?;
+    let (operator, value) = rest.trim_start().split_once(char::is_whitespace)?;
+    if !operator.eq_ignore_ascii_case("eq") {
+        return None;
+    }
+    let value: String = serde_json::from_str(value.trim()).ok()?;
+    (value.chars().count() <= 320).then(|| (attribute.to_owned(), value))
+}
+
+/// The filters supported on `GET /Groups`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupFilter {
+    DisplayName(String),
+    ExternalId(String),
+    Id(Uuid),
+    Nothing,
+}
+
+/// Parse a `GET /Groups` filter; anything else is `invalidFilter`.
+pub fn parse_group_filter(raw: &str) -> Result<GroupFilter, ScimError> {
+    let unsupported = || {
+        ScimError::new(
+            StatusCode::BAD_REQUEST,
+            Some("invalidFilter"),
+            "Only filters of the form `displayName eq \"…\"` (also externalId or id) are supported.",
+        )
+    };
+    let (attribute, value) = split_eq(raw).ok_or_else(unsupported)?;
+    let attribute = attribute.to_ascii_lowercase();
+    let attribute = attribute.strip_prefix(&format!("{}:", GROUP_SCHEMA.to_ascii_lowercase())).unwrap_or(&attribute);
+    Ok(match attribute {
+        "displayname" => GroupFilter::DisplayName(value),
+        "externalid" => GroupFilter::ExternalId(value),
+        "id" => value.parse().map_or(GroupFilter::Nothing, GroupFilter::Id),
+        _ => return Err(unsupported()),
+    })
+}
+
 /// Parse `attribute eq "value"`; anything else is `invalidFilter`.
 pub fn parse_filter(raw: &str) -> Result<Filter, ScimError> {
     let unsupported = || {
@@ -330,18 +558,7 @@ pub fn parse_filter(raw: &str) -> Result<Filter, ScimError> {
             "Only filters of the form `userName eq \"…\"` (also externalId, emails.value or id) are supported.",
         )
     };
-    let raw = raw.trim();
-    let (attribute, rest) = raw.split_once(char::is_whitespace).ok_or_else(unsupported)?;
-    let rest = rest.trim_start();
-    let (operator, value) = rest.split_once(char::is_whitespace).ok_or_else(unsupported)?;
-    if !operator.eq_ignore_ascii_case("eq") {
-        return Err(unsupported());
-    }
-    // The value is a JSON string literal.
-    let value: String = serde_json::from_str(value.trim()).map_err(|_| unsupported())?;
-    if value.chars().count() > 320 {
-        return Err(unsupported());
-    }
+    let (attribute, value) = split_eq(raw).ok_or_else(unsupported)?;
     let attribute = attribute.to_ascii_lowercase();
     let attribute = attribute.strip_prefix(&format!("{}:", USER_SCHEMA.to_ascii_lowercase())).unwrap_or(&attribute);
     Ok(match attribute {
@@ -373,21 +590,24 @@ pub fn service_provider_config() -> Value {
     })
 }
 
-/// `/ResourceTypes`: only User.
+/// `/ResourceTypes`: User and Group.
 pub fn resource_types(base: &str) -> Value {
+    let kind = |name: &str, schema: &str| {
+        json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+            "id": name,
+            "name": name,
+            "endpoint": format!("/{name}s"),
+            "schema": schema,
+            "meta": { "resourceType": "ResourceType", "location": format!("{base}/ResourceTypes/{name}") },
+        })
+    };
     json!({
         "schemas": [LIST_SCHEMA],
-        "totalResults": 1,
-        "itemsPerPage": 1,
+        "totalResults": 2,
+        "itemsPerPage": 2,
         "startIndex": 1,
-        "Resources": [{
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-            "id": "User",
-            "name": "User",
-            "endpoint": "/Users",
-            "schema": USER_SCHEMA,
-            "meta": { "resourceType": "ResourceType", "location": format!("{base}/ResourceTypes/User") },
-        }],
+        "Resources": [kind("User", USER_SCHEMA), kind("Group", GROUP_SCHEMA)],
     })
 }
 
@@ -415,7 +635,20 @@ pub fn schemas() -> Value {
         ],
         "meta": { "resourceType": "Schema" },
     });
-    json!({ "schemas": [LIST_SCHEMA], "totalResults": 1, "itemsPerPage": 1, "startIndex": 1, "Resources": [user] })
+    let group = json!({
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Schema"],
+        "id": GROUP_SCHEMA,
+        "name": "Group",
+        "description": "A group of people; a workspace admin can give it a role",
+        "attributes": [
+            attribute("displayName", true, "server"),
+            attribute("externalId", false, "none"),
+            { "name": "members", "type": "complex", "multiValued": true, "required": false, "mutability": "readWrite",
+              "returned": "default", "subAttributes": [attribute("value", false, "none"), attribute("display", false, "none")] },
+        ],
+        "meta": { "resourceType": "Schema" },
+    });
+    json!({ "schemas": [LIST_SCHEMA], "totalResults": 2, "itemsPerPage": 2, "startIndex": 1, "Resources": [user, group] })
 }
 
 #[cfg(test)]
@@ -524,5 +757,67 @@ mod tests {
         for bad in ["", "ab", "a@b", "@b.co", "a@.co", "a@b.co.", "a b@c.co", "a@b@c.co"] {
             assert!(!plausible_email(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn reads_groups_and_applies_okta_and_entra_member_patches() {
+        let group = Group::from_resource(&json!({
+            "schemas": [GROUP_SCHEMA], "displayName": "Engineering", "externalId": "00g1",
+            "members": [{ "value": "a", "display": "Ada" }, { "value": "b" }],
+        }))
+        .unwrap();
+        assert_eq!(group.members, BTreeSet::from(["a".to_owned(), "b".to_owned()]));
+        assert!(Group::from_resource(&json!({ "members": [] })).is_err(), "displayName is required");
+        assert!(Group::from_resource(&json!({ "displayName": "x", "members": [{ "display": "no value" }] })).is_err());
+
+        // Okta: add and remove members with value lists, rename with a path-less replace.
+        let okta = group
+            .patched(&json!({ "Operations": [
+                { "op": "add", "path": "members", "value": [{ "value": "c" }] },
+                { "op": "remove", "path": "members", "value": [{ "value": "a" }] },
+                { "op": "replace", "value": { "id": "ignored", "displayName": "Eng" } },
+            ]}))
+            .unwrap();
+        assert_eq!(okta.display_name, "Eng");
+        assert_eq!(okta.members, BTreeSet::from(["b".to_owned(), "c".to_owned()]));
+
+        // Entra ID: capitalised ops and a filtered remove path; replace of members sets the list.
+        let entra = okta
+            .patched(&json!({ "Operations": [
+                { "op": "Remove", "path": "members[value eq \"b\"]" },
+                { "op": "Add", "path": "members", "value": [{ "value": "d" }] },
+            ]}))
+            .unwrap();
+        assert_eq!(entra.members, BTreeSet::from(["c".to_owned(), "d".to_owned()]));
+        let replaced = entra
+            .patched(&json!({ "Operations": [{ "op": "replace", "path": "members", "value": [{ "value": "e" }] }] }))
+            .unwrap();
+        assert_eq!(replaced.members, BTreeSet::from(["e".to_owned()]));
+        let cleared = replaced.patched(&json!({ "Operations": [{ "op": "remove", "path": "members" }] })).unwrap();
+        assert!(cleared.members.is_empty());
+
+        assert!(group.patched(&json!({ "Operations": [{ "op": "remove", "path": "displayName" }] })).is_err());
+        assert!(group.patched(&json!({ "Operations": [{ "op": "remove", "path": "members[display eq \"x\"]" }] })).is_err());
+    }
+
+    #[test]
+    fn parses_group_filters_and_renders_groups() {
+        assert_eq!(parse_group_filter("displayName eq \"Eng\"").unwrap(), GroupFilter::DisplayName("Eng".into()));
+        assert_eq!(parse_group_filter("externalId eq \"00g1\"").unwrap(), GroupFilter::ExternalId("00g1".into()));
+        assert_eq!(parse_group_filter("id eq \"nope\"").unwrap(), GroupFilter::Nothing);
+        assert!(parse_group_filter("members eq \"x\"").is_err());
+        let group = Group { display_name: "Eng".into(), external_id: None, members: BTreeSet::new() };
+        let stored = Stored {
+            id: Uuid::nil(),
+            version: 2,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let member = GroupMember { id: Uuid::nil(), display: "Ada".into() };
+        let resource = group.to_resource(&stored, "https://x/scim/v2/Groups/0", "https://x/scim/v2", Some(&[member]));
+        assert_eq!(resource["members"][0]["display"], "Ada");
+        assert_eq!(resource["meta"]["resourceType"], "Group");
+        assert!(group.to_resource(&stored, "l", "b", None).get("members").is_none());
+        assert_eq!(resource_types("b")["Resources"][1]["endpoint"], "/Groups");
     }
 }

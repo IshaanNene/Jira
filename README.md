@@ -127,7 +127,7 @@ Charts can be shared, resized and reordered, and each one has a table view.
 
 ### 🔐 Identity and access
 - Accounts with lockout and two-step verification (TOTP plus recovery codes), and passkeys.
-- Single sign-on per workspace with OpenID Connect or SAML 2.0, and SCIM provisioning.
+- Single sign-on per workspace with OpenID Connect or SAML 2.0, and SCIM provisioning of people and groups (groups give workspace roles).
 - Refresh-token rotation with reuse detection, and session management.
 - Organisation roles and per-project role bindings, checked against local policy snapshots.
 
@@ -373,7 +373,7 @@ a capacity claim. The full results, including what the test found, are in the
 | 3 | Workflow engine and visual designer | ✅ |
 | 4 | Boards, backlog, sprints, reports | ✅ |
 | 5 | Kafka pipeline, search, live updates, notifications | ✅ |
-| 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users, admin console, automation rules and webhooks done; SCIM groups and integrations still to do | 🚧 |
+| 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users and groups, admin console, automation rules and webhooks done; integrations and more automation still to do | 🚧 |
 | 7 | ClickHouse pipeline and dashboards | ✅ |
 | 8 | Images, Helm, CI, observability, load and failure tests done; Terraform never applied, no Argo CD | 🚧 |
 

@@ -9,7 +9,7 @@ pub mod users;
 
 use axum::{
     http::{header, Method},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -46,7 +46,9 @@ use crate::AppState;
         provisioning::list_tokens,
         provisioning::create_token,
         provisioning::revoke_token,
-        provisioning::list_users
+        provisioning::list_users,
+        provisioning::list_groups,
+        provisioning::set_group_role
     ),
     components(schemas(
         dto::ProfileDto,
@@ -72,7 +74,10 @@ use crate::AppState;
         provisioning::CreateProvisioningToken,
         provisioning::CreatedProvisioningToken,
         provisioning::ProvisionedUser,
-        provisioning::ProvisionedUserList
+        provisioning::ProvisionedUserList,
+        provisioning::ProvisionedGroup,
+        provisioning::ProvisionedGroupList,
+        provisioning::SetGroupRole
     ))
 )]
 pub struct ApiDoc;
@@ -94,7 +99,9 @@ pub fn router(state: AppState) -> Router {
         .route("/organizations/current/audit/verify", get(audit::verify))
         .route("/organizations/current/provisioning/tokens", get(provisioning::list_tokens).post(provisioning::create_token))
         .route("/organizations/current/provisioning/tokens/{id}", delete(provisioning::revoke_token))
-        .route("/organizations/current/provisioning/users", get(provisioning::list_users));
+        .route("/organizations/current/provisioning/users", get(provisioning::list_users))
+        .route("/organizations/current/provisioning/groups", get(provisioning::list_groups))
+        .route("/organizations/current/provisioning/groups/{id}/role", put(provisioning::set_group_role));
 
     // Called by identity providers with a provisioning token; no browser, so no CORS.
     let scim = Router::new()
@@ -103,16 +110,13 @@ pub fn router(state: AppState) -> Router {
         .route("/Schemas", get(scim::schemas))
         .route("/Users", get(scim::list_users).post(scim::create_user))
         .route("/Users/{id}", get(scim::get_user).put(scim::replace_user).patch(scim::patch_user).delete(scim::delete_user))
-        .route("/Groups", get(scim::groups).post(scim::groups))
-        .route(
-            "/Groups/{*rest}",
-            get(scim::groups).post(scim::groups).put(scim::groups).patch(scim::groups).delete(scim::groups),
-        );
+        .route("/Groups", get(scim::list_groups).post(scim::create_group))
+        .route("/Groups/{id}", get(scim::get_group).put(scim::replace_group).patch(scim::patch_group).delete(scim::delete_group));
 
     let origins: Vec<_> = state.settings.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PATCH])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::IF_MATCH])
         .expose_headers([header::ETAG, header::CONTENT_DISPOSITION]);
 
