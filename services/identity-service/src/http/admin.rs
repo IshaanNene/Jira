@@ -49,7 +49,7 @@ pub struct MemberTwoStepList {
     pub items: Vec<MemberTwoStep>,
 }
 
-/// Whether each member has turned on two-step verification. Ids that are not active members
+/// Whether each member has turned on two-step verification or added a passkey. Ids that are not active members
 /// of the caller's workspace are left out, so this reveals nothing about other accounts.
 #[utoipa::path(post, path = "/api/v1/auth/admin/two-step", request_body = TwoStepLookup, security(("bearer" = [])),
     responses((status = 200, body = MemberTwoStepList), (status = 403), (status = 422)))]
@@ -67,11 +67,13 @@ pub async fn two_step(
     ids.sort();
     ids.dedup();
     let members = state.membership.active_members(ctx.tenant_id, &ids).await?;
-    let enabled: Vec<Uuid> =
-        sqlx::query_scalar("SELECT account_id FROM totp_factors WHERE account_id = ANY($1) AND confirmed_at IS NOT NULL")
-            .bind(&members)
-            .fetch_all(&state.pool)
-            .await?;
+    let enabled: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT account_id FROM totp_factors WHERE account_id = ANY($1) AND confirmed_at IS NOT NULL \
+             UNION SELECT account_id FROM passkeys WHERE account_id = ANY($1)",
+    )
+    .bind(&members)
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(MemberTwoStepList {
         items: members.into_iter().map(|user_id| MemberTwoStep { user_id, enabled: enabled.contains(&user_id) }).collect(),
     }))

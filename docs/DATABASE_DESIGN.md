@@ -125,7 +125,7 @@ Cross-database references (by id, no FK): `MEMBERSHIP.user_id → ACCOUNT`, `ORG
 | `totp_factors` | `account_id`, `secret_enc` + `nonce` (sealed), `confirmed_at` (NULL during set-up), `last_used_step`, `setup_attempts` |
 | `recovery_codes` | `account_id`, `code_hash` (SHA-256), `used_at` |
 | `mfa_challenges` | `account_id`, `token_hash`, `attempts`, `expires_at`, `used_at` — between password and code at sign-in |
-| `webauthn_credentials` | Phase 6 |
+| `passkeys`, `webauthn_challenges` | Built (Phase 6) |
 | `identity_providers` (tenant-scoped, RLS) | OIDC/SAML config per organization — Phase 6 |
 | `api_tokens` | `id`, `account_id`, `tenant_id`, `token_hash`, `scopes text[]`, `expires_at`, `last_used_at` |
 | `login_events` | append-only login history, used for suspicious-login detection |

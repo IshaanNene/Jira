@@ -64,7 +64,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Whether each member has turned on two-step verification. Ids that are not active members
+         * Whether each member has turned on two-step verification or added a passkey. Ids that are not active members
          *     of the caller's workspace are left out, so this reveals nothing about other accounts.
          */
         post: operations["two_step"];
@@ -327,6 +327,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/passkeys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        /** Finish adding a passkey with the browser's response. */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/passkeys/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start adding a passkey. The password is asked for again, as for other security changes. */
+        post: operations["registration_options"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/passkeys/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish signing in with a passkey: on success, a session just like a password sign-in
+         *     with two-step verification.
+         */
+        post: operations["sign_in"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/passkeys/sign-in/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start signing in with a passkey. Anyone may ask; the answer names no account. */
+        post: operations["sign_in_options"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/passkeys/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["rename"];
+        trace?: never;
+    };
+    "/api/v1/auth/passkeys/{id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove a passkey; it stops working at once. Needs the password, like other security changes. */
+        post: operations["remove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/password/forgot": {
         parameters: {
             query?: never;
@@ -562,6 +666,47 @@ export interface components {
             recovery_codes_remaining: number;
             totp_enabled: boolean;
         };
+        NewPasskey: {
+            /** @description `response.attestationObject`, base64url. */
+            attestation_object: string;
+            /** @description `response.clientDataJSON`, base64url. */
+            client_data_json: string;
+            /** @description What the person calls it, e.g. "MacBook" or "YubiKey". */
+            name: string;
+        };
+        PasskeyDto: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            name: string;
+            /**
+             * @description Whether it syncs between the person's devices (a password manager or platform
+             *     keychain) rather than living on one security key.
+             */
+            synced: boolean;
+        };
+        PasskeyList: {
+            items: components["schemas"]["PasskeyDto"][];
+        };
+        /**
+         * @description Options for `navigator.credentials.create()` / `.get()`, in the JSON form of the
+         *     WebAuthn spec: binary values are base64url strings.
+         */
+        PasskeyOptions: {
+            public_key: Record<string, never>;
+        };
+        PasskeySignIn: {
+            authenticator_data: string;
+            client_data_json: string;
+            /** @description The credential's `rawId`, base64url. */
+            credential_id: string;
+            signature: string;
+            /** @description `response.userHandle`, base64url. */
+            user_handle: string;
+        };
         PasswordAndCode: {
             /** @description A code from the authenticator app, or a recovery code. */
             code: string;
@@ -586,6 +731,9 @@ export interface components {
             email: string;
             password: string;
         };
+        RenamePasskey: {
+            name: string;
+        };
         ResetPasswordRequest: {
             password: string;
             /** @description From the link in the email. */
@@ -602,6 +750,8 @@ export interface components {
             ip?: string | null;
             /** Format: date-time */
             last_seen_at: string;
+            /** @description How it was signed in to: `password`, `two_step` or `passkey`. */
+            sign_in_method: string;
             user_agent?: string | null;
         };
         SessionList: {
@@ -1268,6 +1418,215 @@ export interface operations {
             };
             /** @description Already on */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeyList"];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewPasskey"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeyDto"];
+                };
+            };
+            /** @description Already added, or the set-up expired */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The response did not check out */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registration_options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordConfirmation"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeyOptions"];
+                };
+            };
+            /** @description Too many passkeys */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sign_in: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasskeySignIn"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description The passkey did not check out */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sign_in_options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeyOptions"];
+                };
+            };
+        };
+    };
+    rename: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenamePasskey"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasskeyDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordConfirmation"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

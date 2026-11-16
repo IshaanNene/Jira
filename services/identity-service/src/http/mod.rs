@@ -4,6 +4,7 @@ pub mod api_tokens;
 pub mod auth;
 pub mod dto;
 pub mod mfa;
+pub mod passkeys;
 pub mod sessions;
 
 use axum::{
@@ -11,7 +12,7 @@ use axum::{
     http::{header, Method},
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use error_handling::ApiError;
@@ -51,7 +52,14 @@ use crate::AppState;
         api_tokens::exchange,
         admin::two_step,
         admin::api_tokens,
-        admin::revoke_api_token
+        admin::revoke_api_token,
+        passkeys::list,
+        passkeys::registration_options,
+        passkeys::register,
+        passkeys::rename,
+        passkeys::remove,
+        passkeys::sign_in_options,
+        passkeys::sign_in
     ),
     components(schemas(
         dto::RegisterRequest,
@@ -84,7 +92,13 @@ use crate::AppState;
         api_tokens::ApiTokenList,
         api_tokens::CreateApiToken,
         api_tokens::CreatedApiToken,
-        api_tokens::ApiTokenExchange
+        api_tokens::ApiTokenExchange,
+        passkeys::PasskeyDto,
+        passkeys::PasskeyList,
+        passkeys::PasskeyOptions,
+        passkeys::NewPasskey,
+        passkeys::PasskeySignIn,
+        passkeys::RenamePasskey
     ))
 )]
 pub struct ApiDoc;
@@ -100,6 +114,12 @@ pub fn router(state: AppState) -> Router {
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
         .route("/login/mfa", post(mfa::login))
+        .route("/passkeys/sign-in/options", post(passkeys::sign_in_options))
+        .route("/passkeys/sign-in", post(passkeys::sign_in))
+        .route("/passkeys", get(passkeys::list).post(passkeys::register))
+        .route("/passkeys/options", post(passkeys::registration_options))
+        .route("/passkeys/{id}", patch(passkeys::rename))
+        .route("/passkeys/{id}/remove", post(passkeys::remove))
         .route("/email/verification", post(account_email::send_verification))
         .route("/email/verify", post(account_email::verify))
         .route("/password/forgot", post(account_email::forgot))

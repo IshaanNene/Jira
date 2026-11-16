@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui";
-import { AuthLayout, FormError, switchOrganization, useMfaStatus } from "@/modules/auth";
+import { AuthLayout, FormError, PasskeyCancelled, passkeysSupported, signInWithPasskey, switchOrganization, useMfaStatus } from "@/modules/auth";
 import { useMyOrganizations } from "@/modules/organizations";
 import { errorMessage } from "@/services/api";
 
@@ -35,10 +35,21 @@ export default function TwoStepRequiredPage() {
     }
   };
 
+  // Signing in again with a passkey meets the requirement too.
+  const withPasskey = async () => {
+    setError(null);
+    try {
+      await signInWithPasskey();
+      await proceed();
+    } catch (e) {
+      if (!(e instanceof PasskeyCancelled)) setError(errorMessage(e));
+    }
+  };
+
   return (
     <AuthLayout
       title="Turn on two-step verification"
-      subtitle={`${name} requires it of everyone who works in it. Set it up with an authenticator app to continue.`}
+      subtitle={`${name} requires it of everyone who works in it. Set it up with an authenticator app, or sign in with a passkey, to continue.`}
       footer={
         <Link to="/onboarding" className="font-medium text-ink-muted hover:text-ink">
           Choose another workspace
@@ -51,6 +62,11 @@ export default function TwoStepRequiredPage() {
         <Button variant="primary" className="w-full" disabled={!status.data?.totp_enabled} loading={busy} onClick={() => void proceed()}>
           Continue to {name}
         </Button>
+        {passkeysSupported() && (
+          <Button className="w-full" disabled={busy} onClick={() => void withPasskey()}>
+            I have a passkey: sign in with it
+          </Button>
+        )}
       </div>
     </AuthLayout>
   );

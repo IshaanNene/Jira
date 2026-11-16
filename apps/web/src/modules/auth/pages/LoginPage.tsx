@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { KeyRound } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -10,7 +11,8 @@ import { ApiError, errorMessage, type MfaChallenge } from "@/services/api";
 import { AuthLayout } from "../components/AuthLayout";
 import { FormError } from "../components/FormError";
 import { safeNext } from "../navigation";
-import { completeSignIn, signIn } from "../session-service";
+import { completeSignIn, signIn, signInWithPasskey } from "../session-service";
+import { PasskeyCancelled, passkeysSupported } from "../webauthn";
 
 const schema = z.object({
   email: z.string().trim().min(1, "Enter your email address.").email("Enter a valid email address."),
@@ -23,6 +25,7 @@ export default function LoginPage() {
   const [params] = useSearchParams();
   const [formError, setFormError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<MfaChallenge | null>(null);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const {
     register,
     handleSubmit,
@@ -41,6 +44,19 @@ export default function LoginPage() {
       setFormError(errorMessage(error));
     }
   });
+
+  const withPasskey = async () => {
+    setFormError(null);
+    setPasskeyBusy(true);
+    try {
+      await signInWithPasskey();
+      done();
+    } catch (error) {
+      setPasskeyBusy(false);
+      // Closing the browser's prompt is a choice, not an error.
+      if (!(error instanceof PasskeyCancelled)) setFormError(errorMessage(error));
+    }
+  };
 
   if (challenge) {
     return (
@@ -86,6 +102,16 @@ export default function LoginPage() {
           Sign in
         </Button>
       </form>
+      {passkeysSupported() && (
+        <>
+          <div className="my-4 flex items-center gap-3 text-xs uppercase text-ink-subtle" aria-hidden>
+            <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
+          </div>
+          <Button type="button" size="lg" className="w-full" loading={passkeyBusy} onClick={() => void withPasskey()}>
+            <KeyRound className="h-4 w-4" aria-hidden /> Sign in with a passkey
+          </Button>
+        </>
+      )}
     </AuthLayout>
   );
 }

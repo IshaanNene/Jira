@@ -5,10 +5,17 @@ import {
   type ApiTokenList,
   type CreateApiToken,
   type CreatedApiToken,
-  type MfaStatus, type RecoveryCodes, type SessionList, type TotpSetup } from "@/services/api";
+  type MfaStatus,
+  type Passkey,
+  type PasskeyList,
+  type PasskeyOptions,
+  type RecoveryCodes, type SessionList, type TotpSetup } from "@/services/api";
+
+import { createPasskey, type CreationOptionsJson } from "./webauthn";
 
 const sessionsKey = ["auth", "sessions"] as const;
 const mfaKey = ["auth", "mfa"] as const;
+const passkeysKey = ["auth", "passkeys"] as const;
 /** Tokens belong to one organization, so the list is keyed by it. */
 const apiTokensKey = (organizationId: string) => ["auth", "api-tokens", organizationId] as const;
 
@@ -62,6 +69,39 @@ export function useDisableTotp() {
   return useMutation({
     mutationFn: (input: { password: string; code: string }) => api.post("/api/v1/auth/mfa/totp/disable", input),
     onSuccess: refresh,
+  });
+}
+
+export function usePasskeys() {
+  return useQuery({ queryKey: passkeysKey, queryFn: () => api.get<PasskeyList>("/api/v1/auth/passkeys"), select: (d) => d.items });
+}
+
+/** Asks for the password, then has the browser make a passkey, then saves it. */
+export function useAddPasskey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ password, name }: { password: string; name: string }) => {
+      const options = await api.post<PasskeyOptions>("/api/v1/auth/passkeys/options", { password });
+      const response = await createPasskey(options.public_key as unknown as CreationOptionsJson);
+      return api.post<Passkey>("/api/v1/auth/passkeys", { name, ...response });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: passkeysKey }),
+  });
+}
+
+export function useRenamePasskey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.patch<Passkey>(`/api/v1/auth/passkeys/${id}`, { name }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: passkeysKey }),
+  });
+}
+
+export function useRemovePasskey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) => api.post(`/api/v1/auth/passkeys/${id}/remove`, { password }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: passkeysKey }),
   });
 }
 

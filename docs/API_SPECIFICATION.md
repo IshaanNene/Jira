@@ -60,7 +60,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET | `/mfa` | two-step verification status, recovery codes left | ✅ |
 | POST | `/mfa/totp/setup`, `/mfa/totp/confirm` | start (password) / finish (code) set-up; finishing returns recovery codes once | ✅ |
 | POST | `/mfa/recovery-codes`, `/mfa/totp/disable` | new recovery codes / turn off (password and a code) | ✅ |
-| … | `/webauthn/*`, `/sso/{org}/*`, `/api-tokens` | Phase 6 | ⬜ |
+| … | `/passkeys/*` (built), `/api-tokens` (built), `/sso/{org}/*` | Phase 6 | ◐ |
 
 ### Organizations & users — `/api/v1`
 | Method | Path | Purpose | |

@@ -37,6 +37,14 @@ can be confirmed). Confirming moves the account, marks the address verified, emi
 previous address, and tells the old address, showing only the first letter and domain of the new one. Links sent to
 the old address stop working with it.
 
+**Passkeys.** `passkeys` (list, add), `passkeys/options` (start adding; needs the password), `passkeys/{id}`
+(rename), `passkeys/{id}/remove` (needs the password), and the unauthenticated `passkeys/sign-in/options` and
+`passkeys/sign-in`. Discoverable credentials with user verification required; the checks are in `src/webauthn.rs` (see
+SECURITY_DESIGN.md §2). Passkeys are bound to `WEBAUTHN_RP_ID` (default: the host of the first allowed origin) and
+accepted from `WEBAUTHN_ORIGINS` (default: `ALLOWED_ORIGINS`); origins that are not https (other than localhost) or not
+on that domain are left out with a warning. Sessions record how they were signed in to (`password`, `two_step`,
+`passkey`); a passkey session meets a workspace's two-step requirement.
+
 **Admin console API.** `admin/two-step` and `admin/api-tokens` let a workspace's admins and owners (signed in, not
 through an API token) see which active members have two-step verification on and list or revoke the API tokens issued
 for their workspace. Membership is checked over gRPC, so ids outside the workspace are silently left out; a revocation
@@ -44,10 +52,10 @@ is written to the audit log and published to Redis like any other. There is no a
 verification: accounts are global.
 
 **Database.** Owns `identity_db`: `accounts`, `sessions`, `refresh_tokens`, `signing_keys`,
-`login_events`, `email_tokens`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
+`login_events`, `email_tokens`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `passkeys`, `webauthn_challenges`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
 
 **Not built yet.** An email when the password or two-step verification
-changes; WebAuthn; OIDC/SAML; suspicious-login detection; signing-key rotation command.
+changes; OIDC/SAML; suspicious-login detection; signing-key rotation command.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|

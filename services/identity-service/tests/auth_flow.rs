@@ -56,6 +56,11 @@ async fn harness() -> Harness {
         cookie_secure: false,
         session_ttl_days: 30,
         trust_forwarded_for: false,
+        passkeys: identity_service::webauthn::RelyingParty {
+            id: "localhost".into(),
+            name: "Meridian".into(),
+            origins: vec![ORIGIN.into()],
+        },
     };
     let state = AppState::build(db.app.clone(), settings, sealer, membership.clone(), RedisHandle::default()).await.unwrap();
     let app = http::router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))));
@@ -999,4 +1004,257 @@ async fn admins_see_members_two_step_and_manage_workspace_api_tokens() {
     assert_eq!((audit.1["action"].as_str(), audit.1["resource_label"].as_str()), (Some("api_token.revoked"), Some("ci")));
     assert_eq!(audit.1["details"]["owner_id"], alice.to_string());
     h.db.cleanup().await;
+}
+
+#[path = "support/soft_authenticator.rs"]
+mod soft_authenticator;
+
+fn b64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn unb64url(text: &str) -> Vec<u8> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text).unwrap()
+}
+
+/// Adds a passkey made by `device` to the signed-in account; returns the reply.
+async fn add_passkey(h: &Harness, bearer: &str, device: &mut soft_authenticator::SoftAuthenticator, name: &str) -> Reply {
+    let options = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys/options",
+        Some(json!({ "password": "a-long-enough-password" })),
+        Some(bearer),
+        None,
+    )
+    .await;
+    assert_eq!(options.status, StatusCode::OK, "{}", options.body);
+    let challenge = unb64url(options.body["public_key"]["challenge"].as_str().unwrap());
+    let (client, attestation) = device.create(ORIGIN, &challenge);
+    call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys",
+        Some(json!({ "name": name, "client_data_json": b64url(&client), "attestation_object": b64url(&attestation) })),
+        Some(bearer),
+        None,
+    )
+    .await
+}
+
+async fn passkey_sign_in(h: &Harness, device: &mut soft_authenticator::SoftAuthenticator) -> Reply {
+    let options = call(&h.app, Method::POST, "/api/v1/auth/passkeys/sign-in/options", None, None, None).await;
+    assert_eq!(options.status, StatusCode::OK);
+    assert_eq!(options.body["public_key"]["allowCredentials"], json!([]));
+    let challenge = unb64url(options.body["public_key"]["challenge"].as_str().unwrap());
+    let (client, data, sig) = device.get(ORIGIN, &challenge);
+    call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys/sign-in",
+        Some(json!({
+            "credential_id": b64url(&device.credential_id),
+            "client_data_json": b64url(&client),
+            "authenticator_data": b64url(&data),
+            "signature": b64url(&sig),
+            "user_handle": b64url(&device.user_handle),
+        })),
+        None,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn passkeys_are_added_used_to_sign_in_and_removed() {
+    let h = harness().await;
+    let registered = register(&h.app, "keyholder@example.com").await;
+    let me = token(&registered);
+    let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
+    let mut laptop = soft_authenticator::SoftAuthenticator::new("localhost", user_id.as_bytes());
+
+    // The password is needed to start.
+    let wrong = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys/options",
+        Some(json!({ "password": "nope-nope-nope" })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let added = add_passkey(&h, &me, &mut laptop, "  Laptop  ").await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    assert_eq!(added.body["name"], "Laptop");
+    assert_eq!(added.body["synced"], true);
+    let passkey_id = added.body["id"].as_str().unwrap().to_owned();
+
+    // The same authenticator cannot be added twice, and is excluded in the next options.
+    let again = add_passkey(&h, &me, &mut laptop, "Again").await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    let options = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys/options",
+        Some(json!({ "password": "a-long-enough-password" })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(options.body["public_key"]["excludeCredentials"][0]["id"], b64url(&laptop.credential_id));
+    assert_eq!(options.body["public_key"]["user"]["id"], b64url(user_id.as_bytes()));
+    assert_eq!(options.body["public_key"]["authenticatorSelection"]["userVerification"], "required");
+
+    // A registration answered for another site's challenge is refused.
+    let challenge = unb64url(options.body["public_key"]["challenge"].as_str().unwrap());
+    let mut phone = soft_authenticator::SoftAuthenticator::new("localhost", user_id.as_bytes());
+    let (client, attestation) = phone.create("https://evil.example.net", &challenge);
+    let refused = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys",
+        Some(json!({ "name": "Phone", "client_data_json": b64url(&client), "attestation_object": b64url(&attestation) })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    // ... and that challenge is now spent.
+    let (client, attestation) = phone.create(ORIGIN, &challenge);
+    let spent = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/passkeys",
+        Some(json!({ "name": "Phone", "client_data_json": b64url(&client), "attestation_object": b64url(&attestation) })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(spent.status, StatusCode::CONFLICT);
+
+    // Sign in with the passkey: a session marked as a passkey sign-in.
+    let signed_in = passkey_sign_in(&h, &mut laptop).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+    assert!(signed_in.cookie.is_some());
+    assert_eq!(signed_in.body["account"]["id"], user_id.to_string());
+    let sessions = call(&h.app, Method::GET, "/api/v1/auth/sessions", None, Some(&token(&signed_in)), None).await;
+    let methods: Vec<&str> =
+        sessions.body["items"].as_array().unwrap().iter().map(|s| s["sign_in_method"].as_str().unwrap()).collect();
+    assert!(methods.contains(&"passkey") && methods.contains(&"password"), "{methods:?}");
+    let listed = call(&h.app, Method::GET, "/api/v1/auth/passkeys", None, Some(&me), None).await;
+    assert!(listed.body["items"][0]["last_used_at"].is_string());
+
+    // A cloned authenticator (its counter behind the stored one) is refused.
+    laptop.sign_count = 0;
+    let cloned = passkey_sign_in(&h, &mut laptop).await;
+    assert_eq!(cloned.status, StatusCode::UNAUTHORIZED);
+    laptop.sign_count = 10;
+
+    // Someone else's user handle with this credential is refused.
+    let mut stolen = soft_authenticator::SoftAuthenticator::new("localhost", Uuid::now_v7().as_bytes());
+    stolen.credential_id = laptop.credential_id.clone();
+    assert_eq!(passkey_sign_in(&h, &mut stolen).await.status, StatusCode::UNAUTHORIZED);
+
+    // A sign-in challenge works once.
+    let options = call(&h.app, Method::POST, "/api/v1/auth/passkeys/sign-in/options", None, None, None).await;
+    let challenge = unb64url(options.body["public_key"]["challenge"].as_str().unwrap());
+    let replay = |client: Vec<u8>, data: Vec<u8>, sig: Vec<u8>, id: Vec<u8>, handle: Vec<u8>| {
+        let app = h.app.clone();
+        async move {
+            call(
+                &app,
+                Method::POST,
+                "/api/v1/auth/passkeys/sign-in",
+                Some(json!({
+                    "credential_id": b64url(&id), "client_data_json": b64url(&client), "authenticator_data": b64url(&data),
+                    "signature": b64url(&sig), "user_handle": b64url(&handle),
+                })),
+                None,
+                None,
+            )
+            .await
+        }
+    };
+    let (client, data, sig) = laptop.get(ORIGIN, &challenge);
+    let first = replay(client.clone(), data.clone(), sig.clone(), laptop.credential_id.clone(), laptop.user_handle.clone()).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let second = replay(client, data, sig, laptop.credential_id.clone(), laptop.user_handle.clone()).await;
+    assert_eq!(second.status, StatusCode::UNAUTHORIZED);
+
+    // Rename, then remove (password needed); it stops working.
+    let renamed = call(
+        &h.app,
+        Method::PATCH,
+        &format!("/api/v1/auth/passkeys/{passkey_id}"),
+        Some(json!({ "name": "Work laptop" })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(renamed.body["name"], "Work laptop");
+    let other = register(&h.app, "someone-else@example.com").await;
+    let not_theirs = call(
+        &h.app,
+        Method::POST,
+        &format!("/api/v1/auth/passkeys/{passkey_id}/remove"),
+        Some(json!({ "password": "a-long-enough-password" })),
+        Some(&token(&other)),
+        None,
+    )
+    .await;
+    assert_eq!(not_theirs.status, StatusCode::NOT_FOUND);
+    let removed = call(
+        &h.app,
+        Method::POST,
+        &format!("/api/v1/auth/passkeys/{passkey_id}/remove"),
+        Some(json!({ "password": "a-long-enough-password" })),
+        Some(&me),
+        None,
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    assert_eq!(passkey_sign_in(&h, &mut laptop).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_passkey_sign_in_meets_a_two_step_requirement() {
+    let h = harness().await;
+    let registered = register(&h.app, "passkey-only@example.com").await;
+    let me = token(&registered);
+    let user_id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
+    let org = Uuid::now_v7();
+    h.membership
+        .0
+        .lock()
+        .unwrap()
+        .insert((user_id, org), MembershipInfo { tenant_id: Uuid::now_v7(), role: OrgRole::Member, require_two_step: true });
+    let exchange = |bearer: String| {
+        let app = h.app.clone();
+        async move {
+            call(&app, Method::POST, "/api/v1/auth/token/exchange", Some(json!({ "organization_id": org })), Some(&bearer), None)
+                .await
+        }
+    };
+
+    let mut key = soft_authenticator::SoftAuthenticator::new("localhost", user_id.as_bytes());
+    assert_eq!(add_passkey(&h, &me, &mut key, "Security key").await.status, StatusCode::CREATED);
+    // Having a passkey does not make a password session two-step...
+    assert_eq!(exchange(me.clone()).await.body["code"], "two_step_required");
+    // ...signing in with it does.
+    let signed_in = passkey_sign_in(&h, &mut key).await;
+    let org_token = exchange(token(&signed_in)).await;
+    assert_eq!(org_token.status, StatusCode::OK, "{}", org_token.body);
+    // And the refresh keeps the workspace.
+    let refreshed = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/token/refresh",
+        Some(json!({ "organization_id": org })),
+        None,
+        Some(signed_in.cookie.as_deref().unwrap()),
+    )
+    .await;
+    assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
 }

@@ -72,6 +72,11 @@ async fn harness(with_mail: bool) -> Harness {
         cookie_secure: false,
         session_ttl_days: 30,
         trust_forwarded_for: false,
+        passkeys: identity_service::webauthn::RelyingParty {
+            id: "localhost".into(),
+            name: "Meridian".into(),
+            origins: vec![ORIGIN.into()],
+        },
     };
     let mut state =
         AppState::build(db.app.clone(), settings, sealer, Arc::new(NoMembership), RedisHandle::default()).await.unwrap();

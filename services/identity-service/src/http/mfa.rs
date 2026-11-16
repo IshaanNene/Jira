@@ -223,7 +223,7 @@ async fn end_other_sessions(state: &AppState, conn: &mut PgConnection, auth: &Au
 
 /// Re-check the password before a security change. Failures count towards the lockout,
 /// so a stolen session cannot be used to guess the password.
-async fn confirm_password(state: &AppState, account: &Account, password: String) -> ApiResult<()> {
+pub(crate) async fn confirm_password(state: &AppState, account: &Account, password: String) -> ApiResult<()> {
     let incorrect = || ApiError::invalid("password", "incorrect", "That password isn't right.");
     if account.locked_until.is_some_and(|until| until > OffsetDateTime::now_utc()) {
         return Err(incorrect());
@@ -235,7 +235,7 @@ async fn confirm_password(state: &AppState, account: &Account, password: String)
     Ok(())
 }
 
-async fn current_account(state: &AppState, auth: &AuthContext) -> ApiResult<Account> {
+pub(crate) async fn current_account(state: &AppState, auth: &AuthContext) -> ApiResult<Account> {
     super::auth::require_session(auth)?;
     if !store::session_is_active(&state.pool, auth.session_id, auth.user_id).await? {
         return Err(ApiError::Unauthenticated("Your session has ended. Sign in again."));
@@ -294,7 +294,7 @@ pub async fn login(
 
     sqlx::query("UPDATE mfa_challenges SET used_at = now() WHERE id = $1").bind(challenge_id).execute(&mut *tx).await?;
     store::reset_failed_logins(&mut tx, account.id).await?;
-    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client).await?;
+    let (session_id, refresh) = start_session(&mut tx, &state, &account, &client, "two_step").await?;
     outbox::enqueue(
         &mut tx,
         &EventEnvelope::new(None, account.id, 1, Actor::User(account.id), LoginSucceededV1 { user_id: account.id, session_id }),
@@ -307,7 +307,7 @@ pub async fn login(
     Ok((jar.add(refresh_cookie(&state, refresh)), Json(response)))
 }
 
-async fn log_event(pool: &PgPool, account_id: Uuid, email_hash: &[u8], outcome: &str, client: &ClientInfo) {
+pub(crate) async fn log_event(pool: &PgPool, account_id: Uuid, email_hash: &[u8], outcome: &str, client: &ClientInfo) {
     let (ip, agent) = (client.ip.as_deref(), client.user_agent.as_deref());
     if let Err(err) = store::insert_login_event(pool, Some(account_id), email_hash, outcome, ip, agent).await {
         tracing::warn!(error = %err, "could not record login event");

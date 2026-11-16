@@ -1,12 +1,14 @@
 //! Identity service: accounts, sessions, access tokens and (from Phase 6) federation.
 
 pub mod account_email;
+pub mod cbor;
 pub mod crypto;
 pub mod http;
 pub mod keys;
 pub mod membership;
 pub mod mfa;
 pub mod store;
+pub mod webauthn;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -29,6 +31,8 @@ pub struct Settings {
     pub cookie_secure: bool,
     pub session_ttl_days: i32,
     pub trust_forwarded_for: bool,
+    /// Where passkeys are bound: the domain and the exact page origins.
+    pub passkeys: webauthn::RelyingParty,
 }
 
 #[derive(Clone)]
@@ -115,6 +119,7 @@ impl Config {
             },
             settings: Settings {
                 issuer: config::required("TOKEN_ISSUER")?,
+                passkeys: relying_party(&config::list("ALLOWED_ORIGINS"))?,
                 allowed_origins: config::list("ALLOWED_ORIGINS"),
                 cookie_secure: config::parse_or("COOKIE_SECURE", true)?,
                 session_ttl_days: config::parse_or("SESSION_TTL_DAYS", 30)?,
@@ -122,6 +127,23 @@ impl Config {
             },
         })
     }
+}
+
+/// Passkeys are bound to `WEBAUTHN_RP_ID` (by default the host of the first allowed origin)
+/// and accepted from `WEBAUTHN_ORIGINS` (by default the allowed origins).
+fn relying_party(allowed_origins: &[String]) -> anyhow::Result<webauthn::RelyingParty> {
+    let configured = config::list("WEBAUTHN_ORIGINS");
+    let origins = if configured.is_empty() { allowed_origins.to_vec() } else { configured };
+    let id = match config::optional("WEBAUTHN_RP_ID") {
+        Some(id) => id,
+        None => origins.first().and_then(|o| webauthn::host_of(o)).unwrap_or_else(|| "localhost".to_owned()),
+    };
+    // Browsers refuse passkeys on such origins anyway; leave them out rather than refuse to start.
+    let (origins, ignored): (Vec<_>, Vec<_>) = origins.into_iter().partition(|o| webauthn::origin_matches_rp(o, &id));
+    for origin in ignored {
+        tracing::warn!(%origin, rp_id = %id, "passkeys are not available from this origin (not https, or not on the passkey domain)");
+    }
+    Ok(webauthn::RelyingParty { id, name: "Meridian".to_owned(), origins })
 }
 
 pub async fn migrate() -> anyhow::Result<()> {

@@ -1,7 +1,11 @@
 import { lazy } from "react";
 
 export {
+  useAddPasskey,
   useApiTokens,
+  usePasskeys,
+  useRemovePasskey,
+  useRenamePasskey,
   useConfirmTotp,
   useCreateApiToken,
   useRevokeApiToken,
@@ -12,7 +16,8 @@ export { ChangeEmailDialog } from "./components/ChangeEmailDialog";
 export { FormError } from "./components/FormError";
 export { applyServerErrors } from "./form-errors";
 export { safeNext, twoStepRequiredPath } from "./navigation";
-export { bootstrapSession, completeSignIn, leaveOrganizationScope, refreshSession, signIn, signOut, signUp, switchOrganization } from "./session-service";
+export { PasskeyCancelled, passkeysSupported } from "./webauthn";
+export { bootstrapSession, completeSignIn, leaveOrganizationScope, refreshSession, signIn, signInWithPasskey, signOut, signUp, switchOrganization } from "./session-service";
 
 export const LoginPage = lazy(() => import("./pages/LoginPage"));
 export const RegisterPage = lazy(() => import("./pages/RegisterPage"));

@@ -81,7 +81,7 @@ export function TwoStepVerification() {
   );
 }
 
-function PasswordStep({ busy, error, submitLabel, onSubmit, children }: {
+export function PasswordStep({ busy, error, submitLabel, onSubmit, children }: {
   busy: boolean;
   error: unknown;
   submitLabel: string;

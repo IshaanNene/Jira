@@ -107,9 +107,11 @@ pub struct Session {
     pub revoked_at: Option<OffsetDateTime>,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
+    /// `password`, `two_step` or `passkey`.
+    pub auth_method: String,
 }
 
-const SESSION_COLUMNS: &str = "id, account_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent";
+const SESSION_COLUMNS: &str = "id, account_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, auth_method";
 
 pub async fn insert_session(
     conn: &mut PgConnection,
@@ -117,16 +119,18 @@ pub async fn insert_session(
     ttl_days: i32,
     ip: Option<&str>,
     user_agent: Option<&str>,
+    auth_method: &str,
 ) -> ApiResult<Session> {
     Ok(sqlx::query_as::<_, Session>(&format!(
-        "INSERT INTO sessions (id, account_id, expires_at, ip, user_agent) \
-         VALUES ($1, $2, now() + make_interval(days => $3), $4, $5) RETURNING {SESSION_COLUMNS}"
+        "INSERT INTO sessions (id, account_id, expires_at, ip, user_agent, auth_method) \
+         VALUES ($1, $2, now() + make_interval(days => $3), $4, $5, $6) RETURNING {SESSION_COLUMNS}"
     ))
     .bind(platform_common::new_id())
     .bind(account_id)
     .bind(ttl_days)
     .bind(ip)
     .bind(user_agent)
+    .bind(auth_method)
     .fetch_one(conn)
     .await?)
 }

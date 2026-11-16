@@ -1,6 +1,8 @@
-import { api, ApiError, configureAuth, NetworkError, type MfaChallenge, type OrgRole, type TokenResponse } from "@/services/api";
+import { api, ApiError, configureAuth, NetworkError, type MfaChallenge, type OrgRole, type PasskeyOptions, type TokenResponse } from "@/services/api";
 import { queryClient } from "@/services/query-client";
 import { useSession } from "@/state/session";
+
+import { getPasskey, type RequestOptionsJson } from "./webauthn";
 
 const AUTH = "/api/v1/auth";
 /** Remembers which organization to reopen. A preference only — it grants nothing. */
@@ -108,6 +110,14 @@ export async function signIn(email: string, password: string): Promise<MfaChalle
 /** Second step of signing in. */
 export async function completeSignIn(mfaToken: string, code: string): Promise<void> {
   apply(await api.post<TokenResponse>(`${AUTH}/login/mfa`, { mfa_token: mfaToken, code }, { auth: false }));
+  channel?.postMessage("signed-in");
+}
+
+/** Sign in with a passkey chosen in the browser's prompt; no email or password needed. */
+export async function signInWithPasskey(): Promise<void> {
+  const options = await api.post<PasskeyOptions>(`${AUTH}/passkeys/sign-in/options`, undefined, { auth: false });
+  const response = await getPasskey(options.public_key as unknown as RequestOptionsJson);
+  apply(await api.post<TokenResponse>(`${AUTH}/passkeys/sign-in`, response, { auth: false }));
   channel?.postMessage("signed-in");
 }
 

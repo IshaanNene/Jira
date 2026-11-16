@@ -6,12 +6,14 @@ import { errorMessage } from "@/services/api";
 import { describeUserAgent, formatDate, formatRelative } from "@/utils/format";
 
 import { ApiTokens } from "../components/ApiTokens";
+import { Passkeys } from "../components/Passkeys";
 import { TwoStepVerification } from "../components/TwoStepVerification";
 
 export default function SecurityPage() {
   return (
     <Page title="Security" description="How you sign in, and where you are signed in." width="narrow">
       <div className="space-y-5">
+        <Passkeys />
         <TwoStepVerification />
         <Sessions />
         <ApiTokens />
@@ -41,6 +43,7 @@ function Sessions() {
                   <div className="flex items-center gap-2">
                     <span className="truncate text-base font-medium text-ink">{describeUserAgent(session.user_agent)}</span>
                     {session.current && <Badge tone="success">This device</Badge>}
+                    {session.sign_in_method === "passkey" && <Badge>Passkey</Badge>}
                   </div>
                   <div className="truncate text-sm text-ink-muted">
                     {session.ip ?? "Unknown address"} · Active {formatRelative(session.last_seen_at)} · Signed in {formatDate(session.created_at)}

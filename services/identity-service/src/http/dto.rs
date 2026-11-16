@@ -90,6 +90,8 @@ pub struct SessionDto {
     pub expires_at: OffsetDateTime,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
+    /// How it was signed in to: `password`, `two_step` or `passkey`.
+    pub sign_in_method: String,
 }
 
 impl SessionDto {
@@ -101,6 +103,7 @@ impl SessionDto {
             last_seen_at: s.last_seen_at,
             expires_at: s.expires_at,
             ip: s.ip,
+            sign_in_method: s.auth_method,
             user_agent: s.user_agent,
         }
     }
