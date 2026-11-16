@@ -37,10 +37,16 @@ can be confirmed). Confirming moves the account, marks the address verified, emi
 previous address, and tells the old address, showing only the first letter and domain of the new one. Links sent to
 the old address stop working with it.
 
+**Admin console API.** `admin/two-step` and `admin/api-tokens` let a workspace's admins and owners (signed in, not
+through an API token) see which active members have two-step verification on and list or revoke the API tokens issued
+for their workspace. Membership is checked over gRPC, so ids outside the workspace are silently left out; a revocation
+is written to the audit log and published to Redis like any other. There is no admin reset of someone's two-step
+verification: accounts are global.
+
 **Database.** Owns `identity_db`: `accounts`, `sessions`, `refresh_tokens`, `signing_keys`,
 `login_events`, `email_tokens`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
 
-**Not built yet.** Changing an account's email address; an email when the password or two-step verification
+**Not built yet.** An email when the password or two-step verification
 changes; WebAuthn; OIDC/SAML; suspicious-login detection; signing-key rotation command.
 
 | Variable | Required | Default | Purpose |

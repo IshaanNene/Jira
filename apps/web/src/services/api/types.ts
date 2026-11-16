@@ -28,6 +28,9 @@ export type ApiToken = Identity["ApiTokenDto"];
 export type ApiTokenList = Identity["ApiTokenList"];
 export type CreateApiToken = Identity["CreateApiToken"];
 export type CreatedApiToken = Identity["CreatedApiToken"];
+export type MemberTwoStepList = Identity["MemberTwoStepList"];
+export type WorkspaceApiToken = Identity["WorkspaceApiToken"];
+export type WorkspaceApiTokenList = Identity["WorkspaceApiTokenList"];
 
 export type Profile = User["ProfileDto"];
 export type UpdateProfileRequest = User["UpdateProfileRequest"];

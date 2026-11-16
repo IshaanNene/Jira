@@ -20,6 +20,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/admin/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every active API token issued for this workspace, newest first. */
+        get: operations["api_tokens"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/admin/api-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke any API token issued for this workspace; recorded in the audit log. */
+        delete: operations["revoke_api_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/admin/two-step": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Whether each member has turned on two-step verification. Ids that are not active members
+         *     of the caller's workspace are left out, so this reveals nothing about other accounts.
+         */
+        post: operations["two_step"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/api-tokens": {
         parameters: {
             query?: never;
@@ -479,6 +533,15 @@ export interface components {
             email: string;
             password: string;
         };
+        MemberTwoStep: {
+            enabled: boolean;
+            /** Format: uuid */
+            user_id: string;
+        };
+        MemberTwoStepList: {
+            /** @description Only the ids that are active members of the caller's workspace. */
+            items: components["schemas"]["MemberTwoStep"][];
+        };
         MfaChallenge: {
             /** Format: int64 */
             expires_in: number;
@@ -567,6 +630,31 @@ export interface components {
             /** @description Base32 secret, for typing into the app by hand. */
             secret: string;
         };
+        TwoStepLookup: {
+            /** @description At most 500. */
+            user_ids: string[];
+        };
+        WorkspaceApiToken: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @description The first characters of the secret. */
+            hint: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            name: string;
+            /**
+             * Format: uuid
+             * @description Whose token it is.
+             */
+            owner_id: string;
+        };
+        WorkspaceApiTokenList: {
+            items: components["schemas"]["WorkspaceApiToken"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -587,6 +675,97 @@ export interface operations {
         responses: {
             /** @description Public signing keys */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    api_tokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceApiTokenList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke_api_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    two_step: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoStepLookup"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberTwoStepList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

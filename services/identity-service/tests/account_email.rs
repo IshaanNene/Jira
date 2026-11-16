@@ -40,6 +40,9 @@ impl MembershipChecker for NoMembership {
     async fn check(&self, _: Uuid, _: Uuid) -> ApiResult<Option<MembershipInfo>> {
         Ok(None)
     }
+    async fn active_members(&self, _: Uuid, _: &[Uuid]) -> ApiResult<Vec<Uuid>> {
+        Ok(Vec::new())
+    }
 }
 
 /// (to, subject, text) of every email sent.

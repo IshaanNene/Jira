@@ -105,7 +105,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **248 Rust tests, 147 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **249 Rust tests, 151 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -225,11 +225,11 @@ so that a new migration file is always embedded in the binary.
 | Item | State |
 |---|---|
 | Query language | Built, with saved filters and email subscriptions (see above). Not built: subscriptions in a person's own time zone or for other people and groups, sharing with specific people or groups, favourites, a filter column picker; `membersOf()`, `openSprints()`, `issueHistory()` and other functions; `WAS` / `CHANGED`; custom fields; time zones other than UTC; the board and backlog filter by MQL but quick filters cannot be saved on a board |
-| Two-step verification | TOTP built (see above). Requiring it per workspace built (see above): access tokens issued before the requirement stay valid for up to 10 minutes, and a member can still turn their own off (they are then refused at the next refresh). Not built: WebAuthn / passkeys; an email when it is turned on or off or a recovery code is used; an `amr` claim in tokens; admin reset for a member who lost their phone and codes (today only a database operator can) |
-| API tokens | Built (see above). Not built: scopes narrower than the person's own access; tokens owned by a service account rather than a person; an admin view of a workspace's tokens; expiry reminders; secret scanning for the `mrd_` prefix |
+| Two-step verification | TOTP built (see above). Requiring it per workspace built (see above): access tokens issued before the requirement stay valid for up to 10 minutes, and a member can still turn their own off (they are then refused at the next refresh). Not built: WebAuthn / passkeys; an email when it is turned on or off or a recovery code is used; an `amr` claim in tokens; admin reset for a member who lost their phone and codes: deliberately not offered to workspace admins, because an account is global and can belong to other workspaces (today only a database operator can) |
+| API tokens | Built (see above). Not built: scopes narrower than the person's own access; tokens owned by a service account rather than a person; expiry reminders; secret scanning for the `mrd_` prefix |
 | SSO (OIDC, SAML), SCIM | Not started |
 | Audit log | Built (see above). Not built: client IP address on entries; retention and purge (append-only for now, so entries are kept forever); workflow and board entries have no name (their events carry none); entries are listed in the order they were recorded, which can differ slightly from when they happened across topics; project access entries are written just after the permission change rather than in the same transaction, so a crash between the two loses the entry; no scheduled verifier; no audit of sign-ins (identity-service emits no events yet) |
-| Admin console | Not started (settings pages exist for members, invitations, notifications and the audit log) |
+| Admin console | Built: Settings → Admin console (admins and owners) shows active members by role, projects, whether two-step verification is required, webhooks turned off after failures, which active members lack two-step verification (`POST /api/v1/auth/admin/two-step`, answering only for active members of the caller's workspace), and every active API token issued for the workspace with its owner and last use; revoking one (`DELETE /api/v1/auth/admin/api-tokens/{id}`) takes effect at once and is written to the audit log. Session tokens only, not API tokens. 1 identity integration test, 4 web tests. Not built: usage and seat counts over time, bulk actions on members, forcing a member to sign out everywhere |
 | Automation, integrations (webhooks, Git, Slack) | Not started |
 
 ## Measured performance
@@ -292,5 +292,5 @@ p95 16.3 ms, p99 76.9 ms); 14,408 requests, 1 failed. All thresholds passed.
 1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
    environment from the Terraform with External Secrets and Argo CD, re-running the stress test
    against chart queries now that they are cached, and a restore drill.
-2. Phase 6, remaining: admin console, WebAuthn, SSO (OIDC, SAML) and SCIM, more automation
+2. Phase 6, remaining: WebAuthn, SSO (OIDC, SAML) and SCIM, more automation
    (scheduled triggers, comment and transition actions), integrations beyond webhooks (chat, source control).

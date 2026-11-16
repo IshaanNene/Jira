@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use api_contracts::user::v1::{membership_client::MembershipClient, CheckMembershipRequest};
+use api_contracts::user::v1::{membership_client::MembershipClient, CheckMembershipRequest, GetMembersRequest};
 use async_trait::async_trait;
 use auth_middleware::{
     service_auth::{is_transient, lazy_channel, ServiceClientAuth},
@@ -26,6 +26,8 @@ pub struct MembershipInfo {
 pub trait MembershipChecker: Send + Sync {
     /// `Ok(None)` when the user is not an active member of the organization.
     async fn check(&self, user_id: Uuid, organization_id: Uuid) -> ApiResult<Option<MembershipInfo>>;
+    /// Which of `user_ids` are active members of the tenant's organization (at most 500).
+    async fn active_members(&self, tenant_id: Uuid, user_ids: &[Uuid]) -> ApiResult<Vec<Uuid>>;
 }
 
 pub struct GrpcMembership {
@@ -73,5 +75,24 @@ impl MembershipChecker for GrpcMembership {
         let role = OrgRole::parse(&reply.org_role)
             .ok_or_else(|| ApiError::internal(anyhow::anyhow!("user-service returned an unknown role")))?;
         Ok(Some(MembershipInfo { tenant_id, role, require_two_step: reply.require_two_step }))
+    }
+
+    async fn active_members(&self, tenant_id: Uuid, user_ids: &[Uuid]) -> ApiResult<Vec<Uuid>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.breaker.try_acquire().is_err() {
+            return Err(ApiError::DependencyUnavailable("user-service"));
+        }
+        let ids: Vec<String> = user_ids.iter().map(Uuid::to_string).collect();
+        let result = retry(RetryPolicy::default(), is_transient, || {
+            let mut client = self.client.clone();
+            let request = GetMembersRequest { tenant_id: tenant_id.to_string(), user_ids: ids.clone() };
+            async move { client.get_members(request).await }
+        })
+        .await;
+        self.breaker.record(result.as_ref().map_or_else(|s| !is_transient(s), |_| true));
+        let reply = result.map_err(|s| from_status(&s, "user-service"))?.into_inner();
+        Ok(reply.members.into_iter().filter(|m| m.status == "active").filter_map(|m| m.user_id.parse().ok()).collect())
     }
 }

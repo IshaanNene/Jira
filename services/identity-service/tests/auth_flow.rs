@@ -34,6 +34,10 @@ impl MembershipChecker for FakeMembership {
     async fn check(&self, user_id: Uuid, organization_id: Uuid) -> ApiResult<Option<MembershipInfo>> {
         Ok(self.0.lock().unwrap().get(&(user_id, organization_id)).cloned())
     }
+    async fn active_members(&self, tenant_id: Uuid, user_ids: &[Uuid]) -> ApiResult<Vec<Uuid>> {
+        let table = self.0.lock().unwrap();
+        Ok(user_ids.iter().copied().filter(|u| table.iter().any(|((who, _), m)| who == u && m.tenant_id == tenant_id)).collect())
+    }
 }
 
 struct Harness {
@@ -880,5 +884,119 @@ async fn a_workspace_can_require_two_step_verification() {
         call(&h.app, Method::POST, "/api/v1/auth/token/refresh", Some(json!({ "organization_id": org })), None, Some(&cookie))
             .await;
     assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
+    h.db.cleanup().await;
+}
+
+/// Register, make a member of `org` with `role`, and return (account id, workspace session token).
+async fn member(h: &Harness, email: &str, org: Uuid, tenant: Uuid, role: OrgRole) -> (Uuid, String) {
+    let registered = register(&h.app, email).await;
+    let id = Uuid::parse_str(registered.body["account"]["id"].as_str().unwrap()).unwrap();
+    h.membership.0.lock().unwrap().insert((id, org), MembershipInfo { tenant_id: tenant, role, require_two_step: false });
+    let exchanged = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/token/exchange",
+        Some(json!({ "organization_id": org })),
+        Some(&token(&registered)),
+        None,
+    )
+    .await;
+    (id, token(&exchanged))
+}
+
+#[tokio::test]
+async fn admins_see_members_two_step_and_manage_workspace_api_tokens() {
+    let h = harness().await;
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, admin) = member(&h, "admin@example.com", org, tenant, OrgRole::Admin).await;
+    let (alice, alice_session) = member(&h, "alice@example.com", org, tenant, OrgRole::Member).await;
+    let (bob, _) = member(&h, "bob@example.com", org, tenant, OrgRole::Member).await;
+    // Someone in another workspace only.
+    let (other_org, other_tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (outsider, outsider_session) = member(&h, "out@example.com", other_org, other_tenant, OrgRole::Owner).await;
+    for who in [alice, outsider] {
+        sqlx::query(
+            "INSERT INTO totp_factors (account_id, secret_enc, nonce, confirmed_at) VALUES ($1, '\\x00', '\\x00', now())",
+        )
+        .bind(who)
+        .execute(&h.db.owner)
+        .await
+        .unwrap();
+    }
+
+    // Two-step status: admins only, and only for the workspace's own members.
+    let ask = json!({ "user_ids": [alice, bob, outsider] });
+    let refused = call(&h.app, Method::POST, "/api/v1/auth/admin/two-step", Some(ask.clone()), Some(&alice_session), None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let status = call(&h.app, Method::POST, "/api/v1/auth/admin/two-step", Some(ask), Some(&admin), None).await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.body);
+    let mut got: Vec<(String, bool)> = status.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["user_id"].as_str().unwrap().to_owned(), i["enabled"].as_bool().unwrap()))
+        .collect();
+    got.sort();
+    let mut want = vec![(alice.to_string(), true), (bob.to_string(), false)];
+    want.sort();
+    assert_eq!(got, want, "the outsider is left out");
+    let too_many = json!({ "user_ids": vec![Uuid::nil(); 501] });
+    assert_eq!(
+        call(&h.app, Method::POST, "/api/v1/auth/admin/two-step", Some(too_many), Some(&admin), None).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // API tokens: the workspace's own, listed and revocable by its admins, and audited.
+    let mine = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "ci", "expires_in_days": 30 })),
+        Some(&alice_session),
+        None,
+    )
+    .await;
+    let theirs = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/api-tokens",
+        Some(json!({ "name": "other", "expires_in_days": 30 })),
+        Some(&outsider_session),
+        None,
+    )
+    .await;
+    let (mine_id, theirs_id) =
+        (mine.body["token"]["id"].as_str().unwrap().to_owned(), theirs.body["token"]["id"].as_str().unwrap().to_owned());
+    assert_eq!(
+        call(&h.app, Method::GET, "/api/v1/auth/admin/api-tokens", None, Some(&alice_session), None).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let listed = call(&h.app, Method::GET, "/api/v1/auth/admin/api-tokens", None, Some(&admin), None).await;
+    let items = listed.body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        (items[0]["id"].as_str(), items[0]["owner_id"].as_str()),
+        (Some(mine_id.as_str()), Some(alice.to_string().as_str()))
+    );
+    assert!(items[0].get("secret").is_none() && items[0].get("token_hash").is_none());
+
+    let other =
+        call(&h.app, Method::DELETE, &format!("/api/v1/auth/admin/api-tokens/{theirs_id}"), None, Some(&admin), None).await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "another workspace's token is out of reach");
+    let revoked =
+        call(&h.app, Method::DELETE, &format!("/api/v1/auth/admin/api-tokens/{mine_id}"), None, Some(&admin), None).await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let secret = mine.body["secret"].as_str().unwrap();
+    let exchange = call(&h.app, Method::POST, "/api/v1/auth/token/api", Some(json!({ "token": secret })), None, None).await;
+    assert_eq!(exchange.status, StatusCode::UNAUTHORIZED, "a revoked token no longer works");
+    let audit: (Option<Uuid>, Value) = sqlx::query_as(
+        "SELECT tenant_id, payload->'payload' FROM outbox WHERE event_type = 'audit.recorded' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&h.db.owner)
+    .await
+    .unwrap();
+    assert_eq!(audit.0, Some(tenant));
+    assert_eq!((audit.1["action"].as_str(), audit.1["resource_label"].as_str()), (Some("api_token.revoked"), Some("ci")));
+    assert_eq!(audit.1["details"]["owner_id"], alice.to_string());
     h.db.cleanup().await;
 }

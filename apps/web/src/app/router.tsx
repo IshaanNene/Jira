@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { BacklogPage, BoardPage, ReportsPage } from "@/modules/agile";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
 import { ConfirmEmailChangePage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage, VerifyEmailPage } from "@/modules/auth";
+import { AdminConsolePage } from "@/modules/admin";
 import { AcceptInvitationPage, AuditLogPage, OnboardingPage, OrganizationSettingsPage, PeoplePage } from "@/modules/organizations";
 import { WebhooksPage } from "@/modules/integrations";
 import { CustomFieldsPage, IssueListPage, IssuePage } from "@/modules/issues";
@@ -98,6 +99,7 @@ export const router = createBrowserRouter([
                     element: <SettingsLayout />,
                     children: [
                       { path: "/settings/workspace", element: <OrganizationSettingsPage /> },
+                      { path: "/settings/admin", element: <AdminConsolePage /> },
                       { path: "/settings/custom-fields", element: <CustomFieldsPage /> },
                       { path: "/settings/audit-log", element: <AuditLogPage /> },
                       { path: "/settings/webhooks", element: <WebhooksPage /> },

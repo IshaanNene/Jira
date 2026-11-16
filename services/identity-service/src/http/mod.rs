@@ -1,4 +1,5 @@
 pub mod account_email;
+pub mod admin;
 pub mod api_tokens;
 pub mod auth;
 pub mod dto;
@@ -47,10 +48,18 @@ use crate::AppState;
         api_tokens::list,
         api_tokens::create,
         api_tokens::revoke,
-        api_tokens::exchange
+        api_tokens::exchange,
+        admin::two_step,
+        admin::api_tokens,
+        admin::revoke_api_token
     ),
     components(schemas(
         dto::RegisterRequest,
+        admin::TwoStepLookup,
+        admin::MemberTwoStep,
+        admin::MemberTwoStepList,
+        admin::WorkspaceApiToken,
+        admin::WorkspaceApiTokenList,
         account_email::EmailTokenRequest,
         account_email::ForgotPasswordRequest,
         account_email::ResetPasswordRequest,
@@ -106,6 +115,9 @@ pub fn router(state: AppState) -> Router {
         .route("/token/api", post(api_tokens::exchange))
         .route("/api-tokens", get(api_tokens::list).post(api_tokens::create))
         .route("/api-tokens/{id}", delete(api_tokens::revoke))
+        .route("/admin/two-step", post(admin::two_step))
+        .route("/admin/api-tokens", get(admin::api_tokens))
+        .route("/admin/api-tokens/{id}", delete(admin::revoke_api_token))
         .route("/me", get(auth::me))
         .route("/sessions", get(sessions::list))
         .route("/sessions/{id}", delete(sessions::revoke))
