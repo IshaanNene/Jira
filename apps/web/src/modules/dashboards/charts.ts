@@ -39,6 +39,19 @@ export function chartOption(data: WidgetData, theme: ChartTheme, names: Names): 
         ],
       };
     }
+    case "burnup": {
+      // Two rising lines; the space between them is the work still open.
+      const days = data.days.map((d) => formatShortDay(d.date));
+      return {
+        ...axisTooltip(theme),
+        xAxis: { ...categoryAxis(theme, days), boundaryGap: false },
+        yAxis: valueAxis(theme, "Issues"),
+        series: [
+          { ...line("All issues", theme.series[0], data.days.map((d) => d.scope), theme), endLabel: endLabel(theme) },
+          { ...line("Resolved", theme.series[1], data.days.map((d) => d.done), theme), endLabel: endLabel(theme) },
+        ],
+      };
+    }
     case "cycle_time": {
       // A week in which nothing finished has no cycle time: a gap, not a zero.
       const value = (w: (typeof data.weeks)[number], v: number) => (w.issues ? Math.round(v * 10) / 10 : null);

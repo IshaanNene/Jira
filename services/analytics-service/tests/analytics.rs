@@ -288,6 +288,24 @@ async fn charts_count_only_the_viewers_tenant_and_projects() {
     let total = |field: &str| days.iter().map(|d| d[field].as_u64().unwrap()).sum::<u64>();
     assert_eq!((total("created"), total("resolved")), (3, 1), "{cvr}");
 
+    // Burnup: everything created, and resolved, by the end of each day, starting from what
+    // came before the period (the story created ten days ago).
+    let burnup = h.chart(&admin_token, json!({ "kind": "burnup", "days": 7 })).await;
+    let totals: Vec<(u64, u64)> =
+        burnup["days"].as_array().unwrap().iter().map(|d| (d["scope"].as_u64().unwrap(), d["done"].as_u64().unwrap())).collect();
+    assert_eq!(totals.len(), 7, "{burnup}");
+    assert_eq!((totals[0], totals[2], totals[4], totals[6]), ((1, 0), (2, 0), (2, 1), (3, 1)), "{burnup}");
+    let pay_burnup = h.chart(&member_token, json!({ "kind": "burnup", "days": 7 })).await;
+    assert_eq!(pay_burnup["days"][6]["scope"], 2, "only projects the viewer browses");
+
+    // Recently created: only issues created in the last five days.
+    let recent = h
+        .chart(&admin_token, json!({ "kind": "breakdown", "group_by": "type", "include_done": true, "created_within_days": 5 }))
+        .await;
+    let groups: Vec<(&str, u64)> =
+        recent["groups"].as_array().unwrap().iter().map(|g| (g["key"].as_str().unwrap(), g["count"].as_u64().unwrap())).collect();
+    assert_eq!((recent["total"].as_u64(), groups), (Some(2), vec![("bug", 1), ("task", 1)]), "{recent}");
+
     // The member only browses PAY: HR's issue is not counted, even when asked for.
     let mine = h.chart(&member_token, json!({ "kind": "created_vs_resolved", "days": 14 })).await;
     assert_eq!(mine["days"].as_array().unwrap().iter().map(|d| d["created"].as_u64().unwrap()).sum::<u64>(), 2);
@@ -538,6 +556,32 @@ async fn dashboards_are_private_until_shared_and_only_their_owner_or_an_admin_ed
     let (_, list) = h.call(Method::GET, "/api/v1/dashboards", &ben_t, None).await;
     assert_eq!((list["items"][0]["widget_count"].as_i64(), list["items"][0]["editable"].as_bool()), (Some(1), Some(false)));
     assert_eq!(h.write(Method::DELETE, &path, &ben_t, None).await.0, StatusCode::FORBIDDEN);
+
+    // Anyone who can see a dashboard can copy it: the copy is theirs, private, with its charts.
+    let (status, copy) = h.call(Method::POST, &format!("{path}/copy"), &ben_t, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{copy}");
+    assert_eq!(
+        (copy["name"].as_str(), copy["owner_id"].as_str(), copy["shared"].as_bool(), copy["editable"].as_bool()),
+        (Some("Copy of Delivery health"), Some(ben.to_string().as_str()), Some(false), Some(true))
+    );
+    assert_eq!(copy["widgets"].as_array().unwrap().len(), 1);
+    assert_eq!(copy["widgets"][0]["query"]["group_by"], "type");
+    assert_ne!(copy["widgets"][0]["id"], after["widgets"][0]["id"], "new charts, not shared ones");
+    let (status, named) = h.call(Method::POST, &format!("{path}/copy"), &ben_t, Some(json!({ "name": "Ben's view" }))).await;
+    assert_eq!((status, named["name"].as_str()), (StatusCode::CREATED, Some("Ben's view")));
+    assert_eq!(
+        h.call(Method::POST, &format!("{path}/copy"), &ben_t, Some(json!({ "name": "" }))).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(h.call(Method::POST, &format!("{path}/copy"), &outsider_t, None).await.0, StatusCode::NOT_FOUND);
+    // A private dashboard cannot be copied by anyone else.
+    let ben_copy = format!("/api/v1/dashboards/{}/copy", copy["id"].as_str().unwrap());
+    assert_eq!(h.call(Method::POST, &ben_copy, &ada_t, None).await.0, StatusCode::NOT_FOUND);
+    // Changing the copy leaves the original alone.
+    let copy_path = format!("/api/v1/dashboards/{}", copy["id"].as_str().unwrap());
+    assert_eq!(h.write(Method::PATCH, &copy_path, &ben_t, Some(json!({ "name": "Renamed copy" }))).await.0, StatusCode::OK);
+    assert_eq!(h.call(Method::GET, &path, &ada_t, None).await.1["name"], "Delivery health");
+
     assert_eq!(h.write(Method::DELETE, &path, &ada_t, None).await.0, StatusCode::NO_CONTENT);
     assert_eq!(h.call(Method::GET, &path, &ada_t, None).await.0, StatusCode::NOT_FOUND);
     h.cleanup().await;

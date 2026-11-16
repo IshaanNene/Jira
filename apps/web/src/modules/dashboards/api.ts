@@ -42,10 +42,14 @@ export function useDashboard(id: string) {
   return useQuery({ queryKey: dashboardKeys.one(orgId, id), queryFn: () => api.get<Dashboard>(`${BASE}/${id}`), enabled: Boolean(orgId && id) });
 }
 
-/** The numbers behind one chart. Charts follow events, so a minute-old answer is fine. */
-export function useWidgetData(query: WidgetQuery | null) {
+/**
+ * The numbers behind one chart. Charts follow events, so a minute-old answer is fine;
+ * `refreshMs` asks again on that interval while the chart is on screen.
+ */
+export function useWidgetData(query: WidgetQuery | null, refreshMs?: number) {
   const orgId = useOrgId();
   return useQuery({
+    refetchInterval: refreshMs || false,
     queryKey: dashboardKeys.data(orgId, query ?? { kind: "velocity", project: "", sprints: 0 }),
     queryFn: ({ signal }) => api.post<WidgetData>("/api/v1/analytics/query", query, { signal }),
     enabled: Boolean(orgId && query),
@@ -87,6 +91,19 @@ export function useCreateDashboard() {
   const orgId = useOrgId();
   return useMutation({
     mutationFn: (body: CreateDashboard) => api.post<Dashboard>(BASE, body),
+    onSuccess: (dashboard) => {
+      qc.setQueryData(dashboardKeys.one(orgId, dashboard.id), dashboard);
+      void qc.invalidateQueries({ queryKey: dashboardKeys.list(orgId) });
+    },
+  });
+}
+
+/** A private copy of a dashboard the caller can see, with its charts, owned by them. */
+export function useCopyDashboard() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Dashboard>(`${BASE}/${id}/copy`),
     onSuccess: (dashboard) => {
       qc.setQueryData(dashboardKeys.one(orgId, dashboard.id), dashboard);
       void qc.invalidateQueries({ queryKey: dashboardKeys.list(orgId) });

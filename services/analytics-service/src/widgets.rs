@@ -38,6 +38,9 @@ pub enum WidgetQuery {
         group_by: GroupBy,
         #[serde(default)]
         include_done: bool,
+        /// Only issues created in the last this many days (1 to 365): "recently created".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_within_days: Option<u16>,
     },
     /// Days issues spent in each status, for stays that ended (the issue moved on) in the
     /// last weeks.
@@ -56,6 +59,13 @@ pub enum WidgetQuery {
     },
     /// Issues in each status category at the end of each day: a cumulative flow diagram.
     CumulativeFlow {
+        #[serde(default)]
+        projects: Vec<Uuid>,
+        /// 7 to 365.
+        days: u16,
+    },
+    /// All issues (scope) and resolved issues (done) at the end of each day.
+    Burnup {
         #[serde(default)]
         projects: Vec<Uuid>,
         /// 7 to 365.
@@ -115,7 +125,10 @@ impl WidgetQuery {
         match self {
             WidgetQuery::CreatedVsResolved { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::CycleTime { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
-            WidgetQuery::Breakdown { projects: p, .. } => projects(p),
+            WidgetQuery::Breakdown { projects: p, created_within_days, .. } => {
+                projects(p).and(created_within_days.map_or(Ok(()), |d| range("created_within_days", d, 1, 365)))
+            }
+            WidgetQuery::Burnup { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
             WidgetQuery::TimeInStatus { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::ControlChart { projects: p, weeks } => projects(p).and(range("weeks", *weeks, 4, 52)),
             WidgetQuery::CumulativeFlow { projects: p, days } => projects(p).and(range("days", *days, 7, 365)),
@@ -129,6 +142,7 @@ impl WidgetQuery {
             | WidgetQuery::CycleTime { projects, .. }
             | WidgetQuery::Breakdown { projects, .. }
             | WidgetQuery::CumulativeFlow { projects, .. }
+            | WidgetQuery::Burnup { projects, .. }
             | WidgetQuery::TimeInStatus { projects, .. }
             | WidgetQuery::ControlChart { projects, .. } => projects.clone(),
             WidgetQuery::Velocity { project, .. } => vec![*project],
@@ -142,6 +156,16 @@ pub struct DayCounts {
     pub date: String,
     pub created: u64,
     pub resolved: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct DayTotals {
+    /// `YYYY-MM-DD`, UTC; totals are at the end of that day.
+    pub date: String,
+    /// Issues created by then (that still exist).
+    pub scope: u64,
+    /// Of those, resolved by then.
+    pub done: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, PartialEq)]
@@ -225,6 +249,9 @@ pub enum WidgetData {
     CumulativeFlow {
         days: Vec<DayFlow>,
     },
+    Burnup {
+        days: Vec<DayTotals>,
+    },
     TimeInStatus {
         statuses: Vec<StatusTime>,
     },
@@ -252,6 +279,7 @@ impl WidgetData {
             WidgetQuery::CumulativeFlow { days, .. } => {
                 WidgetData::CumulativeFlow { days: flow(&BTreeMap::new(), &BTreeMap::new(), today, *days) }
             }
+            WidgetQuery::Burnup { days, .. } => WidgetData::Burnup { days: burnup((0, 0), &BTreeMap::new(), today, *days) },
             WidgetQuery::TimeInStatus { .. } => WidgetData::TimeInStatus { statuses: vec![] },
             WidgetQuery::ControlChart { .. } => WidgetData::ControlChart { issues: vec![], mean_days: 0.0, truncated: false },
             WidgetQuery::Velocity { .. } => WidgetData::Velocity { sprints: vec![] },
@@ -290,6 +318,22 @@ fn fill_days(found: BTreeMap<String, (u64, u64)>, today: Date, days: u16) -> Vec
             let date = day_string(today - Duration::days(back));
             let (created, resolved) = found.get(&date).copied().unwrap_or_default();
             DayCounts { date, created, resolved }
+        })
+        .collect()
+}
+
+/// Running totals from those before the period (`before`: scope, done) and each day's
+/// created and resolved counts; one entry per day, oldest first, ending today.
+fn burnup(before: (u64, u64), daily: &BTreeMap<String, (u64, u64)>, today: Date, days: u16) -> Vec<DayTotals> {
+    let (mut scope, mut done) = before;
+    (0..i64::from(days))
+        .rev()
+        .map(|back| {
+            let date = day_string(today - Duration::days(back));
+            let (created, resolved) = daily.get(&date).copied().unwrap_or_default();
+            scope += created;
+            done += resolved;
+            DayTotals { date, scope, done }
         })
         .collect()
 }
@@ -369,6 +413,36 @@ struct TotalRow {
     total: u64,
 }
 
+#[derive(Deserialize)]
+struct BeforeRow {
+    scope: u64,
+    done: u64,
+}
+
+/// Issues created and resolved on each day from `from`, by each issue's current state (a
+/// reopened issue has no resolution date).
+async fn daily_counts(
+    store: &ClickHouse,
+    tenant: Uuid,
+    filter: &str,
+    params: &Params,
+    from: Date,
+) -> ApiResult<BTreeMap<String, (u64, u64)>> {
+    let sql = format!(
+        "SELECT toString(day) AS day, sum(c) AS created, sum(r) AS resolved FROM ( \
+           SELECT toDate(created_at) AS day, count() AS c, 0 AS r FROM issue_state FINAL \
+           WHERE tenant_id = {{tenant:UUID}}{filter} AND toDate(created_at) >= {{from:Date}} GROUP BY day \
+           UNION ALL \
+           SELECT toDate(assumeNotNull(resolved_at)) AS day, 0 AS c, count() AS r FROM issue_state FINAL \
+           WHERE tenant_id = {{tenant:UUID}}{filter} AND resolved_at IS NOT NULL \
+             AND toDate(assumeNotNull(resolved_at)) >= {{from:Date}} GROUP BY day \
+         ) GROUP BY day ORDER BY day"
+    );
+    let rows: Vec<DayRow> =
+        store.query(tenant, &sql, &params.clone().add("from", day_string(from))).await.map_err(unavailable)?;
+    Ok(rows.into_iter().map(|r| (r.day, (r.created, r.resolved))).collect())
+}
+
 /// Run a chart's query for `tenant`, over `scope`.
 pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible: Option<&[Uuid]>) -> ApiResult<WidgetData> {
     query.validate()?;
@@ -385,20 +459,22 @@ pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible:
     match query {
         WidgetQuery::CreatedVsResolved { days, .. } => {
             let from = today - Duration::days(i64::from(*days) - 1);
-            let sql = format!(
-                "SELECT toString(day) AS day, sum(c) AS created, sum(r) AS resolved FROM ( \
-                   SELECT toDate(created_at) AS day, count() AS c, 0 AS r FROM issue_state FINAL \
-                   WHERE tenant_id = {{tenant:UUID}}{filter} AND toDate(created_at) >= {{from:Date}} GROUP BY day \
-                   UNION ALL \
-                   SELECT toDate(assumeNotNull(resolved_at)) AS day, 0 AS c, count() AS r FROM issue_state FINAL \
-                   WHERE tenant_id = {{tenant:UUID}}{filter} AND resolved_at IS NOT NULL \
-                     AND toDate(assumeNotNull(resolved_at)) >= {{from:Date}} GROUP BY day \
-                 ) GROUP BY day ORDER BY day"
-            );
-            let rows: Vec<DayRow> =
-                store.query(tenant, &sql, &params.add("from", day_string(from))).await.map_err(unavailable)?;
-            let found = rows.into_iter().map(|r| (r.day, (r.created, r.resolved))).collect();
+            let found = daily_counts(store, tenant, filter, &params, from).await?;
             Ok(WidgetData::CreatedVsResolved { days: fill_days(found, today, *days) })
+        }
+        WidgetQuery::Burnup { days, .. } => {
+            let from = today - Duration::days(i64::from(*days) - 1);
+            let daily = daily_counts(store, tenant, filter, &params, from).await?;
+            // Everything created, and resolved, before the first day: where the lines start.
+            let sql = format!(
+                "SELECT countIf(toDate(created_at) < {{from:Date}}) AS scope, \
+                        countIf(resolved_at IS NOT NULL AND toDate(assumeNotNull(resolved_at)) < {{from:Date}}) AS done \
+                 FROM issue_state FINAL WHERE tenant_id = {{tenant:UUID}}{filter}"
+            );
+            let before: Vec<BeforeRow> =
+                store.query(tenant, &sql, &params.add("from", day_string(from))).await.map_err(unavailable)?;
+            let before = before.first().map_or((0, 0), |b| (b.scope, b.done));
+            Ok(WidgetData::Burnup { days: burnup(before, &daily, today, *days) })
         }
         WidgetQuery::CycleTime { weeks, .. } => {
             let from = today - Duration::weeks(i64::from(*weeks)) + Duration::days(1);
@@ -424,10 +500,14 @@ pub async fn run(store: &ClickHouse, tenant: Uuid, query: &WidgetQuery, visible:
             let weeks = store.query(tenant, &sql, &params.add("from", day_string(from))).await.map_err(unavailable)?;
             Ok(WidgetData::CycleTime { weeks })
         }
-        WidgetQuery::Breakdown { group_by, include_done, .. } => {
+        WidgetQuery::Breakdown { group_by, include_done, created_within_days, .. } => {
             let open = if *include_done { "" } else { " AND status_category != 'done'" };
+            let recent = if created_within_days.is_some() { " AND toDate(created_at) >= {from:Date}" } else { "" };
+            if let Some(d) = created_within_days {
+                params = params.add("from", day_string(today - Duration::days(i64::from(*d) - 1)));
+            }
             let column = group_by.column();
-            let base = format!("FROM issue_state FINAL WHERE tenant_id = {{tenant:UUID}}{filter}{open}");
+            let base = format!("FROM issue_state FINAL WHERE tenant_id = {{tenant:UUID}}{filter}{open}{recent}");
             let groups: Vec<Group> = store
                 .query(
                     tenant,
@@ -579,7 +659,42 @@ mod tests {
         assert!(serde_json::from_value::<WidgetQuery>(json!({ "kind": "raw_sql", "sql": "SELECT 1" })).is_err());
         assert!(serde_json::from_value::<WidgetQuery>(json!({ "kind": "breakdown", "group_by": "password" })).is_err());
         let many: Vec<Uuid> = (0..51).map(|_| Uuid::now_v7()).collect();
-        assert!(WidgetQuery::Breakdown { projects: many, group_by: GroupBy::Type, include_done: false }.validate().is_err());
+        assert!(WidgetQuery::Breakdown {
+            projects: many,
+            group_by: GroupBy::Type,
+            include_done: false,
+            created_within_days: None
+        }
+        .validate()
+        .is_err());
+        let recent: WidgetQuery =
+            serde_json::from_value(json!({ "kind": "breakdown", "group_by": "type", "created_within_days": 14 })).unwrap();
+        assert!(recent.validate().is_ok());
+        for bad in [0, 366] {
+            let q = WidgetQuery::Breakdown {
+                projects: vec![],
+                group_by: GroupBy::Type,
+                include_done: false,
+                created_within_days: Some(bad),
+            };
+            assert!(q.validate().is_err(), "{bad}");
+        }
+        // Left out when unset, so saved breakdowns and their cached answers are unchanged.
+        let plain =
+            WidgetQuery::Breakdown { projects: vec![], group_by: GroupBy::Type, include_done: false, created_within_days: None };
+        assert!(serde_json::to_value(plain).unwrap().get("created_within_days").is_none());
+        let burnup: WidgetQuery = serde_json::from_value(json!({ "kind": "burnup", "days": 30 })).unwrap();
+        assert!(burnup.validate().is_ok());
+        assert!(WidgetQuery::Burnup { projects: vec![], days: 3 }.validate().is_err());
+    }
+
+    #[test]
+    fn burnup_adds_each_day_to_what_came_before() {
+        let today = Date::from_calendar_date(2026, time::Month::March, 3).unwrap();
+        let daily = BTreeMap::from([("2026-03-01".to_owned(), (2, 0)), ("2026-03-03".to_owned(), (1, 3))]);
+        let days = burnup((10, 4), &daily, today, 3);
+        let totals: Vec<_> = days.iter().map(|d| (d.date.as_str(), d.scope, d.done)).collect();
+        assert_eq!(totals, [("2026-03-01", 12, 4), ("2026-03-02", 12, 4), ("2026-03-03", 13, 7)]);
     }
 
     #[test]

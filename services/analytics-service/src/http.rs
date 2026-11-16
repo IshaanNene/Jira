@@ -32,7 +32,7 @@ const MAX_WIDGETS: i64 = 30;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Analytics API", version = "1.0.0", description = "Dashboards and the charts on them."),
-    paths(list, create, get_one, update, delete, add_widget, update_widget, delete_widget, query),
+    paths(list, create, get_one, update, delete, copy, add_widget, update_widget, delete_widget, query),
     components(schemas(
         DashboardSummary,
         DashboardList,
@@ -50,6 +50,8 @@ const MAX_WIDGETS: i64 = 30;
         widgets::WeekCycleTime,
         widgets::Group,
         widgets::DayFlow,
+        widgets::DayTotals,
+        CopyDashboard,
         widgets::StatusTime,
         widgets::ControlPoint,
         widgets::SprintResult
@@ -117,6 +119,13 @@ pub struct CreateDashboard {
     pub description: String,
     #[serde(default)]
     pub shared: bool,
+}
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CopyDashboard {
+    /// Defaults to "Copy of <name>".
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -324,14 +333,7 @@ pub async fn create(
     let name = name("name", &body.name, "Name")?;
     let description = description(&body.description)?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    let (owned,): (i64,) = sqlx::query_as("SELECT count(*) FROM dashboards WHERE tenant_id = $1 AND owner_id = $2")
-        .bind(ctx.tenant_id)
-        .bind(ctx.user_id)
-        .fetch_one(tx.conn())
-        .await?;
-    if owned >= MAX_DASHBOARDS {
-        return Err(ApiError::Conflict("You have the most dashboards allowed. Delete one first.".into()));
-    }
+    room_for_one_more(tx.conn(), &ctx).await?;
     let row: DashboardRow = sqlx::query_as(
         "INSERT INTO dashboards (tenant_id, id, name, description, owner_id, shared) VALUES ($1, $2, $3, $4, $5, $6) \
          RETURNING id, name, description, owner_id, shared, version, updated_at",
@@ -344,6 +346,75 @@ pub async fn create(
     .bind(body.shared)
     .fetch_one(tx.conn())
     .await?;
+    let dashboard = load(tx.conn(), &ctx, row).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, etag(dashboard.version), Json(dashboard)))
+}
+
+/// Refuses a new dashboard for someone who already owns the most allowed.
+async fn room_for_one_more(conn: &mut PgConnection, ctx: &OrgContext) -> ApiResult<()> {
+    let (owned,): (i64,) = sqlx::query_as("SELECT count(*) FROM dashboards WHERE tenant_id = $1 AND owner_id = $2")
+        .bind(ctx.tenant_id)
+        .bind(ctx.user_id)
+        .fetch_one(conn)
+        .await?;
+    if owned >= MAX_DASHBOARDS {
+        return Err(ApiError::Conflict("You have the most dashboards allowed. Delete one first.".into()));
+    }
+    Ok(())
+}
+
+/// A private copy, owned by the caller, of a dashboard they can see, with all its charts.
+/// Each chart still counts only what the person viewing it may browse.
+#[utoipa::path(post, path = "/api/v1/dashboards/{id}/copy", request_body = CopyDashboard, security(("bearer" = [])),
+    params(("id" = Uuid, Path)), responses((status = 201, body = Dashboard), (status = 404), (status = 409), (status = 422)))]
+pub async fn copy(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path(id): Path<Uuid>,
+    body: Option<Json<CopyDashboard>>,
+) -> ApiResult<(StatusCode, HeaderMap, Json<Dashboard>)> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let source = visible_dashboard(tx.conn(), &ctx, id).await?;
+    let new_name = match body.name.as_deref() {
+        Some(n) => name("name", n, "Name")?,
+        None => format!("Copy of {}", source.name).chars().take(80).collect::<String>().trim_end().to_owned(),
+    };
+    room_for_one_more(tx.conn(), &ctx).await?;
+    let new_id = platform_common::new_id();
+    let row: DashboardRow = sqlx::query_as(
+        "INSERT INTO dashboards (tenant_id, id, name, description, owner_id, shared) VALUES ($1, $2, $3, $4, $5, false) \
+         RETURNING id, name, description, owner_id, shared, version, updated_at",
+    )
+    .bind(ctx.tenant_id)
+    .bind(new_id)
+    .bind(new_name)
+    .bind(&source.description)
+    .bind(ctx.user_id)
+    .fetch_one(tx.conn())
+    .await?;
+    let widgets: Vec<(String, sqlx::types::Json<serde_json::Value>, WidgetSize, i32)> = sqlx::query_as(
+        "SELECT title, query, size, position FROM dashboard_widgets WHERE tenant_id = $1 AND dashboard_id = $2 ORDER BY position, created_at",
+    )
+    .bind(ctx.tenant_id)
+    .bind(source.id)
+    .fetch_all(tx.conn())
+    .await?;
+    for (title, query, size, position) in widgets {
+        sqlx::query(
+            "INSERT INTO dashboard_widgets (tenant_id, id, dashboard_id, title, query, size, position) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(ctx.tenant_id)
+        .bind(platform_common::new_id())
+        .bind(new_id)
+        .bind(title)
+        .bind(query)
+        .bind(size)
+        .bind(position)
+        .execute(tx.conn())
+        .await?;
+    }
     let dashboard = load(tx.conn(), &ctx, row).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, etag(dashboard.version), Json(dashboard)))
@@ -542,6 +613,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/dashboards", get(list).post(create))
         .route("/dashboards/{id}", get(get_one).patch(update).delete(delete))
+        .route("/dashboards/{id}/copy", post(copy))
         .route("/dashboards/{id}/widgets", post(add_widget))
         .route("/dashboards/{id}/widgets/{widget_id}", patch(update_widget).delete(delete_widget))
         .route("/analytics/query", post(query));

@@ -5,12 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChartTheme } from "@/components/charts/Chart";
 import { DashboardPage, DashboardsPage } from "@/modules/dashboards";
 import { chartOption } from "@/modules/dashboards/charts";
-import { describeQuery, groupLabel, tableOf, type Names } from "@/modules/dashboards/model";
-import type { Dashboard, WidgetData } from "@/services/api";
+import { describeQuery, groupLabel, tableOf, withPeriod, type Names } from "@/modules/dashboards/model";
+import type { Dashboard, WidgetData, WidgetQuery } from "@/services/api";
 
 import { fakeApi, MEMBERS, project, renderAt, signIn, USER_ID, type Call } from "./harness";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+});
 
 const PAY = project();
 const OTHER = "00000000-0000-7000-8000-000000000009";
@@ -68,6 +71,39 @@ describe("dashboard model", () => {
     ]);
     expect(lines.series[0].lineStyle.width).toBe(2);
     expect(lines.series[0].symbolSize).toBeGreaterThanOrEqual(8);
+  });
+
+  it("draws burnup as all issues and resolved issues, with what is left in the table", () => {
+    const data: WidgetData = {
+      kind: "burnup",
+      days: [
+        { date: "2026-11-01", scope: 10, done: 4 },
+        { date: "2026-11-02", scope: 12, done: 7 },
+      ],
+    };
+    const option = chartOption(data, theme, names) as Record<string, any>;
+    expect(option.series.map((s: { name: string; data: number[] }) => [s.name, s.data])).toEqual([
+      ["All issues", [10, 12]],
+      ["Resolved", [4, 7]],
+    ]);
+    expect(tableOf(data, names).rows[0]!.cells.slice(1)).toEqual(["12", "7", "5"]);
+    expect(describeQuery({ kind: "burnup", projects: [], days: 30 }, names.project)).toBe("All projects · last 30 days");
+    expect(describeQuery({ kind: "breakdown", projects: [], group_by: "type", include_done: true, created_within_days: 14 }, names.project)).toBe(
+      "All projects · all issues created in the last 14 days",
+    );
+  });
+
+  it("applies a dashboard-wide period within each kind's limits", () => {
+    expect(withPeriod({ kind: "created_vs_resolved", projects: [], days: 30 }, 90)).toMatchObject({ days: 90 });
+    expect(withPeriod({ kind: "burnup", projects: [], days: 30 }, 1000)).toMatchObject({ days: 365 });
+    expect(withPeriod({ kind: "cycle_time", projects: [], weeks: 12 }, 14)).toMatchObject({ weeks: 4 });
+    expect(withPeriod({ kind: "control_chart", projects: [], weeks: 12 }, 90)).toMatchObject({ weeks: 13 });
+    expect(withPeriod({ kind: "breakdown", projects: [], group_by: "type", created_within_days: 7 }, 30)).toMatchObject({ created_within_days: 30 });
+    const plain: WidgetQuery = { kind: "breakdown", projects: [], group_by: "type" };
+    expect(withPeriod(plain, 30)).toBe(plain);
+    const velocity: WidgetQuery = { kind: "velocity", project: PAY.id, sprints: 5 };
+    expect(withPeriod(velocity, 30)).toBe(velocity);
+    expect(withPeriod(velocity, null)).toBe(velocity);
   });
 
   it("plots each resolved issue on a control chart with its rolling average and the mean", () => {
@@ -234,6 +270,44 @@ describe("dashboards", () => {
     expect(screen.queryByRole("button", { name: "Add chart" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Actions for/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Make a copy" })).toBeInTheDocument();
+  });
+
+  it("copies a dashboard someone shared, and opens the copy", async () => {
+    signIn("member");
+    const api = fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards/d1": dashboard({ owner_id: OTHER, shared: true, editable: false }),
+      "POST /api/v1/dashboards/d1/copy": () => ({ status: 201, body: dashboard({ id: "d9", name: "Copy of Team health" }) }),
+      "GET /api/v1/dashboards/d9": dashboard({ id: "d9", name: "Copy of Team health" }),
+    });
+    window.localStorage.setItem("meridian.dashboard-view.d1", JSON.stringify({ days: 90, refresh: 0 }));
+    const user = userEvent.setup();
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+    await user.click(await screen.findByRole("button", { name: "Make a copy" }));
+    await waitFor(() => expect(api.sent("POST", "/api/v1/dashboards/d1/copy")).toHaveLength(1));
+    expect(await screen.findByRole("heading", { name: "Copy of Team health" })).toBeInTheDocument();
+    // The period chosen on the original stays with the original.
+    expect(screen.getByRole("combobox", { name: "Period" })).toHaveValue("");
+  });
+
+  it("charts every widget over one period, refreshes on request and remembers both", async () => {
+    signIn("member");
+    const api = fakeApi({
+      ...baseRoutes,
+      "GET /api/v1/dashboards/d1": dashboard({
+        widgets: [{ id: "w1", title: "Flow", size: "half", query: { kind: "created_vs_resolved", projects: [], days: 30 } }],
+      }),
+      "POST /api/v1/analytics/query": { kind: "created_vs_resolved", days: [{ date: "2026-11-01", created: 2, resolved: 1 }] },
+    });
+    const user = userEvent.setup();
+    renderAt(<DashboardPage />, "/dashboards/:dashboardId", "/dashboards/d1");
+    expect(await screen.findByText("All projects · last 30 days")).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Period" }), "Last 90 days");
+    expect(await screen.findByText("All projects · last 90 days")).toBeInTheDocument();
+    await waitFor(() => expect(api.sent("POST", "/api/v1/analytics/query").some((c) => (c.body as { days: number }).days === 90)).toBe(true));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Refresh" }), "Every 5 min");
+    expect(JSON.parse(window.localStorage.getItem("meridian.dashboard-view.d1")!)).toEqual({ days: 90, refresh: 5 });
   });
 
   it("adds a chart after previewing it", async () => {

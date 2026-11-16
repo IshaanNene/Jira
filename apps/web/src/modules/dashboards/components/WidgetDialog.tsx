@@ -11,13 +11,15 @@ import { WidgetView } from "./WidgetView";
 
 const KINDS = (Object.keys(KIND_LABEL) as WidgetKind[]).map((kind) => ({ value: kind, label: KIND_LABEL[kind], description: KIND_DESCRIPTION[kind] }));
 const GROUPS = (Object.keys(GROUP_LABEL) as GroupBy[]).map((g) => ({ value: g, label: GROUP_LABEL[g] }));
+/** "Recently created": only issues created in the last so many days. 0 is any time. */
+const CREATED = [0, 7, 14, 30, 90].map((n) => ({ value: String(n), label: n ? `In the last ${n} days` : "Any time" }));
 const SIZES = [
   { value: "half", label: "Half width" },
   { value: "full", label: "Full width" },
 ];
 
 function periodOptions(kind: keyof typeof PERIODS) {
-  const unit = kind === "created_vs_resolved" || kind === "cumulative_flow" ? "days" : kind === "velocity" ? "sprints" : "weeks";
+  const unit = kind === "created_vs_resolved" || kind === "cumulative_flow" || kind === "burnup" ? "days" : kind === "velocity" ? "sprints" : "weeks";
   return PERIODS[kind].map((n) => ({ value: String(n), label: `Last ${n} ${unit}` }));
 }
 
@@ -54,6 +56,11 @@ function QueryFields({ query, onChange }: { query: WidgetQuery; onChange: (query
           <Select value={String(query.days)} onValueChange={(v) => onChange({ ...query, days: Number(v) })} options={periodOptions("cumulative_flow")} />
         </Field>
       )}
+      {query.kind === "burnup" && (
+        <Field label="Period">
+          <Select value={String(query.days)} onValueChange={(v) => onChange({ ...query, days: Number(v) })} options={periodOptions("burnup")} />
+        </Field>
+      )}
       {query.kind === "time_in_status" && (
         <Field label="Period" hint="Stays that ended in this period.">
           <Select value={String(query.weeks)} onValueChange={(v) => onChange({ ...query, weeks: Number(v) })} options={periodOptions("time_in_status")} />
@@ -73,6 +80,14 @@ function QueryFields({ query, onChange }: { query: WidgetQuery; onChange: (query
         <>
           <Field label="Group by">
             <Select value={query.group_by} onValueChange={(v) => onChange({ ...query, group_by: v as GroupBy })} options={GROUPS} />
+          </Field>
+          <Field label="Created">
+            <Select
+              value={String(query.created_within_days ?? 0)}
+              // "Any time" leaves the option out, as saved charts without it have.
+              onValueChange={(v) => onChange({ ...query, created_within_days: Number(v) || undefined })}
+              options={CREATED}
+            />
           </Field>
           <label className="flex items-center gap-2 text-sm text-ink sm:col-span-2">
             <input type="checkbox" checked={query.include_done ?? false} onChange={(e) => onChange({ ...query, include_done: e.target.checked })} className="h-4 w-4 accent-[hsl(var(--accent))]" />

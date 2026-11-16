@@ -9,6 +9,7 @@ export const KIND_LABEL: Record<WidgetKind, string> = {
   cycle_time: "Cycle time",
   breakdown: "Issue breakdown",
   cumulative_flow: "Cumulative flow",
+  burnup: "Burnup",
   time_in_status: "Time in status",
   control_chart: "Control chart",
   velocity: "Sprint velocity",
@@ -19,6 +20,7 @@ export const KIND_DESCRIPTION: Record<WidgetKind, string> = {
   cycle_time: "Days from first start to done, per week the issues were finished.",
   breakdown: "Open issues counted by a field.",
   cumulative_flow: "Issues to do, in progress and done at the end of each day.",
+  burnup: "All issues and resolved issues at the end of each day: the gap is the work left.",
   time_in_status: "Median days issues stayed in each status before moving on.",
   control_chart: "Each resolved issue's cycle time, with a rolling average of ten issues.",
   velocity: "Issues completed and left over in each completed sprint.",
@@ -37,6 +39,7 @@ export const PERIODS = {
   created_vs_resolved: [7, 14, 30, 90, 180, 365],
   cycle_time: [4, 8, 12, 26, 52],
   cumulative_flow: [14, 30, 90, 180, 365],
+  burnup: [14, 30, 90, 180, 365],
   time_in_status: [4, 8, 12, 26, 52],
   control_chart: [4, 8, 12, 26, 52],
   velocity: [3, 5, 7, 10, 20],
@@ -53,6 +56,8 @@ export function defaultQuery(kind: WidgetKind, projects: string[], firstProject?
       return { kind, projects, group_by: "status_category", include_done: false };
     case "cumulative_flow":
       return { kind, projects, days: 30 };
+    case "burnup":
+      return { kind, projects, days: 30 };
     case "time_in_status":
       return { kind, projects, weeks: 12 };
     case "control_chart":
@@ -62,13 +67,42 @@ export function defaultQuery(kind: WidgetKind, projects: string[], firstProject?
   }
 }
 
+const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
+
+/**
+ * The query over a dashboard-wide period of `days` instead of its own: day-based charts take
+ * the days, week-based ones the weeks that cover them, "recently created" breakdowns the days;
+ * other breakdowns and velocity (counted in sprints) keep their own. Kept within each kind's
+ * limits. `null` leaves the query as saved.
+ */
+export function withPeriod(query: WidgetQuery, days: number | null): WidgetQuery {
+  if (days === null) return query;
+  switch (query.kind) {
+    case "created_vs_resolved":
+    case "cumulative_flow":
+    case "burnup":
+      return { ...query, days: clamp(days, 7, 365) };
+    case "cycle_time":
+    case "time_in_status":
+    case "control_chart":
+      return { ...query, weeks: clamp(Math.ceil(days / 7), 4, 52) };
+    case "breakdown":
+      return query.created_within_days ? { ...query, created_within_days: clamp(days, 1, 365) } : query;
+    case "velocity":
+      return query;
+  }
+}
+
 /** Projects the query reads; empty means every project the viewer can browse. */
 export function queryProjects(query: WidgetQuery): string[] {
   return query.kind === "velocity" ? (query.project ? [query.project] : []) : (query.projects ?? []);
 }
 
 export function defaultTitle(query: WidgetQuery): string {
-  if (query.kind === "breakdown") return `Issues by ${GROUP_LABEL[query.group_by].toLowerCase()}`;
+  if (query.kind === "breakdown") {
+    const by = GROUP_LABEL[query.group_by].toLowerCase();
+    return query.created_within_days ? `Recently created by ${by}` : `Issues by ${by}`;
+  }
   return KIND_LABEL[query.kind];
 }
 
@@ -81,9 +115,12 @@ export function describeQuery(query: WidgetQuery, projectName: (id: string) => s
       return `${scope} · last ${query.days} days`;
     case "cycle_time":
       return `${scope} · last ${query.weeks} weeks`;
-    case "breakdown":
-      return `${scope} · ${query.include_done ? "all issues" : "open issues"}`;
+    case "breakdown": {
+      const which = query.include_done ? "all issues" : "open issues";
+      return `${scope} · ${which}${query.created_within_days ? ` created in the last ${query.created_within_days} days` : ""}`;
+    }
     case "cumulative_flow":
+    case "burnup":
       return `${scope} · last ${query.days} days`;
     case "time_in_status":
       return `${scope} · stays ended in the last ${query.weeks} weeks`;
@@ -140,6 +177,8 @@ export function isEmpty(data: WidgetData): boolean {
       return data.total === 0;
     case "cumulative_flow":
       return data.days.every((d) => d.todo + d.in_progress + d.done === 0);
+    case "burnup":
+      return data.days.every((d) => d.scope === 0);
     case "time_in_status":
       return data.statuses.length === 0;
     case "control_chart":
@@ -182,6 +221,14 @@ export function tableOf(data: WidgetData, names: Names): Table {
       return {
         columns: [{ label: "Day" }, { label: "To do", numeric: true }, { label: "In progress", numeric: true }, { label: "Done", numeric: true }],
         rows: [...data.days].reverse().map((d) => ({ key: d.date, cells: [formatDay(d.date), String(d.todo), String(d.in_progress), String(d.done)] })),
+      };
+    case "burnup":
+      return {
+        columns: [{ label: "Day" }, { label: "All issues", numeric: true }, { label: "Resolved", numeric: true }, { label: "Left", numeric: true }],
+        rows: [...data.days].reverse().map((d) => ({
+          key: d.date,
+          cells: [formatDay(d.date), String(d.scope), String(d.done), String(d.scope - d.done)],
+        })),
       };
     case "time_in_status":
       return {

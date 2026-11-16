@@ -56,8 +56,8 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (view: View) => 
 }
 
 /** One chart and the table behind it. `toolbar` sits next to the chart/table switch. */
-export function WidgetView({ query, title, height = 260 }: { query: WidgetQuery | null; title: string; height?: number }) {
-  const data = useWidgetData(query);
+export function WidgetView({ query, title, height = 260, refreshMs }: { query: WidgetQuery | null; title: string; height?: number; refreshMs?: number }) {
+  const data = useWidgetData(query, refreshMs);
   const names = useNames();
   const [view, setView] = useState<View>("chart");
   const answer = data.data;

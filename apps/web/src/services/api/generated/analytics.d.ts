@@ -52,6 +52,26 @@ export interface paths {
         patch: operations["update"];
         trace?: never;
     };
+    "/api/v1/dashboards/{id}/copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A private copy, owned by the caller, of a dashboard they can see, with all its charts.
+         *     Each chart still counts only what the person viewing it may browse.
+         */
+        post: operations["copy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dashboards/{id}/widgets": {
         parameters: {
             query?: never;
@@ -105,6 +125,10 @@ export interface components {
              *     (ten in all).
              */
             rolling_days: number;
+        };
+        CopyDashboard: {
+            /** @description Defaults to "Copy of <name>". */
+            name?: string | null;
         };
         CreateDashboard: {
             description?: string;
@@ -174,6 +198,20 @@ export interface components {
             in_progress: number;
             /** Format: int64 */
             todo: number;
+        };
+        DayTotals: {
+            /** @description `YYYY-MM-DD`, UTC; totals are at the end of that day. */
+            date: string;
+            /**
+             * Format: int64
+             * @description Of those, resolved by then.
+             */
+            done: number;
+            /**
+             * Format: int64
+             * @description Issues created by then (that still exist).
+             */
+            scope: number;
         };
         Group: {
             /** Format: int64 */
@@ -257,6 +295,10 @@ export interface components {
             /** @enum {string} */
             kind: "cumulative_flow";
         } | {
+            days: components["schemas"]["DayTotals"][];
+            /** @enum {string} */
+            kind: "burnup";
+        } | {
             /** @enum {string} */
             kind: "time_in_status";
             statuses: components["schemas"]["StatusTime"][];
@@ -295,6 +337,11 @@ export interface components {
              */
             weeks: number;
         } | {
+            /**
+             * Format: int32
+             * @description Only issues created in the last this many days (1 to 365): "recently created".
+             */
+            created_within_days?: number | null;
             group_by: components["schemas"]["GroupBy"];
             include_done?: boolean;
             /** @enum {string} */
@@ -326,6 +373,15 @@ export interface components {
             days: number;
             /** @enum {string} */
             kind: "cumulative_flow";
+            projects?: string[];
+        } | {
+            /**
+             * Format: int32
+             * @description 7 to 365.
+             */
+            days: number;
+            /** @enum {string} */
+            kind: "burnup";
             projects?: string[];
         } | {
             /** @enum {string} */
@@ -543,6 +599,49 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    copy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopyDashboard"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dashboard"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
