@@ -84,6 +84,32 @@ describe("IssueListPage", () => {
 });
 
 describe("IssuePage", () => {
+  it("shows who else is looking at the issue and says when you leave", async () => {
+    signIn();
+    const grace = "00000000-0000-7000-8000-000000000009";
+    const members = { items: [...MEMBERS.items, { ...MEMBERS.items[0]!, user_id: grace, display_name: "Grace Hopper", email: "grace@example.com" }], next_cursor: null };
+    const api = fakeApi(issueRoutes(detail(), {
+      "GET /api/v1/organizations/current/members": members,
+      "PUT /api/v1/rt/presence": { viewers: [grace] },
+      "DELETE /api/v1/rt/presence": () => ({ status: 204 }),
+    }));
+    const view = renderIssue();
+    expect(await screen.findByLabelText("Also viewing: Grace Hopper")).toBeInTheDocument();
+    const here = api.sent("PUT", "/api/v1/rt/presence")[0]!;
+    expect(here.body).toEqual({ project_id: project().id, issue_id: issue().id });
+    view.unmount();
+    await waitFor(() => expect(api.sent("DELETE", "/api/v1/rt/presence")).toHaveLength(1));
+    expect(api.sent("DELETE", "/api/v1/rt/presence")[0]!.body).toEqual({ project_id: project().id, issue_id: issue().id });
+  });
+
+  it("shows nothing about other viewers when no one else is there or presence is down", async () => {
+    signIn();
+    fakeApi(issueRoutes(detail(), { "PUT /api/v1/rt/presence": () => ({ status: 503, body: { code: "dependency_unavailable" } }) }));
+    renderIssue();
+    expect(await screen.findByRole("heading", { name: "Checkout fails" })).toBeInTheDocument();
+    expect(screen.queryByText("Also here")).toBeNull();
+  });
+
   it("lists the pull requests, branches and commits that mention the issue, when a repository is connected", async () => {
     signIn();
     const api = fakeApi(issueRoutes(detail(), {

@@ -41,6 +41,8 @@ describe("what a hint refreshes", () => {
     expect(staleFor(hint("issue.ranked"), keys)).toEqual([["lists"]]);
     expect(staleFor(hint("project.updated"), keys)).toEqual([["project"], ["lists"]]);
     expect(staleFor(hint("workflow.published"), keys)).toEqual([]);
+    expect(staleFor(hint("presence.changed"), keys)).toEqual([]); // no presence on this screen
+    expect(staleFor(hint("presence.changed"), { ...keys, presence: (id: string) => ["presence", id] })).toEqual([["presence", "a"]]);
   });
 
   it("batches refreshes and waits for the person's own change to finish", () => {

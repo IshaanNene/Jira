@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, ErrorState, Skeleton, toast } from "@/components/ui";
 import { DevelopmentPanel } from "@/modules/integrations";
+import { IssueViewers } from "@/modules/live";
 import { roleAtLeast, useProject } from "@/modules/projects";
 import { ApiError, errorMessage, type IssueDetail, type RichDoc } from "@/services/api";
 import { cn } from "@/utils/cn";
@@ -47,7 +48,7 @@ export default function IssuePage() {
   return (
     // Keyed by issue so edit drafts never carry over to another issue.
     <div key={data.id} className="px-6 py-5">
-      <Header issue={data} projectName={project.data?.name} canClone={canEdit} canDelete={roleAtLeast(data.my_role, "administrator") && writable} />
+      <Header issue={data} projectName={project.data?.name} projectId={project.data?.id} canClone={canEdit} canDelete={roleAtLeast(data.my_role, "administrator") && writable} />
       <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-7">
           <Summary issue={data} canEdit={canEdit} />
@@ -67,7 +68,7 @@ export default function IssuePage() {
   );
 }
 
-function Header({ issue, projectName, canClone, canDelete }: { issue: IssueDetail; projectName: string | undefined; canClone: boolean; canDelete: boolean }) {
+function Header({ issue, projectName, projectId, canClone, canDelete }: { issue: IssueDetail; projectName: string | undefined; projectId: string | undefined; canClone: boolean; canDelete: boolean }) {
   const navigate = useNavigate();
   const [cloning, setCloning] = useState(false);
   const watch = useWatch(issue.key);
@@ -94,6 +95,7 @@ function Header({ issue, projectName, canClone, canDelete }: { issue: IssueDetai
         <span className="flex items-center gap-1.5 text-ink-muted" aria-current="page"><IssueTypeIcon type={issue.type} /> {issue.key}</span>
       </nav>
       <div className="flex shrink-0 items-center gap-1">
+        <IssueViewers projectId={projectId} issueId={issue.id} />
         <Button
           variant="ghost"
           aria-pressed={issue.watching}

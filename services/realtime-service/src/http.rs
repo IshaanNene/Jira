@@ -15,7 +15,7 @@ use axum::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::get,
+    routing::{get, put},
     Router,
 };
 use error_handling::{ApiError, ApiResult};
@@ -26,6 +26,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::{
     channels::{Channel, StreamId},
     hub::{Live, Replay},
+    quota::{Lease, Refusal},
     AppState,
 };
 
@@ -71,12 +72,24 @@ pub async fn stream(
     let permit = Arc::clone(&state.slots)
         .try_acquire_owned()
         .map_err(|_| ApiError::DependencyUnavailable("Too many live connections. Try again shortly."))?;
+    let lease = match state.quotas.acquire(ctx.tenant_id, ctx.user_id).await {
+        Ok(lease) => lease,
+        Err(refusal) => {
+            metrics::counter!("realtime_quota_refused_total", "quota" => match refusal {
+                Refusal::Workspace => "workspace",
+                Refusal::Person => "person",
+            })
+            .increment(1);
+            // The client backs off and tries again; another tab closing frees a place.
+            return Err(ApiError::RateLimited { retry_after_secs: 30 });
+        }
+    };
 
     let (tx, rx) = mpsc::channel::<SseEvent>(64);
     let live = state.hub.subscribe();
     let expires_in =
         Duration::from_secs(u64::try_from(auth.claims.exp - time::OffsetDateTime::now_utc().unix_timestamp()).unwrap_or(0));
-    tokio::spawn(session(Session { state, ctx, channel, cursor, expires_in, tx, _permit: permit }, live));
+    tokio::spawn(session(Session { state, ctx, channel, cursor, expires_in, tx, lease, _permit: permit }, live));
 
     let events = futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|e| (Ok::<_, Infallible>(e), rx)) });
     let mut response = Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response();
@@ -92,6 +105,8 @@ struct Session {
     cursor: Option<StreamId>,
     expires_in: Duration,
     tx: mpsc::Sender<SseEvent>,
+    /// Its place in the workspace's and person's quota (none when Redis was unavailable).
+    lease: Option<Lease>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -121,6 +136,9 @@ impl Session {
 async fn session(s: Session, mut live: tokio::sync::broadcast::Receiver<Arc<Live>>) {
     metrics::gauge!("realtime_connections").increment(1.0);
     run_session(&s, &mut live).await;
+    if let Some(lease) = &s.lease {
+        s.state.quotas.release(lease).await;
+    }
     metrics::gauge!("realtime_connections").decrement(1.0);
 }
 
@@ -166,6 +184,8 @@ async fn run_session(s: &Session, live: &mut tokio::sync::broadcast::Receiver<Ar
     tokio::pin!(expiry);
     let every = s.state.recheck;
     let mut recheck = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    let renew_every = s.state.quotas.lease / 3;
+    let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + renew_every, renew_every);
     loop {
         tokio::select! {
             message = live.recv() => match message {
@@ -198,6 +218,11 @@ async fn run_session(s: &Session, live: &mut tokio::sync::broadcast::Receiver<Ar
                 }
                 Err(RecvError::Closed) => return,
             },
+            _ = renew.tick() => {
+                if let Some(lease) = &s.lease {
+                    s.state.quotas.renew(lease).await;
+                }
+            }
             _ = recheck.tick() => {
                 if !s.still_allowed().await {
                     let _ = s.control("denied", None).await;
@@ -217,7 +242,11 @@ pub fn router(state: AppState) -> Router {
     let origins: Vec<_> = state.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET])
-        .allow_headers([header::AUTHORIZATION, LAST_EVENT_ID]);
-    Router::new().route("/api/v1/rt/stream", get(stream)).layer(cors).with_state(state)
+        .allow_methods([Method::GET, Method::PUT, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, LAST_EVENT_ID]);
+    Router::new()
+        .route("/api/v1/rt/stream", get(stream))
+        .route("/api/v1/rt/presence", put(crate::presence::here).delete(crate::presence::left))
+        .layer(cors)
+        .with_state(state)
 }

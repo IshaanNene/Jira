@@ -4,6 +4,8 @@
 pub mod channels;
 pub mod http;
 pub mod hub;
+pub mod presence;
+pub mod quota;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -25,6 +27,10 @@ pub struct AppState {
     pub verifier: Arc<TokenVerifier>,
     pub policy: Arc<PolicyClient>,
     pub hub: Arc<hub::Hub>,
+    /// Presence lives here (and the replay buffers, through `hub`).
+    pub redis: RedisHandle,
+    /// Caps open streams per workspace and per person, across instances.
+    pub quotas: Arc<quota::Quotas>,
     /// Caps open streams per instance.
     pub slots: Arc<Semaphore>,
     /// How often an open stream re-checks the session and the caller's access.
@@ -77,6 +83,12 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let redis = RedisHandle::connect_in_background(&redis_url)?;
     let hub = hub::Hub::start(&redis_url, redis.clone())?;
     let max_connections: usize = config::or("REALTIME_MAX_CONNECTIONS", "10000").parse()?;
+    let quotas = quota::Quotas::new(
+        redis.clone(),
+        config::or("REALTIME_MAX_CONNECTIONS_PER_WORKSPACE", "2000").parse()?,
+        config::or("REALTIME_MAX_CONNECTIONS_PER_PERSON", "20").parse()?,
+        Duration::from_secs(90),
+    );
 
     match KafkaSettings::from_env(SERVICE_NAME) {
         Some(settings) => {
@@ -97,6 +109,8 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         ),
         policy: Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis.clone())),
         hub,
+        redis: redis.clone(),
+        quotas: Arc::new(quotas),
         slots: Arc::new(Semaphore::new(max_connections)),
         recheck: Duration::from_secs(60),
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),

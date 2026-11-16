@@ -7,6 +7,7 @@ import { issueKeys } from "@/modules/issues";
 import { projectKeys, useProject } from "@/modules/projects";
 import { useSession } from "@/state/session";
 
+import { presenceKey } from "./presence";
 import { RefreshBatch, staleFor, type ProjectKeys } from "./refresh";
 import { useLiveChannel } from "./useLiveChannel";
 
@@ -27,6 +28,7 @@ export function ProjectLive() {
     lists: issueKeys.lists(orgId, key),
     issue: (issueKey) => issueKeys.one(orgId, issueKey),
     project: projectKeys.one(orgId, key),
+    presence: (issueId) => presenceKey(orgId, issueId),
   };
   const status = useLiveChannel(
     project.data ? `project:${project.data.id}` : undefined,

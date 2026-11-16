@@ -48,6 +48,8 @@ export interface ProjectKeys {
   lists: QueryKey;
   issue: (key: string) => QueryKey;
   project: QueryKey;
+  /** Who else is looking at an issue (by issue id). */
+  presence?: (issueId: string) => QueryKey;
 }
 
 /** Which cached queries a hint on a project channel makes stale. */
@@ -56,5 +58,6 @@ export function staleFor(hint: Hint, keys: ProjectKeys): QueryKey[] {
   if (area === "issue" || area === "comment") return hint.key ? [keys.lists, keys.issue(hint.key)] : [keys.lists];
   if (area === "board" || area === "sprint") return [keys.lists];
   if (area === "project" || area === "version") return [keys.project, keys.lists];
+  if (area === "presence") return keys.presence ? [keys.presence(hint.id)] : [];
   return [];
 }

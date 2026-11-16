@@ -11,7 +11,7 @@ use auth_middleware::{PolicyClient, PolicySnapshot, PolicySource, ProjectRole, R
 use error_handling::ApiResult;
 use event_bus::{Event, Handler};
 use event_contracts::topics;
-use realtime_service::{hub::Hub, Announcer, AppState};
+use realtime_service::{hub::Hub, quota::Quotas, Announcer, AppState};
 use test_utilities::TestAuth;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -44,6 +44,10 @@ struct Harness {
 }
 
 async fn start() -> Harness {
+    start_with(1000, 100).await
+}
+
+async fn start_with(per_workspace: usize, per_person: usize) -> Harness {
     let redis = RedisHandle::connect_in_background(&redis_url()).unwrap();
     for _ in 0..50 {
         if redis.is_connected() {
@@ -60,6 +64,8 @@ async fn start() -> Harness {
         verifier: Arc::clone(&auth.verifier),
         policy: Arc::clone(&policy),
         hub: Arc::clone(&hub),
+        redis: redis.clone(),
+        quotas: Arc::new(Quotas::new(redis.clone(), per_workspace, per_person, Duration::from_secs(3))),
         slots: Arc::new(Semaphore::new(100)),
         recheck: Duration::from_millis(300),
         allowed_origins: Arc::new(vec![]),
@@ -268,4 +274,93 @@ async fn streams_end_when_access_is_withdrawn_or_the_token_expires() {
     let mut stream = Reader::new(h.open(&short, "org", None).await);
     stream.expect("ready").await;
     stream.expect("expired").await;
+}
+
+#[tokio::test]
+async fn live_connections_are_capped_per_person_and_per_workspace() {
+    let h = start_with(3, 2).await;
+    let tenant = Uuid::now_v7();
+    let (ada, bob, cy) = (h.member(tenant), h.member(tenant), h.member(tenant));
+
+    let mut first = Reader::new(h.open(&ada.token, "org", None).await);
+    first.expect("ready").await;
+    let mut second = Reader::new(h.open(&ada.token, "org", None).await);
+    second.expect("ready").await;
+    let refused = h.open(&ada.token, "org", None).await;
+    assert_eq!(refused.status(), 429, "a third tab of the same person");
+    assert_eq!(refused.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("30"));
+
+    let mut bobs = Reader::new(h.open(&bob.token, "org", None).await);
+    bobs.expect("ready").await;
+    assert_eq!(h.open(&cy.token, "org", None).await.status(), 429, "the workspace is full");
+    let elsewhere = h.member(Uuid::now_v7());
+    assert_eq!(h.open(&elsewhere.token, "org", None).await.status(), 200, "other workspaces are unaffected");
+
+    // Closing a stream gives its place back.
+    drop(second);
+    let mut reopened = None;
+    for _ in 0..50 {
+        let response = h.open(&ada.token, "org", None).await;
+        if response.status() == 200 {
+            reopened = Some(response);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut third = Reader::new(reopened.expect("a place came free"));
+    third.expect("ready").await;
+
+    // Open streams keep their places past the lease (3 s here) by renewing them.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(h.open(&cy.token, "org", None).await.status(), 429, "renewed leases still count");
+    drop((first, bobs, third));
+}
+
+#[tokio::test]
+async fn people_see_who_else_is_looking_at_an_issue() {
+    let h = start().await;
+    let tenant = Uuid::now_v7();
+    let (project, issue) = (Uuid::now_v7(), Uuid::now_v7());
+    let (ada, bob, outsider) = (h.member(tenant), h.member(tenant), h.member(tenant));
+    h.grant(&ada, project);
+    h.grant(&bob, project);
+    let here = |m: &Member, method: reqwest::Method, project: Uuid| {
+        let request = h
+            .http
+            .request(method, format!("{}/api/v1/rt/presence", h.base))
+            .bearer_auth(&m.token)
+            .json(&serde_json::json!({ "project_id": project, "issue_id": issue }));
+        async move {
+            let response = request.send().await.unwrap();
+            let status = response.status().as_u16();
+            (status, response.json::<serde_json::Value>().await.unwrap_or_default())
+        }
+    };
+
+    let mut bobs = Reader::new(h.open(&bob.token, &format!("project:{project}"), None).await);
+    bobs.expect("ready").await;
+    assert_eq!(here(&ada, reqwest::Method::PUT, project).await, (200, serde_json::json!({ "viewers": [] })));
+    let arrived: serde_json::Value = serde_json::from_str(&bobs.expect("change").await.data).unwrap();
+    assert_eq!((arrived["type"].as_str(), arrived["id"].as_str()), (Some("presence.changed"), Some(issue.to_string().as_str())));
+    assert_eq!(arrived["actor"], ada.user.to_string());
+
+    assert_eq!(here(&bob, reqwest::Method::PUT, project).await.1["viewers"], serde_json::json!([ada.user]));
+    assert_eq!(here(&ada, reqwest::Method::PUT, project).await.1["viewers"], serde_json::json!([bob.user]), "never yourself");
+
+    // Leaving is announced too.
+    assert_eq!(here(&ada, reqwest::Method::DELETE, project).await.0, 204);
+    let mut left = bobs.expect("change").await;
+    let mut hint: serde_json::Value = serde_json::from_str(&left.data).unwrap();
+    if hint["actor"] == bob.user.to_string() {
+        left = bobs.expect("change").await; // bob's own arrival came first
+        hint = serde_json::from_str(&left.data).unwrap();
+    }
+    assert_eq!((hint["type"].as_str(), hint["actor"].as_str()), (Some("presence.changed"), Some(ada.user.to_string().as_str())));
+    assert_eq!(here(&bob, reqwest::Method::PUT, project).await.1["viewers"], serde_json::json!([]));
+
+    // Without Browse: not found. Another workspace with the same ids sees nobody.
+    assert_eq!(here(&outsider, reqwest::Method::PUT, project).await.0, 404);
+    let stranger = h.member(Uuid::now_v7());
+    h.grant(&stranger, project);
+    assert_eq!(here(&stranger, reqwest::Method::PUT, project).await.1["viewers"], serde_json::json!([]));
 }
