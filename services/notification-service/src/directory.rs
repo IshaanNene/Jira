@@ -30,7 +30,8 @@ pub struct Person {
 #[async_trait]
 pub trait Directory: Send + Sync {
     /// `None` when the issue no longer exists.
-    async fn audience(&self, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Option<Audience>>;
+    /// Who is involved in the issue; with `comment`, also that comment's text.
+    async fn audience(&self, tenant_id: Uuid, issue_id: Uuid, comment: Option<Uuid>) -> ApiResult<Option<Audience>>;
     /// Those of `ids` who are members of the workspace.
     async fn people(&self, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Person>>;
 }
@@ -63,10 +64,14 @@ fn uuid(value: &str, what: &str) -> ApiResult<Uuid> {
 
 #[async_trait]
 impl Directory for GrpcDirectory {
-    async fn audience(&self, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Option<Audience>> {
+    async fn audience(&self, tenant_id: Uuid, issue_id: Uuid, comment: Option<Uuid>) -> ApiResult<Option<Audience>> {
         let reply = retry(RetryPolicy::default(), is_transient, || {
             let mut client = self.issues.clone();
-            let req = GetAudienceRequest { tenant_id: tenant_id.to_string(), issue_id: issue_id.to_string() };
+            let req = GetAudienceRequest {
+                tenant_id: tenant_id.to_string(),
+                issue_id: issue_id.to_string(),
+                comment_id: comment.map(|c| c.to_string()).unwrap_or_default(),
+            };
             async move { client.get_audience(req).await }
         })
         .await
@@ -82,6 +87,7 @@ impl Directory for GrpcDirectory {
             reporter_id: uuid(&reply.reporter_id, "reporter id")?,
             assignee_id: if reply.assignee_id.is_empty() { None } else { Some(uuid(&reply.assignee_id, "assignee id")?) },
             watcher_ids: reply.watcher_ids.iter().map(|w| uuid(w, "watcher id")).collect::<ApiResult<_>>()?,
+            comment_text: reply.comment_text,
         }))
     }
 

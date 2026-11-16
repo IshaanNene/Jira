@@ -65,6 +65,15 @@ pub struct Trigger {
 }
 
 impl Trigger {
+    /// The comment this is about, if any.
+    pub fn comment_id(&self) -> Option<Uuid> {
+        match &self.what {
+            What::Commented { comment_id, .. } => Some(*comment_id),
+            What::Mentioned { comment_id, .. } => *comment_id,
+            _ => None,
+        }
+    }
+
     pub fn detail(&self) -> Value {
         match &self.what {
             What::Assigned(_) => json!({}),
@@ -120,6 +129,9 @@ pub struct Audience {
     pub reporter_id: Uuid,
     pub assignee_id: Option<Uuid>,
     pub watcher_ids: Vec<Uuid>,
+    /// The comment the notification is about, as plain text (bounded by issue-service);
+    /// empty for other notifications or when the comment is gone.
+    pub comment_text: String,
 }
 
 /// Candidates, before access checks: each person once, with the most specific reason,
@@ -169,6 +181,7 @@ mod tests {
             reporter_id: Uuid::from_u128(1),
             assignee_id: Some(Uuid::from_u128(2)),
             watcher_ids: vec![Uuid::from_u128(3), Uuid::from_u128(1)],
+            comment_text: String::new(),
         }
     }
 

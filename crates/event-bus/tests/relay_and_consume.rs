@@ -191,3 +191,102 @@ async fn consumers_retry_transient_failures_and_park_poison_events() {
     task.abort();
     db.cleanup().await;
 }
+
+/// Refuses "poison" events for good until `fixed` is set; records what it handled.
+struct Fixable {
+    fixed: std::sync::atomic::AtomicBool,
+    handled: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl Handler for Fixable {
+    async fn handle(&self, event: &Event) -> Result<(), HandlerError> {
+        let label = event.envelope.payload["label"].as_str().unwrap_or_default().to_owned();
+        if label.starts_with("poison") && !self.fixed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(HandlerError::Permanent(anyhow::anyhow!("cannot apply {label}")));
+        }
+        self.handled.lock().unwrap().push(label);
+        Ok(())
+    }
+}
+
+async fn eventually(what: &str, check: impl Fn() -> bool) {
+    for _ in 0..300 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dead_lettered_events_are_replayed_for_the_failing_consumer_only() {
+    use event_bus::replay;
+    use rdkafka::producer::{FutureProducer, FutureRecord};
+
+    let topic = format!("test.replay.{}", Uuid::new_v4().simple());
+    let dlq = event_contracts::topics::dead_letter(&topic);
+    create_topics(&[&topic, &dlq]).await;
+    let (tenant, aggregate) = (Uuid::now_v7(), Uuid::now_v7());
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", brokers()).create().unwrap();
+    for (version, label) in [(1, "ok1"), (2, "poison1"), (3, "poison2"), (4, "ok2")] {
+        let payload = envelope(tenant, aggregate, version, label).to_string();
+        let key = format!("{tenant}:{aggregate}");
+        producer.send(FutureRecord::to(&topic).key(&key).payload(&payload), Duration::from_secs(10)).await.unwrap();
+    }
+
+    let settings = KafkaSettings::new(brokers(), "test-consumer");
+    let failing = Arc::new(Fixable { fixed: false.into(), handled: Mutex::new(Vec::new()) });
+    let other = Arc::new(Fixable { fixed: true.into(), handled: Mutex::new(Vec::new()) });
+    let (group, other_group) = (format!("test-{}", Uuid::new_v4()), format!("test-{}", Uuid::new_v4()));
+    let mut tasks = Vec::new();
+    for (g, handler) in [(group.clone(), Arc::clone(&failing)), (other_group.clone(), Arc::clone(&other))] {
+        let (settings, topic) = (settings.clone(), topic.clone());
+        tasks.push(tokio::spawn(async move { run_consumer(&settings, &g, &[topic.as_str()], handler).await }));
+    }
+    eventually("both groups to finish", || {
+        failing.handled.lock().unwrap().len() == 2 && other.handled.lock().unwrap().len() == 4
+    })
+    .await;
+
+    // Both poison events are parked for the failing group; the dead-letter topic name or the
+    // topic itself names them, and only metadata is reported.
+    let mut listed = (Vec::new(), 0);
+    for _ in 0..100 {
+        listed = replay::pending(&settings, &dlq, &group, 10).unwrap();
+        if listed.1 == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(listed.1, 2);
+    assert_eq!(listed.0.iter().map(|p| p.error.as_str()).collect::<Vec<_>>(), ["cannot apply poison1", "cannot apply poison2"]);
+    assert!(listed.0.iter().all(|p| p.event_type.as_deref() == Some("test.happened") && p.tenant_id == Some(tenant)));
+    assert_eq!(listed.0[0].attempts, Some(1));
+    assert_eq!(replay::pending(&settings, &topic, &other_group, 10).unwrap().1, 0, "nothing parked for the other group");
+
+    // Fixed: replay one, then the rest. Only the failing group handles them again.
+    failing.fixed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let first = replay::replay(&settings, &topic, &group, 1).await.unwrap();
+    assert_eq!((first.sent.len(), first.remaining), (1, 1));
+    eventually("the first replayed event", || failing.handled.lock().unwrap().len() == 3).await;
+    assert_eq!(replay::pending(&settings, &topic, &group, 10).unwrap().1, 1, "the replayed one is no longer pending");
+    let rest = replay::replay(&settings, &dlq, &group, usize::MAX).await.unwrap();
+    assert_eq!((rest.sent.len(), rest.remaining), (1, 0));
+    eventually("the second replayed event", || failing.handled.lock().unwrap().len() == 4).await;
+    assert_eq!(*failing.handled.lock().unwrap(), ["ok1", "ok2", "poison1", "poison2"]);
+    assert_eq!(
+        replay::replay(&settings, &topic, &group, usize::MAX).await.unwrap(),
+        replay::Replayed::default(),
+        "never sent twice"
+    );
+
+    // The other group skipped the replayed events (it had handled them the first time).
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(other.handled.lock().unwrap().len(), 4);
+    assert!(replay::replay(&settings, "bad topic", &group, 1).await.is_err());
+    for task in tasks {
+        task.abort();
+    }
+}

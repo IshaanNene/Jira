@@ -27,14 +27,17 @@ use uuid::Uuid;
 #[derive(Default)]
 struct World {
     audiences: Mutex<HashMap<Uuid, Audience>>,
+    /// Comment texts by comment id, returned with an audience when asked for.
+    comments: Mutex<HashMap<Uuid, String>>,
     people: Mutex<HashMap<(Uuid, Uuid), Person>>,
     roles: Mutex<HashMap<(Uuid, Uuid), HashMap<Uuid, ProjectRole>>>,
 }
 
 #[async_trait]
 impl Directory for World {
-    async fn audience(&self, _tenant: Uuid, issue_id: Uuid) -> ApiResult<Option<Audience>> {
-        Ok(self.audiences.lock().unwrap().get(&issue_id).cloned())
+    async fn audience(&self, _tenant: Uuid, issue_id: Uuid, comment: Option<Uuid>) -> ApiResult<Option<Audience>> {
+        let text = comment.and_then(|c| self.comments.lock().unwrap().get(&c).cloned()).unwrap_or_default();
+        Ok(self.audiences.lock().unwrap().get(&issue_id).cloned().map(|a| Audience { comment_text: text, ..a }))
     }
     async fn people(&self, tenant: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Person>> {
         let people = self.people.lock().unwrap();
@@ -199,6 +202,7 @@ async fn activity_notifies_the_right_people_once_and_only_while_they_can_see_the
             reporter_id: reporter,
             assignee_id: Some(author),
             watcher_ids: vec![watcher, suspended],
+            comment_text: String::new(),
         },
     );
 
@@ -286,6 +290,7 @@ async fn people_read_only_their_own_notifications_in_their_own_workspace() {
             reporter_id: assigner,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     h.deliver(
@@ -369,6 +374,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
             reporter_id: rae,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     let address = |id: Uuid| h.world.people.lock().unwrap()[&(t, id)].email.clone();
@@ -413,6 +419,26 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
     assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"), "escaped");
     assert!(full["Text"].as_str().unwrap().contains("https://app.example.com/projects/PAY/issues/PAY-7"));
 
+    // A comment is quoted in the email, as text: what people wrote is never markup.
+    let comment = Uuid::now_v7();
+    h.world.comments.lock().unwrap().insert(comment, "Seen at <b>checkout</b>\nTwice.".into());
+    h.deliver(
+        t,
+        "comment.created",
+        maya,
+        json!({ "comment_id": comment, "issue_id": issue, "key": "PAY-7", "project_id": project, "author_id": maya,
+                "mentioned_user_ids": [] }),
+    )
+    .await;
+    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    let mails = inbox_of(&address(rae)).await;
+    assert_eq!(mails.len(), 1, "Rae, the reporter, hears of the comment");
+    let id = mails[0]["ID"].as_str().unwrap();
+    let full: Value = reqwest::get(format!("{}/api/v1/message/{id}", mailpit_api())).await.unwrap().json().await.unwrap();
+    assert!(full["Text"].as_str().unwrap().contains("> Seen at <b>checkout</b>\r\n> Twice."), "{}", full["Text"]);
+    let html = full["HTML"].as_str().unwrap();
+    assert!(html.contains("Seen at &lt;b&gt;checkout&lt;/b&gt;<br>Twice.") && !html.contains("<b>checkout"), "{html}");
+
     // Read in the app before the email went out: it is skipped.
     let issue2 = Uuid::now_v7();
     h.world.audiences.lock().unwrap().insert(
@@ -424,6 +450,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
             reporter_id: rae,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     h.deliver(
@@ -454,6 +481,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
             reporter_id: rae,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     h.deliver(
@@ -486,6 +514,7 @@ async fn an_unreachable_mail_server_is_retried_later() {
             reporter_id: maya,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     h.deliver(
@@ -528,6 +557,7 @@ async fn emails_carry_one_click_unsubscribe_links_that_only_turn_email_off() {
             reporter_id: olivia,
             assignee_id: None,
             watcher_ids: vec![],
+            comment_text: String::new(),
         },
     );
     let comment = json!({ "comment_id": Uuid::now_v7(), "issue_id": issue, "key": "WEB-3", "project_id": project, "author_id": maya, "mentioned_user_ids": [] });

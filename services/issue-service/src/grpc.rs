@@ -23,6 +23,16 @@ use crate::{
 
 const MAX_DOCUMENTS: usize = 500;
 const MAX_IDS: u32 = 1000;
+/// Characters of a comment returned with an audience (for quoting in emails).
+const MAX_COMMENT_TEXT: usize = 2000;
+
+fn bounded(text: &str, max: usize) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", text[..end].trim_end()),
+        None => text.to_owned(),
+    }
+}
 
 /// Hard ceiling per call, whatever the caller asks for.
 const MAX_CARDS: u32 = 2000;
@@ -179,6 +189,11 @@ impl Issues for IssuesService {
             return Ok(Response::new(Audience::default()));
         };
         let watchers = store::watcher_ids(tx.conn(), tenant_id, issue_id).await?;
+        let comment = if req.comment_id.is_empty() {
+            None
+        } else {
+            store::comment_body(tx.conn(), tenant_id, issue_id, id("comment_id", &req.comment_id)?).await?
+        };
         tx.commit().await?;
         Ok(Response::new(Audience {
             found: true,
@@ -188,6 +203,7 @@ impl Issues for IssuesService {
             reporter_id: issue.reporter_id.to_string(),
             assignee_id: issue.assignee_id.map(|a| a.to_string()).unwrap_or_default(),
             watcher_ids: watchers.iter().map(Uuid::to_string).collect(),
+            comment_text: comment.map(|body| bounded(&richtext::plain_text(&body), MAX_COMMENT_TEXT)).unwrap_or_default(),
         }))
     }
 

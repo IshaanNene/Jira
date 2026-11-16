@@ -1619,9 +1619,11 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
         .await;
     assert_eq!(edit.status, StatusCode::OK, "{}", edit.body);
     h.call(Method::PUT, &format!("{path}/watch"), &bob_token, None, None).await;
+    let mut comment_ids = Vec::new();
     for text in ["First note", "Second note"] {
         let c = h.call(Method::POST, &format!("{path}/comments"), &member, Some(json!({ "body": text_doc(text) })), None).await;
         assert_eq!(c.status, StatusCode::CREATED, "{}", c.body);
+        comment_ids.push(c.body["id"].as_str().unwrap().to_owned());
     }
     let (api, v1) = (Uuid::now_v7(), Uuid::now_v7());
     {
@@ -1655,7 +1657,11 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
     let tenant = h.tenant.to_string();
 
     let audience = service
-        .get_audience(tonic::Request::new(GetAudienceRequest { tenant_id: tenant.clone(), issue_id: first_id.clone() }))
+        .get_audience(tonic::Request::new(GetAudienceRequest {
+            tenant_id: tenant.clone(),
+            issue_id: first_id.clone(),
+            ..Default::default()
+        }))
         .await
         .unwrap()
         .into_inner();
@@ -1665,10 +1671,27 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
         (key.as_str(), alice.to_string(), bob.to_string())
     );
     assert!(audience.watcher_ids.contains(&bob.to_string()) && audience.watcher_ids.contains(&alice.to_string()));
+    assert!(audience.comment_text.is_empty(), "no comment asked for");
+    let with_comment = |comment_id: String, issue_id: String| {
+        let req = GetAudienceRequest { tenant_id: tenant.clone(), issue_id, comment_id };
+        let service = &service;
+        async move { service.get_audience(tonic::Request::new(req)).await.unwrap().into_inner().comment_text }
+    };
+    assert_eq!(with_comment(comment_ids[1].clone(), first_id.clone()).await, "Second note", "the comment as plain text");
+    assert_eq!(with_comment(comment_ids[1].clone(), second_id.clone()).await, "", "only a comment of that issue");
+    let long = "word ".repeat(1000);
+    let c = h.call(Method::POST, &format!("{path}/comments"), &member, Some(json!({ "body": text_doc(&long) })), None).await;
+    let long_id = c.body["id"].as_str().unwrap().to_owned();
+    let text = with_comment(long_id.clone(), first_id.clone()).await;
+    assert!(text.chars().count() <= 2001 && text.ends_with('…'), "bounded");
+    let deleted = h.call(Method::DELETE, &format!("{path}/comments/{long_id}"), &member, None, None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(with_comment(long_id, first_id.clone()).await, "", "not a deleted one");
     let missing = service
         .get_audience(tonic::Request::new(GetAudienceRequest {
             tenant_id: Uuid::now_v7().to_string(),
             issue_id: first_id.clone(),
+            ..Default::default()
         }))
         .await
         .unwrap()

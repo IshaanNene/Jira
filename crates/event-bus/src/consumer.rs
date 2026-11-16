@@ -31,6 +31,16 @@ use crate::settings::KafkaSettings;
 const FIRST_RETRY: Duration = Duration::from_millis(200);
 const MAX_RETRY: Duration = Duration::from_secs(30);
 
+/// Header naming the one consumer group a replayed event is for (see [`crate::replay`]).
+pub const REPLAY_FOR: &str = "x-replay-for";
+
+/// Whether this group should handle the message: everything, except an event replayed from
+/// the dead-letter topic for another consumer group.
+fn meant_for<M: Message>(message: &M, group: &str) -> bool {
+    let Some(headers) = message.headers() else { return true };
+    headers.iter().filter(|h| h.key == REPLAY_FOR).all(|h| h.value == Some(group.as_bytes()))
+}
+
 /// A received event: the validated envelope with its payload still as JSON.
 #[derive(Debug, Clone)]
 pub struct Event {
@@ -162,6 +172,9 @@ pub async fn run_batch_consumer(
         let mut events = Vec::with_capacity(batch.len());
         let mut origin = Vec::with_capacity(batch.len());
         for (i, message) in batch.iter().enumerate() {
+            if !meant_for(message, group) {
+                continue;
+            }
             match message.payload().map(|bytes| Event::parse(message.topic(), bytes)) {
                 Some(Ok(event)) => {
                     events.push(event);
@@ -281,9 +294,10 @@ pub async fn run_consumer(
                 continue;
             }
         };
-        let outcome = process(&message, handler.as_ref(), group).await;
-        if let Err((error, attempts)) = outcome {
-            park(&dlq, group, &message, &error, attempts).await;
+        if meant_for(&message, group) {
+            if let Err((error, attempts)) = process(&message, handler.as_ref(), group).await {
+                park(&dlq, group, &message, &error, attempts).await;
+            }
         }
         if let Err(error) = consumer.commit_message(&message, CommitMode::Async) {
             tracing::warn!(group, %error, "offset commit failed; the event may be redelivered");

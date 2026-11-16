@@ -104,7 +104,14 @@ poll -> validate envelope -> BEGIN
 - Side effects that leave the platform (email, webhooks, Slack) cannot be made exactly-once. They use a
   delivery table keyed by `(event_id, target)` and send an idempotency key to providers that support one.
   We document at-least-once delivery to integrators and sign every webhook with a delivery id.
-- **Replay**: reset a consumer group's offsets. A DLQ re-drive tool is specified but not built.
+- **Replay**: reset a consumer group's offsets, or re-drive what one group dead-lettered with
+  `make dlq ARGS="list|replay <topic> --consumer <group> [--limit N]"` (`crates/event-bus/src/replay.rs`).
+  `list` shows the group's parked events not yet replayed (offset, event id and type, tenant, attempts,
+  error; never the payload). `replay` sends them back to the topic named by the dead-letter topic itself
+  (never by a header), with `x-replay-for: <group>`: that group handles them again and every other group
+  skips them, so a re-drive cannot repeat side effects elsewhere. Progress is the offsets of a group of its
+  own, `dlq-replay.<group>`, committed after each event, so a stopped replay resumes and nothing is re-sent
+  twice. An event that still fails is parked again.
   Projections (search, analytics, read models) are rebuildable from offset 0 or from the owning service's
   gRPC stream when the topic has been compacted/expired.
 - **Loop prevention** for automation: automation runs inside issue-service, not as an event consumer, and

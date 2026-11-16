@@ -14,7 +14,7 @@ export OPENSSL_ROOT_DIR ?= $(BREW)/opt/openssl@3
 endif
 endif
 
-.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience restore-drill
+.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience restore-drill dlq
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -85,6 +85,9 @@ resilience: ## Stop and restart data stores and check the documented failure beh
 
 restore-drill: ## Back up every service database, restore it into a fresh one and check it matches
 	@./tests/restore/run.sh
+
+dlq: ## Dead-lettered events: make dlq ARGS="list|replay <topic> --consumer <group> [--limit N]"
+	@set -a; [ -f .env ] && . ./.env || . ./.env.example; set +a; cargo run -q -p event-bus --bin dlq -- $(ARGS)
 
 clean: stop ## Stop everything and delete containers, volumes and build output
 	docker compose --profile observability down -v

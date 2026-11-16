@@ -54,6 +54,7 @@ message Cards {
 message GetAudienceRequest {
   string tenant_id = 1;
   string issue_id = 2;
+  string comment_id = 3; // optional: also return this comment of the issue as plain text
 }
 
 message Audience {
@@ -64,6 +65,7 @@ message Audience {
   string reporter_id = 5;
   string assignee_id = 6; // empty when unassigned
   repeated string watcher_ids = 7;
+  string comment_text = 8; // the asked-for comment, at most 2000 characters; empty when gone or not asked for
 }
 
 message GetDocumentsRequest {

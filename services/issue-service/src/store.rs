@@ -427,6 +427,16 @@ pub async fn comment(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid, i
     .await?)
 }
 
+/// A live comment's body, without locking it (for reading only).
+pub async fn comment_body(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid, id: Uuid) -> ApiResult<Option<Value>> {
+    Ok(sqlx::query_scalar("SELECT body FROM comments WHERE tenant_id = $1 AND issue_id = $2 AND id = $3 AND deleted_at IS NULL")
+        .bind(tenant_id)
+        .bind(issue_id)
+        .bind(id)
+        .fetch_optional(conn)
+        .await?)
+}
+
 pub async fn update_comment(conn: &mut PgConnection, tenant_id: Uuid, id: Uuid, body: &Value) -> ApiResult<Comment> {
     Ok(sqlx::query_as(&format!(
         "UPDATE comments SET body = $3, edited_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING {COMMENT}"

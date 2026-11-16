@@ -131,7 +131,9 @@ impl Handler for Notifier {
             return Ok(());
         }
         let tenant_id = event.tenant_id()?;
-        let Some(audience) = self.directory.audience(tenant_id, trigger.issue_id).await? else { return Ok(()) };
+        let Some(audience) = self.directory.audience(tenant_id, trigger.issue_id, trigger.comment_id()).await? else {
+            return Ok(());
+        };
         let candidates = domain::recipients(&trigger, &audience);
         if candidates.is_empty() {
             return Ok(());
@@ -216,6 +218,7 @@ impl Handler for Notifier {
                             issue_key: &audience.key,
                             issue_summary: &audience.summary,
                             to_status: detail.get("to_status").and_then(|v| v.as_str()),
+                            quote: Some(audience.comment_text.as_str()).filter(|q| !q.trim().is_empty()),
                             app_url: &email.app_url,
                             unsubscribe_url: Some(&page),
                         });

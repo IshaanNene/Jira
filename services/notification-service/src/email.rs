@@ -11,6 +11,8 @@ pub struct EmailInput<'a> {
     pub issue_summary: &'a str,
     /// For status changes: the new status key.
     pub to_status: Option<&'a str>,
+    /// For comments and mentions in them: the comment as plain text, quoted in the email.
+    pub quote: Option<&'a str>,
     /// Base URL of the web app, without a trailing slash.
     pub app_url: &'a str,
     /// Page that turns this kind of email off without signing in.
@@ -80,6 +82,49 @@ fn status_label(key: &str) -> String {
     }
 }
 
+/// Characters and lines of a comment quoted in an email.
+const MAX_QUOTE: usize = 1000;
+const MAX_QUOTE_LINES: usize = 20;
+
+/// The comment's lines, without control characters, bounded; blank runs collapsed.
+fn quote_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0;
+    let mut cut = false;
+    for raw in text.lines() {
+        let line: String = raw.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let line = line.trim_end().to_owned();
+        if line.trim().is_empty() && lines.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        if lines.len() == MAX_QUOTE_LINES || used >= MAX_QUOTE {
+            cut = true;
+            break;
+        }
+        let room = MAX_QUOTE - used;
+        let line = if line.chars().count() > room {
+            cut = true;
+            line.chars().take(room).collect()
+        } else {
+            line
+        };
+        used += line.chars().count();
+        lines.push(if line.trim().is_empty() { String::new() } else { line });
+        if cut {
+            break;
+        }
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    if cut {
+        if let Some(last) = lines.last_mut() {
+            last.push('…');
+        }
+    }
+    lines
+}
+
 pub fn render(input: &EmailInput<'_>) -> Rendered {
     let who = if input.actor_name.trim().is_empty() { "Someone".to_owned() } else { one_line(input.actor_name, 80) };
     let summary = one_line(input.issue_summary, 150);
@@ -99,7 +144,16 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
 
     let subject = format!("[{key}] {summary}");
     let headline = format!("{who} {action} {key}");
+    let quote = input.quote.map(quote_lines).filter(|l| !l.is_empty());
     let mut text = format!("{headline}\n\n{key}: {summary}\n");
+    if let Some(lines) = &quote {
+        text.push('\n');
+        for line in lines {
+            text.push_str(if line.is_empty() { ">" } else { "> " });
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
     if let Some(url) = &issue_url {
         text.push_str(&format!("\nView the issue: {url}\n"));
     }
@@ -116,6 +170,15 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
         })
         .unwrap_or_default();
 
+    let blockquote = quote
+        .as_ref()
+        .map(|lines| {
+            let body = lines.iter().map(|l| escape_html(l)).collect::<Vec<_>>().join("<br>");
+            format!(
+                r#"<blockquote style="margin:16px 0 0;padding:8px 12px;border-left:3px solid #dcdfe4;color:#44546f;font-size:14px;white-space:pre-wrap">{body}</blockquote>"#
+            )
+        })
+        .unwrap_or_default();
     let button = issue_url
         .as_ref()
         .map(|u| {
@@ -130,6 +193,7 @@ pub fn render(input: &EmailInput<'_>) -> Rendered {
 <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #dcdfe4;border-radius:6px;padding:24px">
 <p style="margin:0 0 16px;font-size:14px">{headline}</p>
 <p style="margin:0;font-size:16px;font-weight:600"><span style="color:#44546f">{key}</span> {summary}</p>
+{blockquote}
 {button}
 <hr style="border:none;border-top:1px solid #dcdfe4;margin:24px 0 12px">
 <p style="margin:0;font-size:12px;color:#626f86">You are receiving this because you are involved in this issue. <a href="{settings}" style="color:#0c66e4">Choose which emails you get</a>{unsubscribe}.</p>
@@ -266,6 +330,7 @@ mod tests {
             issue_key: "PAY-12",
             issue_summary: "Refunds\r\nBcc: victim@example.com <b>fail</b>",
             to_status: Some("in_review"),
+            quote: None,
             app_url: "https://app.example.com",
             unsubscribe_url: Some("https://app.example.com/unsubscribe?token=abc.def"),
         }
@@ -293,6 +358,28 @@ mod tests {
         assert!(!r.text.contains("View the issue"), "no link for a key of the wrong shape");
         let long = "x".repeat(400);
         assert!(render(&EmailInput { issue_summary: &long, ..input(Kind::Assigned) }).subject.chars().count() < 170);
+    }
+
+    #[test]
+    fn comments_are_quoted_as_text_never_markup() {
+        let comment = "Seen <img src=x onerror=alert(1)> at checkout\r\n\n\n\nBcc: x@example.com\u{7}\n";
+        let r = render(&EmailInput { quote: Some(comment), ..input(Kind::Commented) });
+        assert!(r.text.contains("> Seen <img src=x onerror=alert(1)> at checkout\n>\n> Bcc: x@example.com\n\n"), "{}", r.text);
+        assert!(r.html.contains("<blockquote"));
+        assert!(r.html.contains("Seen &lt;img src=x onerror=alert(1)&gt; at checkout<br><br>Bcc: x@example.com"), "{}", r.html);
+        assert!(!r.html.contains("<img"));
+        assert!(!r.subject.contains("Seen"), "the subject never carries the comment");
+
+        let long = "word ".repeat(400);
+        let lines = quote_lines(&long);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].chars().count() <= MAX_QUOTE + 1 && lines[0].ends_with('…'));
+        let many = (0..50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let lines = quote_lines(&many);
+        assert_eq!(lines.len(), MAX_QUOTE_LINES);
+        assert_eq!(lines.last().unwrap(), "line 19…");
+        assert!(quote_lines("  \n\n ").is_empty());
+        assert!(!render(&EmailInput { quote: Some(" \n"), ..input(Kind::Commented) }).html.contains("<blockquote"));
     }
 
     #[test]

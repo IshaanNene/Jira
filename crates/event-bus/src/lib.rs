@@ -5,6 +5,7 @@
 pub mod consumer;
 pub mod inbox;
 pub mod relay;
+pub mod replay;
 pub mod settings;
 
 pub use consumer::{run_batch_consumer, run_consumer, BatchHandler, Batching, Event, Handler, HandlerError};
