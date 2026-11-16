@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, FileQuestion, MoreHorizontal } from "lucide-react";
+import { ChevronDown, Eye, FileQuestion, MoreHorizontal, ThumbsUp } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
@@ -7,7 +7,7 @@ import { roleAtLeast, useProject } from "@/modules/projects";
 import { ApiError, errorMessage, type IssueDetail, type RichDoc } from "@/services/api";
 import { cn } from "@/utils/cn";
 
-import { useDeleteIssue, useIssue, useTransitions, useWatch } from "../api";
+import { useDeleteIssue, useIssue, useTransitions, useVote, useWatch } from "../api";
 import { CloneIssueDialog } from "../components/CloneIssueDialog";
 import { Attachments } from "../components/Attachments";
 import { IssueActivity } from "../components/IssueActivity";
@@ -69,6 +69,9 @@ function Header({ issue, projectName, canClone, canDelete }: { issue: IssueDetai
   const navigate = useNavigate();
   const [cloning, setCloning] = useState(false);
   const watch = useWatch(issue.key);
+  const vote = useVote(issue.key);
+  // Resolved issues take no new votes; a vote already cast can still be taken back.
+  const votingClosed = issue.status_category === "done" && !issue.voted;
   const remove = useDeleteIssue(issue.key, issue.project_key);
   const crumb = "text-ink-muted hover:underline";
   return (
@@ -98,6 +101,17 @@ function Header({ issue, projectName, canClone, canDelete }: { issue: IssueDetai
           onClick={() => watch.mutate(!issue.watching, { onError: (error) => toast.error("Couldn't update watching", errorMessage(error)) })}
         >
           <Eye className="h-4 w-4" aria-hidden /> <span className="tabular">{issue.watcher_count}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          aria-pressed={issue.voted}
+          aria-label={issue.voted ? "Remove your vote" : "Vote for this issue"}
+          title={votingClosed ? "Voting is closed: this issue is resolved" : issue.voted ? "You voted for this issue" : "Vote for this issue"}
+          disabled={votingClosed}
+          className={issue.voted ? "text-accent" : undefined}
+          onClick={() => vote.mutate(!issue.voted, { onError: (error) => toast.error("Couldn't update your vote", errorMessage(error)) })}
+        >
+          <ThumbsUp className="h-4 w-4" aria-hidden /> <span className="tabular">{issue.vote_count}</span>
         </Button>
         {(canClone || canDelete) && (
           <DropdownMenu>

@@ -810,6 +810,44 @@ async fn links_respect_project_visibility() {
 }
 
 #[tokio::test]
+async fn voting() {
+    let h = harness().await;
+    let pay = h.project("PAY");
+    let (_, ada) = h.user(&[(pay, ProjectRole::Member)]);
+    let (_, bob) = h.user(&[(pay, ProjectRole::Viewer)]);
+    let (_, nobody) = h.user(&[]);
+    let key = h.task(&ada, "PAY", "Vote for me").await;
+    let path = format!("/api/v1/issues/{key}");
+    let vote = format!("{path}/vote");
+
+    let fresh = h.call(Method::GET, &path, &ada, None, None).await;
+    assert_eq!((fresh.body["voted"].as_bool(), fresh.body["vote_count"].as_i64()), (Some(false), Some(0)));
+    // Anyone who can see the issue may vote, once; repeating is harmless.
+    assert_eq!(h.call(Method::PUT, &vote, &bob, None, None).await.status, StatusCode::NO_CONTENT);
+    h.call(Method::PUT, &vote, &bob, None, None).await;
+    h.call(Method::PUT, &vote, &ada, None, None).await;
+    let seen = h.call(Method::GET, &path, &bob, None, None).await;
+    assert_eq!((seen.body["voted"].as_bool(), seen.body["vote_count"].as_i64()), (Some(true), Some(2)));
+    let voters = h.call(Method::GET, &format!("{path}/voters"), &ada, None, None).await;
+    assert_eq!(voters.body["items"].as_array().unwrap().len(), 2);
+    // Someone who cannot see the issue cannot vote on it or see who did.
+    assert_eq!(h.call(Method::PUT, &vote, &nobody, None, None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.call(Method::GET, &format!("{path}/voters"), &nobody, None, None).await.status, StatusCode::NOT_FOUND);
+    // Voting does not touch the issue itself.
+    assert_eq!(h.call(Method::GET, &path, &ada, None, None).await.body["version"], 1);
+
+    // Resolved issues take no new votes, but existing votes can still be withdrawn.
+    h.call(Method::PATCH, &path, &ada, Some(json!({ "status": "done" })), Some(1)).await;
+    let (_, cy) = h.user(&[(pay, ProjectRole::Viewer)]);
+    assert_eq!(h.call(Method::PUT, &vote, &cy, None, None).await.status, StatusCode::CONFLICT);
+    assert_eq!(h.call(Method::PUT, &vote, &bob, None, None).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(h.call(Method::DELETE, &vote, &bob, None, None).await.status, StatusCode::NO_CONTENT);
+    let after = h.call(Method::GET, &path, &bob, None, None).await;
+    assert_eq!((after.body["voted"].as_bool(), after.body["vote_count"].as_i64()), (Some(false), Some(1)));
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn watching_and_tenant_isolation() {
     let h = harness().await;
     let pay = h.project("PAY");

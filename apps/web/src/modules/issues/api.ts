@@ -211,6 +211,21 @@ export function useWatch(key: string) {
   });
 }
 
+/** Vote or take back a vote; the count moves at once and is corrected from the server. */
+export function useVote(key: string) {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: (vote: boolean) => (vote ? api.put(`${BASE}/${key}/vote`) : api.delete(`${BASE}/${key}/vote`)),
+    onMutate: (vote) => {
+      qc.setQueryData<IssueDetail>(issueKeys.one(orgId, key), (old) =>
+        old && old.voted !== vote ? { ...old, voted: vote, vote_count: old.vote_count + (vote ? 1 : -1) } : old,
+      );
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: issueKeys.one(orgId, key) }),
+  });
+}
+
 export function useComments(key: string) {
   const orgId = useOrgId();
   return useQuery({ queryKey: issueKeys.sub(orgId, key, "comments"), queryFn: () => api.get<CommentList>(`${BASE}/${key}/comments`), select: (d) => d.items });

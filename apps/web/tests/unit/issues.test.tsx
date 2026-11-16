@@ -39,7 +39,7 @@ function issueRoutes(detail: Record<string, unknown>, extra: Record<string, unkn
     ...extra,
   };
 }
-const detail = (overrides: Record<string, unknown> = {}) => ({ ...issue(), watching: true, watcher_count: 1, my_role: "member", ...overrides });
+const detail = (overrides: Record<string, unknown> = {}) => ({ ...issue(), watching: true, watcher_count: 1, voted: false, vote_count: 0, my_role: "member", ...overrides });
 const renderIssue = () => renderAt(<IssuePage />, "/projects/:projectKey/issues/:issueKey", "/projects/PAY/issues/PAY-1");
 
 describe("IssueListPage", () => {
@@ -267,5 +267,48 @@ describe("cloning", () => {
     renderIssue();
     expect(await screen.findByRole("heading", { name: "Checkout fails" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+  });
+});
+
+describe("voting", () => {
+  it("lets anyone who can see the issue vote and take the vote back", async () => {
+    signIn();
+    let current = detail({ my_role: "viewer" });
+    const api = fakeApi(issueRoutes(current, {
+      "GET /api/v1/issues/PAY-1": () => ({ status: 200, body: current }),
+      "PUT /api/v1/issues/PAY-1/vote": () => {
+        current = { ...current, voted: true, vote_count: 1 };
+        return { status: 204, body: null };
+      },
+      "DELETE /api/v1/issues/PAY-1/vote": () => {
+        current = { ...current, voted: false, vote_count: 0 };
+        return { status: 204, body: null };
+      },
+    }));
+    renderIssue();
+    await userEvent.click(await screen.findByRole("button", { name: "Vote for this issue" }));
+    const voted = await screen.findByRole("button", { name: "Remove your vote" });
+    expect(voted).toHaveAttribute("aria-pressed", "true");
+    expect(voted).toHaveTextContent("1");
+    expect(api.sent("PUT", "/api/v1/issues/PAY-1/vote")).toHaveLength(1);
+    await userEvent.click(voted);
+    expect(await screen.findByRole("button", { name: "Vote for this issue" })).toHaveTextContent("0");
+    expect(api.sent("DELETE", "/api/v1/issues/PAY-1/vote")).toHaveLength(1);
+  });
+
+  it("closes voting on resolved issues", async () => {
+    signIn();
+    fakeApi(issueRoutes(detail({ status: "done", status_category: "done", vote_count: 3 })));
+    renderIssue();
+    const closed = await screen.findByRole("button", { name: "Vote for this issue" });
+    expect(closed).toBeDisabled();
+    expect(closed).toHaveAttribute("title", "Voting is closed: this issue is resolved");
+  });
+
+  it("keeps a cast vote removable on a resolved issue", async () => {
+    signIn();
+    fakeApi(issueRoutes(detail({ status: "done", status_category: "done", voted: true, vote_count: 3 })));
+    renderIssue();
+    expect(await screen.findByRole("button", { name: "Remove your vote" })).toBeEnabled();
   });
 });

@@ -569,6 +569,7 @@ pub async fn get_one(
 ) -> ApiResult<(HeaderMap, Json<IssueDetail>)> {
     let (mut tx, issue, role) = open(&state, &ctx, &key, ProjectPermission::Browse, false).await?;
     let (watching, watcher_count) = store::watch_state(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id).await?;
+    let (voted, vote_count) = store::vote_state(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id).await?;
     tx.commit().await?;
     Ok((
         etag(issue.version),
@@ -576,6 +577,8 @@ pub async fn get_one(
             issue: dto(&state, &ctx, issue, true).await,
             watching,
             watcher_count,
+            voted,
+            vote_count,
             my_role: role.as_str().to_owned(),
         }),
     ))
@@ -1155,6 +1158,42 @@ pub async fn unwatch(State(state): State<AppState>, ctx: OrgContext, Path(key): 
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- votes -------------------------------------------------------------------
+
+/// Vote for an issue: anyone who can see it, once. Resolved issues take no new votes.
+#[utoipa::path(put, path = "/api/v1/issues/{key}/vote", security(("bearer" = [])), params(("key" = String, Path)),
+    responses((status = 204), (status = 404), (status = 409, description = "The issue is resolved")))]
+pub async fn vote(State(state): State<AppState>, ctx: OrgContext, Path(key): Path<String>) -> ApiResult<StatusCode> {
+    let (mut tx, issue, _) = open(&state, &ctx, &key, ProjectPermission::Browse, false).await?;
+    if issue.status_category == "done" {
+        let (voted, _) = store::vote_state(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id).await?;
+        if !voted {
+            return Err(ApiError::Conflict("Voting is closed: this issue is resolved.".into()));
+        }
+    }
+    store::vote(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Take back a vote, whatever the issue's state.
+#[utoipa::path(delete, path = "/api/v1/issues/{key}/vote", security(("bearer" = [])), params(("key" = String, Path)), responses((status = 204)))]
+pub async fn unvote(State(state): State<AppState>, ctx: OrgContext, Path(key): Path<String>) -> ApiResult<StatusCode> {
+    let (mut tx, issue, _) = open(&state, &ctx, &key, ProjectPermission::Browse, false).await?;
+    store::unvote(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/api/v1/issues/{key}/voters", security(("bearer" = [])), params(("key" = String, Path)),
+    responses((status = 200, body = VoterList), (status = 404)))]
+pub async fn voters(State(state): State<AppState>, ctx: OrgContext, Path(key): Path<String>) -> ApiResult<Json<VoterList>> {
+    let (mut tx, issue, _) = open(&state, &ctx, &key, ProjectPermission::Browse, false).await?;
+    let rows = store::voters(tx.conn(), ctx.tenant_id, issue.id).await?;
+    tx.commit().await?;
+    Ok(Json(VoterList { items: rows.into_iter().map(|(user_id, voted_at)| VoterDto { user_id, voted_at }).collect() }))
+}
+
 // --- router ------------------------------------------------------------------
 
 #[derive(OpenApi)]
@@ -1174,6 +1213,9 @@ pub async fn unwatch(State(state): State<AppState>, ctx: OrgContext, Path(key): 
         list_links,
         add_link,
         clone_issue,
+        vote,
+        unvote,
+        voters,
         delete_link,
         history,
         transitions,
@@ -1203,6 +1245,8 @@ pub async fn unwatch(State(state): State<AppState>, ctx: OrgContext, Path(key): 
         LinkList,
         CreateLinkRequest,
         CloneIssueRequest,
+        VoterDto,
+        VoterList,
         HistoryEntry,
         HistoryList,
         IssueMeta,
@@ -1234,6 +1278,8 @@ pub fn router(state: AppState) -> Router {
         .route("/issues/{key}/history", get(history))
         .route("/issues/{key}/transitions", get(transitions))
         .route("/issues/{key}/watch", put(watch).delete(unwatch))
+        .route("/issues/{key}/vote", put(vote).delete(unvote))
+        .route("/issues/{key}/voters", get(voters))
         .merge(crate::http_fields::routes())
         .merge(crate::attachments::routes());
 

@@ -536,6 +536,51 @@ pub async fn watch_state(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uui
     .await?)
 }
 
+// --- votes -------------------------------------------------------------------
+
+pub async fn vote(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid, user_id: Uuid) -> ApiResult<()> {
+    sqlx::query("INSERT INTO votes (tenant_id, issue_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+        .bind(tenant_id)
+        .bind(issue_id)
+        .bind(user_id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn unvote(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid, user_id: Uuid) -> ApiResult<()> {
+    sqlx::query("DELETE FROM votes WHERE tenant_id = $1 AND issue_id = $2 AND user_id = $3")
+        .bind(tenant_id)
+        .bind(issue_id)
+        .bind(user_id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// (has the user voted, total votes)
+pub async fn vote_state(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid, user_id: Uuid) -> ApiResult<(bool, i64)> {
+    Ok(sqlx::query_as(
+        "SELECT COALESCE(bool_or(user_id = $3), false), count(*) FROM votes WHERE tenant_id = $1 AND issue_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(issue_id)
+    .bind(user_id)
+    .fetch_one(conn)
+    .await?)
+}
+
+/// Who voted, earliest first (at most 500).
+pub async fn voters(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Vec<(Uuid, OffsetDateTime)>> {
+    Ok(sqlx::query_as(
+        "SELECT user_id, created_at FROM votes WHERE tenant_id = $1 AND issue_id = $2 ORDER BY created_at, user_id LIMIT 500",
+    )
+    .bind(tenant_id)
+    .bind(issue_id)
+    .fetch_all(conn)
+    .await?)
+}
+
 // --- custom fields ----------------------------------------------------------
 
 use crate::custom_fields::Field;

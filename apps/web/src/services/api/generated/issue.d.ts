@@ -257,6 +257,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/issues/{key}/vote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Vote for an issue: anyone who can see it, once. Resolved issues take no new votes. */
+        put: operations["vote"];
+        post?: never;
+        /** Take back a vote, whatever the issue's state. */
+        delete: operations["unvote"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/issues/{key}/voters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["voters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/issues/{key}/watch": {
         parameters: {
             query?: never;
@@ -381,6 +415,9 @@ export interface components {
         IssueDetail: components["schemas"]["IssueDto"] & {
             /** @description What the caller may do with this issue: administrator | member | viewer */
             my_role: string;
+            /** Format: int64 */
+            vote_count: number;
+            voted: boolean;
             /** Format: int64 */
             watcher_count: number;
             watching: boolean;
@@ -525,6 +562,15 @@ export interface components {
             story_points?: number | null;
             summary?: string | null;
             type?: string | null;
+        };
+        VoterDto: {
+            /** Format: uuid */
+            user_id: string;
+            /** Format: date-time */
+            voted_at: string;
+        };
+        VoterList: {
+            items: components["schemas"]["VoterDto"][];
         };
     };
     responses: never;
@@ -1269,6 +1315,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransitionList"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The issue is resolved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unvote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    voters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoterList"];
                 };
             };
             404: {

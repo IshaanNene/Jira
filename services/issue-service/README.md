@@ -1,7 +1,7 @@
 # issue-service
 
 **Responsibility.** Issue lifecycle: creation with safe key allocation, editing with optimistic concurrency,
-hierarchy (epic → issue → subtask), comments, links, change history, watchers.
+hierarchy (epic → issue → subtask), comments, links, change history, watchers, votes.
 
 **API.** REST under `/api/v1/issues` — contract at `/openapi.json`. Calls project-service (`GetProject`, cached
 15 s) and user-service (assignee is an organization member).
@@ -24,13 +24,13 @@ hierarchy (epic → issue → subtask), comments, links, change history, watcher
   executables and markup refused; downloads proxied, authorized and always served as attachments.
 
 **Database.** Owns `issue_db`: `custom_fields`, `attachments`, `issues`, `project_issue_counters`, `comments`, `issue_links`, `issue_history`,
-`watchers` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted|mentioned`,
+`watchers`, `votes` (forced RLS), `outbox`, `inbox`. Emits `issue.created|updated|transitioned|assigned|deleted|mentioned`,
 `comment.created|deleted`.
 
 **Temporary.** Statuses and transitions are a fixed workflow in `domain.rs` until workflow-service (Phase 3).
 
 **Not built yet.** Custom issue types, attachment malware scanning and previews, filtering by custom field,
-time tracking, votes, clone / move / bulk edit, import / export, mentions UI, real-time updates.
+time tracking, move / bulk edit, import / export, searching or sorting by votes.
 
 | Variable | Required | Default |
 |---|---|---|

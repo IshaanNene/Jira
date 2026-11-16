@@ -114,6 +114,8 @@ pub struct IssueDetail {
     pub issue: IssueDto,
     pub watching: bool,
     pub watcher_count: i64,
+    pub voted: bool,
+    pub vote_count: i64,
     /// What the caller may do with this issue: administrator | member | viewer
     pub my_role: String,
 }
@@ -265,6 +267,18 @@ pub struct LinkedIssue {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LinkList {
     pub items: Vec<LinkDto>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VoterDto {
+    pub user_id: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub voted_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VoterList {
+    pub items: Vec<VoterDto>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
