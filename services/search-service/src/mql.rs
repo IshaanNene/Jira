@@ -991,6 +991,14 @@ mod tests {
     }
 
     #[test]
+    fn the_home_page_query_compiles() {
+        // apps/web HomePage: open work assigned to the caller, across projects.
+        let compiled = compile_str("assignee = currentUser() AND statusCategory != done ORDER BY updated DESC").unwrap();
+        let text = compiled.query.to_string();
+        assert!(text.contains(&me().to_string()) && text.contains("\"done\""), "{text}");
+    }
+
+    #[test]
     fn parses_precedence_and_lists() {
         let q = parse("project = pay AND (status = \"In Review\" OR priority in (High, highest)) order by updated desc, key")
             .unwrap();

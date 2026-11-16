@@ -1,34 +1,27 @@
-import { useQueries } from "@tanstack/react-query";
 import { ClipboardCheck, FolderKanban } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { Button, EmptyState, Skeleton } from "@/components/ui";
-import { issueKeys, IssueTypeIcon, PriorityIcon, StatusLozenge } from "@/modules/issues";
+import { Button, EmptyState, ErrorState, Skeleton } from "@/components/ui";
+import { IssueTypeIcon, PriorityIcon, StatusLozenge } from "@/modules/issues";
 import { can } from "@/modules/organizations";
 import { CreateProjectDialog, ProjectAvatar, PROJECT_TYPE_LABEL, useProjects } from "@/modules/projects";
-import { api, type IssuePage } from "@/services/api";
+import { statusLabel, useMqlSearch } from "@/modules/search";
 import { useSession } from "@/state/session";
 
-/** How many projects "Assigned to me" looks through until cross-project search exists (Phase 6). */
-const MAX_PROJECTS = 8;
+/**
+ * Open work assigned to the signed-in person, across every project they can see, newest first.
+ * "Open" is by status category, so it works whatever each workflow calls its statuses. The search
+ * index trails edits by a few seconds.
+ */
+export const ASSIGNED_TO_ME = "assignee = currentUser() AND statusCategory != done ORDER BY updated DESC";
 
 /** Landing page: your projects, and the open work assigned to you. */
 export default function HomePage() {
-  const orgId = useSession((s) => s.organization?.id);
   const role = useSession((s) => s.organization?.role);
   const projects = useProjects();
-  const scanned = (projects.data ?? []).slice(0, MAX_PROJECTS);
-  // "Open" is defined by status category, so it works whatever each project's workflow calls its statuses.
-  const filters = { assignee: "me", status_category: "todo,in_progress" };
-  const assigned = useQueries({
-    queries: scanned.map((p) => ({
-      queryKey: issueKeys.list(orgId, p.key, filters),
-      queryFn: () => api.get<IssuePage>("/api/v1/issues", { query: { project: p.key, limit: 20, ...filters } }),
-      select: (d: IssuePage) => d.items,
-    })),
-  });
-  const issues = assigned.flatMap((q) => q.data ?? []).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const loadingIssues = projects.isPending || assigned.some((q) => q.isPending);
+  const assigned = useMqlSearch(ASSIGNED_TO_ME);
+  const firstPage = assigned.data?.pages[0];
+  const issues = firstPage?.items ?? [];
   const canCreate = can(role, "viewMembers");
 
   return (
@@ -71,8 +64,10 @@ export default function HomePage() {
 
       <section>
         <h2 className="mb-3 text-base font-semibold text-ink">Assigned to me</h2>
-        {loadingIssues ? (
+        {assigned.isPending ? (
           <div className="space-y-1.5" aria-busy><Skeleton className="h-9" /><Skeleton className="h-9" /><Skeleton className="h-9" /></div>
+        ) : assigned.isError ? (
+          <ErrorState className="rounded-lg border border-line" error={assigned.error} onRetry={() => void assigned.refetch()} />
         ) : issues.length === 0 ? (
           <EmptyState className="rounded-lg border border-dashed border-line" icon={ClipboardCheck} title="Nothing assigned to you" description="Open issues assigned to you will appear here." />
         ) : (
@@ -86,14 +81,16 @@ export default function HomePage() {
                     <span className="block text-xs text-ink-subtle">{issue.key}</span>
                   </span>
                   <PriorityIcon priority={issue.priority} />
-                  <StatusLozenge name={issue.status_name} category={issue.status_category} />
+                  <StatusLozenge name={statusLabel(issue.status)} category={issue.status_category} />
                 </Link>
               </li>
             ))}
           </ul>
         )}
-        {(projects.data?.length ?? 0) > MAX_PROJECTS && (
-          <p className="mt-2 text-xs text-ink-subtle">Showing work from your first {MAX_PROJECTS} projects.</p>
+        {firstPage && firstPage.total > issues.length && (
+          <Link to={`/search?mode=mql&mql=${encodeURIComponent(ASSIGNED_TO_ME)}`} className="mt-2 inline-block text-sm font-medium text-accent hover:underline">
+            View all {firstPage.total_is_lower_bound ? `${firstPage.total}+` : firstPage.total} in search
+          </Link>
         )}
       </section>
     </div>

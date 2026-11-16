@@ -1,6 +1,6 @@
 import { lazy } from "react";
 
-export { searchKeys, useDebounced, useQuickSearch, useSearch } from "./api";
+export { searchKeys, useDebounced, useMqlSearch, useQuickSearch, useSearch } from "./api";
 export { Highlighted, hitPath, SearchResultRow, statusLabel } from "./components";
 export { MqlFilterButton, MqlFilterPanel, useMqlFilter, type MqlFilterState } from "./MqlFilter";
 
