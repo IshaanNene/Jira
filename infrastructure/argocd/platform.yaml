@@ -1,0 +1,57 @@
+# Cluster add-ons the Meridian chart relies on. Pinned chart versions; upgrades are commits.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://charts.external-secrets.io
+    chart: external-secrets
+    targetRevision: 0.10.7
+    helm:
+      valuesObject:
+        installCRDs: true
+        # EKS Pod Identity associates this service account with the role that may read
+        # meridian-staging/* in Secrets Manager.
+        serviceAccount: { name: external-secrets }
+  destination: { server: "https://kubernetes.default.svc", namespace: external-secrets }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: 2.16.0
+  destination: { server: "https://kubernetes.default.svc", namespace: keda }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+---
+# Where ExternalSecrets read from. Credentials come from the controller's Pod Identity.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secret-store
+  namespace: argocd
+  annotations:
+    # After the operator's CRDs exist.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/IshaanNene/Jira.git
+    targetRevision: main
+    path: infrastructure/argocd/secret-store
+  destination: { server: "https://kubernetes.default.svc" }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

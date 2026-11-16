@@ -6,7 +6,7 @@ metadata:
   name: web
   labels:
     {{- include "meridian.labels" . | nindent 4 }}
-    {{- include "meridian.selector" $ctx | nindent 4 }}
+    {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 4 }}
 spec:
   replicas: {{ .Values.web.replicas }}
   revisionHistoryLimit: 5
@@ -16,7 +16,7 @@ spec:
     metadata:
       labels:
         {{- include "meridian.labels" . | nindent 8 }}
-        {{- include "meridian.selector" $ctx | nindent 8 }}
+        {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}

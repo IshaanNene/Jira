@@ -100,7 +100,11 @@ service could impersonate another; per-workload identity (SPIFFE/SPIRE) is the p
 ## 6. Secrets and data protection
 
 - No secrets in the repository; `.env.example` contains only obviously fake development values.
-- Kubernetes: External Secrets Operator → cloud secret manager; workload identity for cloud APIs.
+- Kubernetes: External Secrets Operator → AWS Secrets Manager (chart `externalSecrets`, `infrastructure/argocd`).
+  The operator reads through EKS Pod Identity with a role limited to the `meridian-staging/*` entries the chart
+  needs and `kms:Decrypt` via Secrets Manager only; its `ClusterSecretStore` can be used only from the
+  `meridian` namespace. Secret values are written out of band, never through Terraform, so state holds none.
+  Written and schema-checked, not yet applied to a cluster.
 - Integration credentials and IdP secrets: envelope encryption (AES-256-GCM data key wrapped by KMS), per tenant.
 - TLS everywhere outside the pod; encryption at rest on all managed stores; encrypted backups.
 - Logs never contain credentials, tokens, cookies or request bodies; emails are logged hashed.
@@ -122,8 +126,13 @@ request id, details) by a consumer in user-service (ADR-0009).
 
 ## 8. Supply chain
 
-`cargo audit` + `cargo deny`, `pnpm audit`, Trivy image scan and SBOM generation in CI; Debian slim images upgraded at
-build time, non-root, read-only root filesystem, dropped capabilities.
+`cargo deny` (RustSec advisories) and a Trivy scan of every image in CI, failing on fixable high and critical
+findings; Debian slim images upgraded at build time, non-root, read-only root filesystem, dropped capabilities.
+On `main` every pushed image gets a CycloneDX SBOM, a keyless cosign signature (GitHub's OIDC identity, logged in
+Sigstore's transparency log) and the SBOM as a signed attestation, all bound to the digest, and the job verifies
+both against the identity `…/.github/workflows/ci.yml@refs/heads/main` before finishing. Not yet: admission
+control that refuses unsigned images in the cluster (Kyverno or the Sigstore policy-controller), and deploying
+by digest rather than tag.
 
 ## 9. Not yet done
 

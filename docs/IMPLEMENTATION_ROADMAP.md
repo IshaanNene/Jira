@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-14 (Phase 8: container images, Helm chart, Terraform, CI, observability stack, load and failure tests).
+Last updated: 2026-11-16 (Phase 8: signed images with SBOMs, External Secrets, KEDA, Argo CD, SLO alerts, restore drill; Phase 6 integrations).
 
 ## Phase status
 
@@ -19,7 +19,7 @@ Last updated: 2026-11-14 (Phase 8: container images, Helm chart, Terraform, CI, 
 | 5 | Kafka relay, consumers, search indexing, realtime gateway, notifications | ✅ (gaps listed below) |
 | 6 | SSO/SCIM/MFA, admin, audit, QL search, automation, integrations | ✅ (gaps listed below) |
 | 7 | ClickHouse pipeline, dashboards | ✅ (seven chart kinds; gaps listed below) |
-| 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | 🚧 (chart, images, CI, observability and tests built and run locally; Terraform validated but never applied; no Argo CD; gaps listed below) |
+| 8 | Kubernetes/Helm/Terraform/CI/CD, observability stack, load + failure testing | 🚧 (chart, images with signatures and SBOMs, CI, Argo CD and External Secrets manifests, KEDA scaling, SLO alerts, load, failure and restore tests built and checked locally; nothing applied to a cloud cluster; gaps listed below) |
 
 Deviations from the brief's phase order, and why, are in [ARCHITECTURE.md](ARCHITECTURE.md) §7.
 
@@ -102,6 +102,9 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Batch consumer | `run_batch_consumer`: up to N events or a time limit per batch, the whole batch retried on a transient failure, only the rejected events dead-lettered, one offset commit per batch; analytics-service writes 500 events / 250 ms as one `INSERT` per table, fetching issue documents in one RPC per tenant | 1 unit test; 1 analytics integration test (204 events, one active part per table, one rejected event, redelivery idempotent) |
 | Consumer retries | A transient failure is retried with backoff (200 ms → 30 s) until it succeeds; only permanent failures are dead-lettered; `events_retried_total` | 1 unit test; `tests/resilience/run.sh opensearch` fails on the old code (an issue changed during the outage never reached search) and passes on the new |
 | Observability stack | Prometheus, Grafana (provisioned overview dashboard), Jaeger in the `observability` compose profile; latency exported as histograms; 7 alert rules (service down, error rate, slow requests, consumer waiting, dead letters, outbox, email) | promtool; all 13 targets scraped; p95 by service queried; `ConsumerWaitingOnDependency` went pending with OpenSearch stopped; search-service traces reached Jaeger |
+| SLO alerts | Per service: 99.95 % of requests without a 5xx and 99 % within 500 ms (realtime streams excluded) over 30 days; recording rules for both ratios over 5 m to 3 d; multi-window, multi-burn-rate alerts (14.4× over 1 h and 5 m and 6× over 6 h and 30 m page, 1× over 3 d and 6 h opens a ticket); paging needs at least one request every 20 s, so a quiet service is not paged on a handful of failures (`infrastructure/observability/prometheus/slo.yml`) | `promtool test rules` (`slo.test.yml`, in CI): a 2 % failure rate pages on the fast window within minutes and on the six-hour window only after its 15 minutes; a service within budget stays quiet; a low-traffic service with half its requests failing is not paged but gets the ticket; slow requests page on latency without touching availability; a deliberate break of the traffic floor makes the tests fail |
+| Restore drill | `make restore-drill` (`tests/restore/run.sh`): `pg_dump` of every service database, restored into a fresh database, then exact row counts of every table, applied migrations, forced row-level security and policies, and the runtime role's view without and with a tenant compared with the source | Run 2026-11-16 on the local data: 10 databases, 6 MiB, 24 s, all checks passed; a first version that compared two failed queries as equal was caught and fixed (an empty answer now fails) |
+| Supply chain and delivery | On `main`, CI gives every pushed image a CycloneDX SBOM (Trivy), a keyless cosign signature and a signed SBOM attestation bound to its digest, and verifies both against this workflow's identity; SBOMs kept 30 days. Helm: opt-in ExternalSecrets for every Secret the chart reads (hooks before the migrations) and KEDA ScaledObjects scaling the five consumer services on consumer-group lag; `values-staging.yaml`; Terraform for the Secrets Manager entries and the operator's Pod Identity role; Argo CD add-ons (External Secrets Operator, KEDA, a namespace-limited ClusterSecretStore) and a project-scoped staging Application with automated sync. kubeconform also found every Deployment repeating the `app.kubernetes.io/instance` label key, now fixed | `kubeconform -strict` over the default, kind and staging renders (84, 72 and 108 objects) and the Argo CD manifests, in CI; `helm lint` for all three value sets; `terraform fmt`; signing and verification run only on `main` in CI. Nothing here has been applied to a cluster |
 | Failure tests | `make resilience` stops Kafka, OpenSearch, ClickHouse, Redis and PostgreSQL in turn under the running stack and checks the documented behaviour and the recovery | 21 checks, all passing (results in SYSTEM_DESIGN.md §8) |
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
@@ -180,15 +183,15 @@ so that a new migration file is always embedded in the binary.
 
 | Item | State |
 |---|---|
-| Cloud deployment | Terraform has never been applied; nothing runs in AWS. No ExternalSecret manifests, no cert-manager, no DNS |
-| CD | No Argo CD, no Argo Rollouts canaries; the chart is installed with `helm upgrade` |
-| CI | No image signing or SBOM; no Playwright or contract tests in it |
+| Cloud deployment | Terraform has never been applied; nothing runs in AWS. ExternalSecrets, the Secrets Manager entries and the operator's Pod Identity role are written (see above) but untested against AWS. No cert-manager, no DNS, no production environment |
+| CD | Argo CD manifests written and schema-checked, never applied. No Argo Rollouts canaries; no automatic promotion of a build to staging (a commit of its tag) |
+| CI | Images are signed and carry SBOM attestations, but nothing enforces signatures at admission (no Kyverno or policy-controller). No Playwright or contract tests in it |
 | NetworkPolicy egress | Rendered and correct on inspection, but **not verified**: kind's network plugin does not enforce egress, so a cluster with Calico, Cilium or the EKS VPC CNI policy agent is needed |
-| Autoscaling | CPU-based HPA only; no KEDA scaling on Kafka lag, no connection-based scaling for realtime; HPAs were not exercised (kind runs one replica) |
-| Observability | No log aggregation (Loki or similar), no Alertmanager routing, no SLO burn-rate alerts, no consumer-lag exporter; traces cover HTTP requests only, not Kafka hops; Grafana has one dashboard |
+| Autoscaling | KEDA ScaledObjects on consumer lag are rendered and schema-checked but have never run (no KEDA in kind); no connection-based scaling for realtime; HPAs were not exercised (kind runs one replica) |
+| Observability | SLO burn-rate alerts built and unit-tested (see above). No log aggregation (Loki or similar), no Alertmanager routing (alerts are evaluated but go nowhere), no consumer-lag exporter for dashboards (KEDA reads lag itself); traces cover HTTP requests only, not Kafka hops; Grafana has one dashboard |
 | Load testing | Saturation found on one laptop only (reads ~2,000/s, writes ~1,800/s, with one replica per service sharing the CPU with every data store); no soak, spike, realtime fan-out or multi-replica tests; the brief's scale targets remain untested |
 | Failure testing | Data stores only, each stopped cleanly; no network partitions, slow disks, pod kills under load, or database fail-over |
-| Backups | No restore drill; RPO/RTO remain targets |
+| Backups | Logical restore drill built and run (see above). No drill of an RDS snapshot or point-in-time restore, no WAL-level backups locally, nothing scheduled; RPO/RTO remain targets |
 
 ## Known issues
 
@@ -294,7 +297,8 @@ p95 16.3 ms, p99 76.9 ms); 14,408 requests, 1 failed. All thresholds passed.
 
 ## Next
 
-1. Phase 8, remaining: verify egress policies on a CNI that enforces them, a staging
-   environment from the Terraform with External Secrets and Argo CD, re-running the stress test
-   against chart queries now that they are cached, and a restore drill.
+1. Phase 8, remaining: provisioning staging from the Terraform and bootstrapping Argo CD there
+   (which also verifies egress policies on the VPC CNI, External Secrets and KEDA), an RDS
+   point-in-time restore drill, Argo Rollouts canaries, signature enforcement at admission, and
+   re-running the stress test against chart queries now that they are cached.
 2. Phase 6 is built; its remaining gaps are listed above.

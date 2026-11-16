@@ -62,21 +62,22 @@ defaults:
   autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPUUtilizationPercentage: 70 }
   terminationGracePeriodSeconds: 30
 
-# Every service: whether it has gRPC, a PostgreSQL database to migrate, and overrides.
+# Every service: whether it has gRPC, a PostgreSQL database to migrate, the Kafka consumer
+# groups it runs (scaled on with keda.enabled), and overrides.
 services:
   tenant:       { grpc: true,  database: true }
   identity:     { grpc: false, database: true }
-  user:         { grpc: true,  database: true }
+  user:         { grpc: true,  database: true, consumers: [user-service.audit, user-service.profiles] }
   permission:   { grpc: true,  database: true }
   project:      { grpc: true,  database: true }
   workflow:     { grpc: true,  database: true }
   issue:        { grpc: true,  database: true }
-  agile:        { grpc: false, database: true }
+  agile:        { grpc: false, database: true, consumers: [agile-service.cleanup] }
   # Server-Sent Events: long-lived connections, drained on shutdown.
   realtime:     { grpc: false, database: false, terminationGracePeriodSeconds: 120 }
-  notification: { grpc: false, database: true }
-  search:       { grpc: false, database: true }
-  analytics:    { grpc: false, database: true }
+  notification: { grpc: false, database: true, consumers: [notification-service, notification-service.webhooks] }
+  search:       { grpc: false, database: true, consumers: [search-service] }
+  analytics:    { grpc: false, database: true, consumers: [analytics-service] }
 
 web:
   enabled: true
@@ -149,6 +150,26 @@ networkPolicy:
     webhooks: true
 
 podDisruptionBudget: { maxUnavailable: 1 }
+
+# Fill the Secrets above from a secret store with the External Secrets Operator.
+externalSecrets:
+  enabled: false
+  # A ClusterSecretStore set up with the operator (e.g. AWS Secrets Manager through EKS Pod Identity).
+  storeName: aws-secrets-manager
+  # Store entries are named <prefix>/<Secret name>, e.g. meridian-staging/meridian-issue.
+  prefix: ""
+  refreshInterval: 1h
+
+# Scale Kafka consumers on consumer-group lag with KEDA (needs the KEDA operator). Services
+# without consumers keep the CPU HorizontalPodAutoscaler.
+keda:
+  enabled: false
+  # Messages behind, per replica, before another is added.
+  lagThreshold: 500
+  # How the scaler reaches the brokers; with sasl set, it signs in with meridian-shared's
+  # KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD.
+  sasl: scram_sha512
+  tls: enable
 
 migrations:
   enabled: true

@@ -50,7 +50,10 @@ changes roll the pods.
 - **Secrets** are never in values. The chart reads `meridian-shared` (internal service secret, Redis URL, Kafka
   SASL credentials), `meridian-<service>` (that service's runtime database URL and its own credentials) and
   `meridian-<service>-migrate` (the owner-role URL, given only to the migration Job). External Secrets fills them
-  from AWS Secrets Manager in staging and production **(ExternalSecret manifests not built)**.
+  from AWS Secrets Manager when `externalSecrets.enabled` (staging): one `ExternalSecret` per Secret, reading the
+  store entry `<prefix>/<Secret name>` (a JSON object of keys) from a `ClusterSecretStore`. They are
+  pre-install/pre-upgrade hooks weighted before the migration Jobs, so the Jobs' credentials exist on a first
+  install, and the Secrets they write are orphaned so recreating a hook never removes them from running pods.
 - **Gateway**: Envoy, configured from `gateway.routes`: the same request ids, client address handling, body and
   rate limits, edge JWT check and identity-header stripping as the local gateway, plus HSTS on https origins.
   The admin API listens on loopback only; `/ready` and `/stats/prometheus` are exposed read-only on port 8081.
@@ -62,8 +65,16 @@ changes roll the pods.
 - **Migrations** are expand/contract, so a rollback of the code never needs one of the schema; a failed Job
   stops the upgrade before any pod changes.
 
-Not built: KEDA scaling of consumers on Kafka lag (consumers run inside the service Deployments and scale with
-them), a separate `realtime` HPA signal (open connections), Argo Rollouts canaries, the Gateway API
+- **Autoscaling**: an HPA on CPU per service. With `keda.enabled` (staging), services that run Kafka consumers
+  (user, agile, notification, search, analytics; `services.<name>.consumers` lists their groups) get a KEDA
+  `ScaledObject` instead, scaling on CPU and on each group's lag (`keda.lagThreshold` messages per replica),
+  signing in to MSK with the platform's SCRAM credentials through a `TriggerAuthentication`; `maxReplicas`
+  stays at or below the partition count (12 on MSK).
+
+Every rendered manifest, for the default, kind and staging values, passes `kubeconform -strict` against the
+Kubernetes 1.31 schemas and the CRD catalog (ExternalSecret, ScaledObject, Argo CD) in CI.
+
+Not built: a separate `realtime` HPA signal (open connections), Argo Rollouts canaries, the Gateway API
 (Envoy Gateway) form of the edge, cert-manager and TLS termination (the cloud load balancer terminates TLS).
 
 ### Local Kubernetes (`make kind-up`)
@@ -102,8 +113,19 @@ Locally the same routing table is expressed as a static Envoy config
   2026-11-14 (run 43604095879), including the push of all thirteen images. The first runs found two problems,
   both fixed: librdkafka 2.12 needs curl's headers to compile even with curl off, and images built by a separate
   buildx container builder were rejected by GHCR (`unknown blob`), so the job uses the engine's own builder.
-- **CD (Argo CD)** **(not built)**: app-of-apps per environment pointing at the Helm chart; image tags bumped by
-  PR. Argo Rollouts canary (5 % → 25 % → 100 %) gated on error-rate and latency analysis from Prometheus.
+  On `main`, every pushed image then gets a CycloneDX SBOM (Trivy), a keyless cosign signature and the SBOM as a
+  signed attestation, all bound to the image digest and verified in the same job against the identity of
+  this workflow on `main` (`cosign verify --certificate-identity-regexp …/ci.yml@refs/heads/main
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com`). The SBOMs are also kept as a
+  workflow artifact for 30 days. Nothing in the cluster enforces signatures yet (no admission policy).
+  The chart job also checks the rendered manifests with kubeconform and runs the alert rule tests.
+- **CD (Argo CD)**: `infrastructure/argocd` holds the add-ons (External Secrets Operator 0.10.7 with a
+  `ClusterSecretStore` usable only from the `meridian` namespace, KEDA 2.16.0) and an `AppProject` that may
+  deploy only this repository's chart into `meridian`, with the `meridian-staging` Application syncing
+  `values-staging.yaml` from `main` automatically (prune, self-heal, retries). Helm hooks become PreSync steps.
+  A build reaches staging when its tag is committed to `values-staging.yaml`. Checked with kubeconform, never
+  applied (no cluster). **Not built:** Argo Rollouts canaries (5 % → 25 % → 100 % gated on the SLO burn rates),
+  automatic tag promotion.
 - **Migrations**: a pre-sync Job per service runs `sqlx migrate run` as the owner role. Migrations are
   backwards-compatible with the previous release (expand/contract) so a rollback of the code never needs a
   rollback of the schema.
@@ -124,10 +146,14 @@ Locally the same routing table is expressed as a static Envoy config
 | `storage` | Attachments bucket: private, versioned, KMS, TLS-only policy, old versions expire after 30 days |
 
 `environments/staging` composes them with one KMS key; state in S3 with native locking (`backend.hcl`).
+`environments/staging/secrets.tf` creates one KMS-encrypted Secrets Manager entry per chart Secret
+(`meridian-staging/meridian-shared`, `…/meridian-<service>`, `…/meridian-<service>-migrate`; values are
+written out of band, so none is in Terraform state) and gives the External Secrets Operator's service account,
+through EKS Pod Identity, a role that may read exactly those entries.
 Not built: a production environment (same modules, larger sizes), per-service database roles (a bootstrap Job
 creating the owner/app roles per service, as `infrastructure/postgres/init` does locally), ClickHouse (ClickHouse
-Cloud or the Altinity operator), IRSA roles for S3 access (today: access keys in a Secret), CDN for the web app,
-DNS and certificates, the External Secrets operator and its IAM role.
+Cloud or the Altinity operator), Pod Identity roles for S3 access (today: access keys in a Secret), CDN for the
+web app, DNS and certificates.
 
 ## 6. Regions and data residency
 
@@ -138,8 +164,15 @@ that needs a cross-region strategy before a second region opens — an open desi
 
 ## 7. Backup and recovery
 
-Targets (not yet validated): RPO ≤ 5 min, RTO ≤ 60 min.
-PostgreSQL: continuous WAL archiving + daily base backup, PITR, monthly restore drill.
+Targets (not yet validated in AWS): RPO ≤ 5 min, RTO ≤ 60 min.
+PostgreSQL: RDS automated backups with 14 days of point-in-time recovery (Terraform); a monthly restore drill.
+`make restore-drill` (`tests/restore/run.sh`) is that drill for logical backups: it backs up every service
+database with `pg_dump`, restores each into a fresh database, and checks exact row counts of every table, the
+applied migrations, that the same tables are under forced row-level security with the same policies, and that
+the runtime role sees nothing without a tenant and exactly one workspace's rows with one. Run on 2026-11-16
+against the local data (10 databases, 6 MiB of backups, 136,000 rows in issue_db): all checks passed, backup and
+restore of everything in 24 s. Restoring an RDS snapshot or point in time has not been drilled (nothing is
+provisioned), so the RPO and RTO above remain targets.
 Kafka: replication factor 3, `min.insync.replicas=2`; it is not a backup — projections rebuild from PostgreSQL.
 OpenSearch / ClickHouse: rebuildable; snapshots only shorten recovery.
 Object storage: versioning + cross-zone replication.

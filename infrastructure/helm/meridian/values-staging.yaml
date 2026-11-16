@@ -1,0 +1,39 @@
+# Staging on EKS, from infrastructure/terraform/environments/staging, deployed by Argo CD
+# (infrastructure/argocd). Values in angle brackets come from `terraform output` when the
+# environment is provisioned; it has not been yet. No credentials here: every Secret comes from
+# AWS Secrets Manager through the External Secrets Operator.
+image:
+  registry: ghcr.io/ishaannene/jira
+  # The 12-character commit tag CI pushed and signed; promoting a build is a commit here.
+  tag: "<commit tag>"
+
+publicUrl: https://staging.meridian.example.com
+environment: staging
+region: eu-west-1
+
+config:
+  KAFKA_BROKERS: "<terraform output kafka_bootstrap_brokers>"
+  KAFKA_SECURITY_PROTOCOL: sasl_ssl
+  S3_BUCKET: "<terraform output attachments_bucket>"
+  S3_REGION: eu-west-1
+  EMAIL_FROM: "Meridian staging <notifications@staging.meridian.example.com>"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4317
+
+defaults:
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70 }
+
+networkPolicy:
+  egress:
+    enabled: true
+    # The VPC (data stores and VPC endpoints); terraform output vpc_cidr.
+    cidrs: ["10.40.0.0/16"]
+
+externalSecrets:
+  enabled: true
+  storeName: aws-secrets-manager
+  prefix: meridian-staging
+
+keda:
+  enabled: true
+  sasl: scram_sha512
+  tls: enable

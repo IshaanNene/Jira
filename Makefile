@@ -14,7 +14,7 @@ export OPENSSL_ROOT_DIR ?= $(BREW)/opt/openssl@3
 endif
 endif
 
-.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience
+.PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience restore-drill
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -82,6 +82,9 @@ load: ## Load test through the gateway with k6 (services and seed data must be r
 
 resilience: ## Stop and restart data stores and check the documented failure behaviour
 	@./tests/resilience/run.sh
+
+restore-drill: ## Back up every service database, restore it into a fresh one and check it matches
+	@./tests/restore/run.sh
 
 clean: stop ## Stop everything and delete containers, volumes and build output
 	docker compose --profile observability down -v

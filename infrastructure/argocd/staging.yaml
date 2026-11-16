@@ -1,0 +1,39 @@
+# Meridian in staging, kept equal to main by Argo CD.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: meridian
+  namespace: argocd
+spec:
+  description: Meridian application services
+  sourceRepos: ["https://github.com/IshaanNene/Jira.git"]
+  destinations:
+    - { server: "https://kubernetes.default.svc", namespace: meridian }
+  # The chart creates only namespaced objects; the namespace itself is made by the sync.
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: meridian-staging
+  namespace: argocd
+spec:
+  project: meridian
+  source:
+    repoURL: https://github.com/IshaanNene/Jira.git
+    targetRevision: main
+    path: infrastructure/helm/meridian
+    helm:
+      releaseName: meridian
+      valueFiles: [values-staging.yaml]
+  destination: { server: "https://kubernetes.default.svc", namespace: meridian }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
+    retry:
+      limit: 5
+      backoff: { duration: 30s, factor: 2, maxDuration: 5m }
+  # HPAs and KEDA own replica counts.
+  ignoreDifferences:
+    - { group: apps, kind: Deployment, jsonPointers: [/spec/replicas] }

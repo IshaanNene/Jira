@@ -169,7 +169,7 @@ metadata:
   name: gateway
   labels:
     {{- include "meridian.labels" . | nindent 4 }}
-    {{- include "meridian.selector" $ctx | nindent 4 }}
+    {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 4 }}
 spec:
   replicas: {{ $g.replicas }}
   revisionHistoryLimit: 5
@@ -180,7 +180,7 @@ spec:
     metadata:
       labels:
         {{- include "meridian.labels" . | nindent 8 }}
-        {{- include "meridian.selector" $ctx | nindent 8 }}
+        {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 8 }}
         meridian.dev/edge: "true"
       annotations:
         checksum/config: {{ toYaml $g | sha256sum }}

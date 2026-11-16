@@ -88,6 +88,22 @@ jobs:
         run: |
           helm lint infrastructure/helm/meridian --set image.tag=ci
           helm lint infrastructure/helm/meridian -f infrastructure/helm/meridian/values-kind.yaml
+          helm lint infrastructure/helm/meridian -f infrastructure/helm/meridian/values-staging.yaml
+      - name: Rendered manifests match the Kubernetes and CRD schemas
+        # Strict: unknown fields and repeated keys fail. CRDs (ExternalSecret, ScaledObject,
+        # Argo CD) are checked against the community CRD catalog.
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          check() { ./kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' "$@"; }
+          helm template ci infrastructure/helm/meridian --set image.tag=ci | check -
+          helm template ci infrastructure/helm/meridian -f infrastructure/helm/meridian/values-kind.yaml | check -
+          helm template ci infrastructure/helm/meridian -f infrastructure/helm/meridian/values-staging.yaml | check -
+          check infrastructure/argocd/platform.yaml infrastructure/argocd/staging.yaml infrastructure/argocd/secret-store/
+      - name: Alert rules are valid and their tests pass
+        run: |
+          docker run --rm -v "$PWD/infrastructure/observability/prometheus:/w:ro" -w /w --entrypoint promtool prom/prometheus:v3.0.1 check rules alerts.yml slo.yml
+          docker run --rm -v "$PWD/infrastructure/observability/prometheus:/w:ro" -w /w --entrypoint promtool prom/prometheus:v3.0.1 test rules slo.test.yml
       - name: Gateway configuration is valid Envoy
         run: |
           helm template ci infrastructure/helm/meridian --set image.tag=ci --show-only templates/gateway.yaml \
@@ -113,6 +129,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing: cosign proves this workflow built the image with GitHub's OIDC token.
+      id-token: write
     env:
       PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       PREFIX: ghcr.io/${{ github.repository }}
@@ -149,3 +167,28 @@ jobs:
               echo "push of $image failed (attempt $attempt); retrying"; sleep $((attempt * 10))
             done
           done
+      - uses: sigstore/cosign-installer@v3.7.0
+        if: env.PUSH == 'true'
+      - name: SBOM, sign and attest
+        if: env.PUSH == 'true'
+        # Each pushed image gets a CycloneDX SBOM, a keyless signature and the SBOM as a signed
+        # attestation, all bound to the image digest (tags can move; digests cannot). Verified
+        # straight after, as a deployment would.
+        run: |
+          mkdir -p sbom
+          identity="^https://github.com/${{ github.repository }}/\.github/workflows/ci\.yml@refs/heads/main$"
+          issuer=https://token.actions.githubusercontent.com
+          for image in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^$PREFIX/.*:${GITHUB_SHA::12}$"); do
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")
+            name=$(basename "${image%:*}")
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" aquasec/trivy:0.57.1 image \
+              --format cyclonedx --output "/out/$name.cdx.json" --no-progress "$image"
+            cosign sign --yes "$digest"
+            cosign attest --yes --type cyclonedx --predicate "sbom/$name.cdx.json" "$digest"
+            cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$digest" > /dev/null
+            cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$digest" > /dev/null
+            echo "$digest signed, SBOM attested"
+          done
+      - uses: actions/upload-artifact@v4
+        if: env.PUSH == 'true'
+        with: { name: sbom, path: sbom/, retention-days: 30 }

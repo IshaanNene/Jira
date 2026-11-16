@@ -375,7 +375,7 @@ a capacity claim. The full results, including what the test found, are in the
 | 5 | Kafka pipeline, search, live updates, notifications | ✅ |
 | 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users and groups, admin console, automation rules (including scheduled rules that move issues and comment), webhooks, Slack channels and GitHub commits, branches and pull requests on issues | ✅ |
 | 7 | ClickHouse pipeline and dashboards | ✅ |
-| 8 | Images, Helm, CI, observability, load and failure tests done; Terraform never applied, no Argo CD | 🚧 |
+| 8 | Signed images with SBOMs, Helm (External Secrets, KEDA), Argo CD manifests, CI, observability with SLO burn-rate alerts, load, failure and restore tests done; nothing applied to a cloud cluster yet | 🚧 |
 
 ✅ means built and verified; 🚧 means partly built. Every phase has a "gaps" table in the
 [roadmap](docs/IMPLEMENTATION_ROADMAP.md) listing exactly what is missing.

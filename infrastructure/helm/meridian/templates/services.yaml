@@ -17,7 +17,7 @@ metadata:
   name: {{ $name }}
   labels:
     {{- include "meridian.labels" $root | nindent 4 }}
-    {{- include "meridian.selector" $ctx | nindent 4 }}
+    {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 4 }}
 spec:
   {{- if not $svc.autoscaling.enabled }}
   replicas: {{ $svc.replicas }}
@@ -30,7 +30,7 @@ spec:
     metadata:
       labels:
         {{- include "meridian.labels" $root | nindent 8 }}
-        {{- include "meridian.selector" $ctx | nindent 8 }}
+        {{- printf "app.kubernetes.io/name: %s" $ctx.name | nindent 8 }}
         meridian.dev/grpc-client: "true"
       annotations:
         # Roll pods when shared settings change.
@@ -100,7 +100,43 @@ spec:
   maxUnavailable: {{ $root.Values.podDisruptionBudget.maxUnavailable }}
   selector:
     matchLabels: {{- include "meridian.selector" $ctx | nindent 6 }}
-{{- if $svc.autoscaling.enabled }}
+{{- $keda := and $root.Values.keda.enabled $svc.autoscaling.enabled $svc.consumers }}
+{{- if $keda }}
+---
+# Kafka consumers scale on how far behind their consumer groups are, as well as on CPU. KEDA
+# owns the HorizontalPodAutoscaler for them. Replicas beyond a topic's partition count would
+# sit idle, so maxReplicas stays at or below it.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meridian.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef: { name: {{ $name }} }
+  minReplicaCount: {{ $svc.autoscaling.minReplicas }}
+  maxReplicaCount: {{ $svc.autoscaling.maxReplicas }}
+  triggers:
+    - type: cpu
+      metricType: Utilization
+      metadata: { value: {{ $svc.autoscaling.targetCPUUtilizationPercentage | quote }} }
+    {{- range $svc.consumers }}
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ required "config.KAFKA_BROKERS is required with keda.enabled" $root.Values.config.KAFKA_BROKERS | quote }}
+        consumerGroup: {{ . | quote }}
+        lagThreshold: {{ $root.Values.keda.lagThreshold | quote }}
+        offsetResetPolicy: earliest
+        {{- with $root.Values.keda.sasl }}
+        sasl: {{ . | quote }}
+        {{- end }}
+        {{- with $root.Values.keda.tls }}
+        tls: {{ . | quote }}
+        {{- end }}
+      {{- if $root.Values.keda.sasl }}
+      authenticationRef: { name: meridian-kafka }
+      {{- end }}
+    {{- end }}
+{{- else if $svc.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -115,4 +151,17 @@ spec:
     - type: Resource
       resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage }} } }
 {{- end }}
+{{- end }}
+{{- if and .Values.keda.enabled .Values.keda.sasl }}
+---
+# The scaler reads consumer-group offsets with the platform's Kafka credentials.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: meridian-kafka
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - { parameter: username, name: meridian-shared, key: KAFKA_SASL_USERNAME }
+    - { parameter: password, name: meridian-shared, key: KAFKA_SASL_PASSWORD }
 {{- end }}
