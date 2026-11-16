@@ -102,7 +102,9 @@ gateway:
     limits: { memory: 512Mi }
   # Path routing to services. First match wins.
   routes:
-    - { regex: "^/api/v1/auth/(login|login/mfa|sso/start|passkeys/sign-in|passkeys/sign-in/options|register|token/api|password/forgot|password/reset|email/verify|email/change|email/change/confirm)$", service: identity, credentials: true }
+    # Credential endpoints, in two patterns: Envoy refuses one RE2 program this large.
+    - { regex: "^/api/v1/auth/(login|login/mfa|register|token/api|sso/start|passkeys/sign-in|passkeys/sign-in/options)$", service: identity, credentials: true }
+    - { regex: "^/api/v1/auth/(password/forgot|password/reset|email/verify|email/change|email/change/confirm)$", service: identity, credentials: true }
     - { prefix: /api/v1/auth/, service: identity }
     - { prefix: /api/v1/users, service: user }
     - { prefix: /api/v1/organizations, service: user }

@@ -93,8 +93,18 @@ static_resources:
                     - name: api
                       domains: ["*"]
                       routes:
-                        # Credential endpoints: a much tighter bucket (brute-force damping).
-                        - match: { safe_regex: { regex: "^/api/v1/auth/(login|login/mfa|sso/start|passkeys/sign-in|passkeys/sign-in/options|register|token/api|password/forgot|password/reset|email/verify|email/change|email/change/confirm)$" } }
+                        # Credential endpoints: a much tighter bucket (brute-force damping). Two patterns: Envoy
+                        # refuses a single RE2 program this large.
+                        - match: { safe_regex: { regex: "^/api/v1/auth/(login|login/mfa|register|token/api|sso/start|passkeys/sign-in|passkeys/sign-in/options)$" } }
+                          route: { cluster: identity, timeout: 15s }
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: credentials
+                              token_bucket: { max_tokens: 20, tokens_per_fill: 10, fill_interval: 1s }
+                              filter_enabled: { default_value: { numerator: 100, denominator: HUNDRED } }
+                              filter_enforced: { default_value: { numerator: 100, denominator: HUNDRED } }
+                        - match: { safe_regex: { regex: "^/api/v1/auth/(password/forgot|password/reset|email/verify|email/change|email/change/confirm)$" } }
                           route: { cluster: identity, timeout: 15s }
                           typed_per_filter_config:
                             envoy.filters.http.local_ratelimit:
