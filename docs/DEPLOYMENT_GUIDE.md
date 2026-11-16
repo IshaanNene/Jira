@@ -23,9 +23,12 @@ budget for their operation (backups, upgrades, quorum loss procedures).
 ### Images
 
 `infrastructure/docker/service.Dockerfile` builds every Rust service from one shared build stage (the workspace
-compiles once for all twelve images) onto `distroless/base-nossl` as a non-root user with no shell. The binaries
-use rustls and link Kafka's OpenSSL and zlib statically, so the image carries no OpenSSL; `libgcc_s` is copied
-from the build stage.
+compiles once for all twelve images) onto Debian bookworm slim, upgraded at build time, running as uid 65532. The
+binaries use rustls for HTTP, Postgres and Redis; librdkafka (and, in identity-service, xmlsec1 for SAML) link the
+system OpenSSL, installed as Debian's `libssl3` so Trivy sees and checks it. identity-service's image adds
+`libxmlsec1-openssl` (the Dockerfile's `xmlsec` runtime). Until 2026-11-16 the images were distroless without
+OpenSSL; that changed with SAML, and distroless's own OpenSSL lagged a fixed HIGH CVE (libssl3 3.0.20), which
+Debian's security updates had fixed (3.0.22).
 `infrastructure/docker/web.Dockerfile` builds the web app onto unprivileged nginx 1.30 with Alpine updates applied
 (SPA fallback, immutable caching of hashed assets, a strict Content-Security-Policy).
 `scripts/images/build.sh <tag> [registry]` builds them all, always pulling fresh base images, and starts each

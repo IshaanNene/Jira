@@ -21,24 +21,27 @@ COPY proto proto
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --bins \
-    && mkdir -p /out/lib \
-    && find target/release -maxdepth 1 -type f -perm -u+x -name '*-service' -exec cp {} /out/ \; \
-    && cp "$(gcc -print-file-name=libgcc_s.so.1)" /out/lib/
+    && mkdir -p /out \
+    && find target/release -maxdepth 1 -type f -perm -u+x -name '*-service' -exec cp {} /out/ \;
 
-# Distroless: no shell, no package manager, non-root by default. TLS to the data stores is
-# rustls; Kafka's TLS is librdkafka over the image's OpenSSL (libssl3, tracked by the image's
-# package list, so scanners see it). Only the unwinder (libgcc_s) is copied in.
-FROM gcr.io/distroless/base-debian12:nonroot AS runtime-plain
-COPY --from=build /out/lib/libgcc_s.so.1 /usr/lib/
-
-# identity-service also needs libxmlsec1 (with libxml2, libxslt and OpenSSL). Distroless has no
-# package for it, so this is Debian slim with those installed from Debian, which scanners can
-# track; the service runs as the same non-root uid as distroless.
-FROM debian:bookworm-slim AS runtime-xmlsec
+# Runtime: Debian slim, upgraded at build time, with the shared libraries the services link
+# installed from Debian's packages (OpenSSL for librdkafka's TLS; xmlsec1 for SAML), so image
+# scanners see every native library and its version. Distroless was used before, but its
+# base images ship their own OpenSSL build on Google's schedule, which lagged a fixed HIGH CVE.
+# No package manager use at run time; the service runs as an unprivileged uid.
+FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends libxmlsec1-openssl ca-certificates \
+    && apt-get install -y --no-install-recommends libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 65532 --user-group --no-create-home --shell /usr/sbin/nologin nonroot
+
+FROM runtime-base AS runtime-plain
+
+# identity-service also needs libxmlsec1 (with libxml2 and libxslt).
+FROM runtime-base AS runtime-xmlsec
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxmlsec1-openssl \
+    && rm -rf /var/lib/apt/lists/*
 
 FROM runtime-${RUNTIME}
 ARG SERVICE

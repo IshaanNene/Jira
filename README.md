@@ -331,7 +331,7 @@ The full threat model is in [`docs/SECURITY_DESIGN.md`](docs/SECURITY_DESIGN.md)
 |---|---|
 | 🧪 **Tests** | **208 Rust** (unit and integration against real data stores, each test in its own database) and **94 web** tests |
 | 🧹 **Static checks** | `clippy -D warnings`, `rustfmt`, eslint, tsc, `cargo-deny` advisories, actionlint |
-| 🐳 **Images** | 13 distroless and unprivileged images, each started once during the build; all pass Trivy with no fixable high or critical issues |
+| 🐳 **Images** | 13 minimal, unprivileged images (Debian slim for services, upgraded at build time), each started once during the build; all pass Trivy with no fixable high or critical issues |
 | ⎈ **Chart** | `helm lint`; the generated Envoy configuration passes `envoy --mode validate`; installed and used on a three-node kind cluster |
 | 💥 **Failure tests** | Kafka, OpenSearch, ClickHouse, Redis and PostgreSQL stopped in turn under the running stack: **21 of 21 checks pass** |
 
