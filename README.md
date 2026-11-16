@@ -255,7 +255,9 @@ make dev           # data stores, migrations, all twelve services, the web app
 make seed          # optional: a demo workspace with accounts, a project and issues
 ```
 
-Open **http://localhost:5173**. The seed script prints the demo sign-ins: owner, admin, member and guest.
+Open **http://localhost:5173**. Signed out, it shows the public site (landing, features, pricing and security
+pages) for demonstrating the product as a hosted service; **Sign in** takes you to the app. The seed script prints the
+demo sign-ins: owner, admin, member and guest.
 `make stop` stops the host processes. `make clean` also removes containers, volumes and build output.
 
 <details>

@@ -12,6 +12,7 @@ import { ProjectLive } from "@/modules/live";
 import { ProjectLayout, ProjectSettingsPage, ProjectsPage } from "@/modules/projects";
 import { ProfilePage, SecurityPage, TwoStepRequiredPage } from "@/modules/users";
 import { WorkflowDesignerPage, WorkflowsPage } from "@/modules/workflows";
+import { FeaturesPage, PricingPage, SecurityOverviewPage } from "@/modules/marketing";
 import { HomePage } from "@/modules/workspace";
 
 import { AppShell, SettingsLayout } from "./AppShell";
@@ -49,6 +50,10 @@ export const router = createBrowserRouter([
       { path: "/verify-email", element: <VerifyEmailPage /> },
       { path: "/reset-password", element: <ResetPasswordPage /> },
       { path: "/confirm-email", element: <ConfirmEmailChangePage /> },
+      // The public site; works signed in or out.
+      { path: "/features", element: <FeaturesPage /> },
+      { path: "/pricing", element: <PricingPage /> },
+      { path: "/security", element: <SecurityOverviewPage /> },
       // From notification emails; works signed out.
       { path: "/unsubscribe", element: <UnsubscribePage /> },
       {

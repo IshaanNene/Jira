@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { Button } from "@/components/ui";
 import { bootstrapSession, safeNext, switchOrganization, twoStepRequiredPath } from "@/modules/auth";
+import { LandingPage } from "@/modules/marketing";
 import { useMyOrganizations } from "@/modules/organizations";
 import { useSession } from "@/state/session";
 import { PRODUCT_NAME } from "@/utils/config";
@@ -51,7 +52,9 @@ export function RequireAuth() {
   const location = useLocation();
   if (status !== "authenticated") {
     const next = location.pathname + location.search;
-    return <Navigate to={next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`} replace />;
+    // Signed-out visitors to the root see the product's public home page.
+    if (next === "/") return <LandingPage />;
+    return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
   }
   return <Outlet />;
 }
