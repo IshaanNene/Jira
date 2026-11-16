@@ -168,4 +168,52 @@ describe("WorkflowDesignerPage", () => {
     expect(screen.getByLabelText("Name")).toBeDisabled();
     expect(screen.queryByRole("button", { name: /Delete status/ })).not.toBeInTheDocument();
   });
+
+  const older = (): WorkflowDefinition => ({ ...definition(), statuses: definition().statuses.map((st) => (st.key === "doing" ? { ...st, name: "In progress" } : st)) });
+  const history = {
+    "GET /api/v1/workflows/w1/versions": {
+      items: [
+        { version: 2, published_by: "00000000-0000-7000-8000-000000000001", published_at: "2026-11-10T00:00:00Z", status_count: 3, transition_count: 3 },
+        { version: 1, published_by: "00000000-0000-7000-8000-000000000001", published_at: "2026-11-01T00:00:00Z", status_count: 3, transition_count: 3 },
+      ],
+    },
+    "GET /api/v1/workflows/w1/versions/1": { version: 1, published_by: "00000000-0000-7000-8000-000000000001", published_at: "2026-11-01T00:00:00Z", definition: older() },
+    "GET /api/v1/organizations/current/members": { items: [], next_cursor: null },
+  };
+
+  it("shows earlier versions and restores one as the draft", async () => {
+    signIn("admin");
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    const api = fakeApi(
+      routes({
+        "GET /api/v1/workflows/w1": detail({ published_version: 2 }),
+        ...history,
+        "POST /api/v1/workflows/w1/versions/1/restore": () => ({ body: detail({ published_version: 2, has_draft: true, draft: older(), version: 6 }) }),
+      }),
+    );
+    renderDesigner();
+    await userEvent.click(await screen.findByRole("button", { name: /Versions/ }));
+    const restore = await screen.findByRole("button", { name: "Restore as draft" });
+    expect(restore).toBeDisabled();
+    await userEvent.click(await screen.findByRole("button", { name: /Version 2/ }));
+    expect(screen.getByRole("button", { name: "Restore version 2 as draft" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: /Version 1/ }));
+    expect((await screen.findAllByText("In progress")).length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("button", { name: "Restore version 1 as draft" }));
+    expect(await screen.findByText("Version 1 is now the draft")).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/workflows/w1/versions/1/restore")[0]!.headers["If-Match"]).toBe('"5"');
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: "In progress" })).toBeInTheDocument();
+    expect(screen.getByText("Unpublished draft")).toBeInTheDocument();
+  });
+
+  it("lets people who cannot edit look back but not restore", async () => {
+    signIn("member");
+    fakeApi(routes({ ...history }));
+    renderDesigner();
+    await userEvent.click(await screen.findByRole("button", { name: /Versions/ }));
+    expect(await screen.findByRole("button", { name: /Version 1/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Restore/ })).not.toBeInTheDocument();
+  });
 });

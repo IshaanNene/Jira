@@ -9,6 +9,8 @@ import {
   type WorkflowDefinition,
   type WorkflowDetail,
   type WorkflowList,
+  type WorkflowVersionDetail,
+  type WorkflowVersionList,
 } from "@/services/api";
 import { useSession } from "@/state/session";
 
@@ -19,6 +21,7 @@ const useOrgId = () => useSession((s) => s.organization?.id);
 const keys = {
   all: (orgId: string | undefined) => ["org", orgId, "workflows"] as const,
   one: (orgId: string | undefined, id: string) => ["org", orgId, "workflows", id] as const,
+  versions: (orgId: string | undefined, id: string) => ["org", orgId, "workflows", id, "versions"] as const,
   assignments: (orgId: string | undefined, projectId: string | null) => ["org", orgId, "workflows", "assignments", projectId] as const,
 };
 
@@ -30,6 +33,27 @@ export function useWorkflows() {
 export function useWorkflow(id: string) {
   const orgId = useOrgId();
   return useQuery({ queryKey: keys.one(orgId, id), queryFn: () => api.get<WorkflowDetail>(`${BASE}/${id}`), enabled: Boolean(orgId && id) });
+}
+
+/** Published versions, newest first. */
+export function useWorkflowVersions(id: string, enabled: boolean) {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: keys.versions(orgId, id),
+    queryFn: () => api.get<WorkflowVersionList>(`${BASE}/${id}/versions`),
+    select: (d) => d.items,
+    enabled: Boolean(orgId) && enabled,
+  });
+}
+
+export function useWorkflowVersion(id: string, version: number | null) {
+  const orgId = useOrgId();
+  return useQuery({
+    queryKey: [...keys.versions(orgId, id), version],
+    queryFn: () => api.get<WorkflowVersionDetail>(`${BASE}/${id}/versions/${version}`),
+    enabled: Boolean(orgId) && version !== null,
+    staleTime: Infinity, // published versions never change
+  });
 }
 
 export function useWorkflowMutations() {
@@ -51,7 +75,14 @@ export function useWorkflowMutations() {
         withVersion("PUT", `${BASE}/${id}/draft`, version, { definition }),
     }),
     discardDraft: useMutation({ mutationFn: ({ id, version }: { id: string; version: number }) => withVersion("DELETE", `${BASE}/${id}/draft`, version) }),
-    publish: useMutation({ mutationFn: ({ id, version }: { id: string; version: number }) => withVersion("POST", `${BASE}/${id}/publish`, version) }),
+    publish: useMutation({
+      mutationFn: ({ id, version }: { id: string; version: number }) => withVersion("POST", `${BASE}/${id}/publish`, version),
+      onSuccess: (detail) => void qc.invalidateQueries({ queryKey: keys.versions(orgId, detail.id) }),
+    }),
+    restore: useMutation({
+      mutationFn: ({ id, version, number }: { id: string; version: number; number: number }) =>
+        withVersion("POST", `${BASE}/${id}/versions/${number}/restore`, version),
+    }),
   };
 }
 

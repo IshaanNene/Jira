@@ -113,6 +113,15 @@ pub struct VersionDto {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct VersionDetail {
+    pub version: i32,
+    pub published_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub published_at: OffsetDateTime,
+    pub definition: Definition,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct VersionList {
     pub items: Vec<VersionDto>,
 }
@@ -438,6 +447,56 @@ pub async fn versions(State(state): State<AppState>, ctx: OrgContext, Path(id): 
     Ok(Json(VersionList { items }))
 }
 
+/// One published version as it was, for looking back before restoring it.
+#[utoipa::path(get, path = "/api/v1/workflows/{id}/versions/{version}", security(("bearer" = [])),
+    params(("id" = Uuid, Path), ("version" = i32, Path)), responses((status = 200, body = VersionDetail), (status = 404)))]
+pub async fn get_version(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path((id, number)): Path<(Uuid, i32)>,
+) -> ApiResult<Json<VersionDetail>> {
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    store::get(tx.conn(), ctx.tenant_id, id, false).await?.ok_or(NOT_FOUND)?;
+    let row = store::version(tx.conn(), ctx.tenant_id, id, number).await?.ok_or(ApiError::NotFound("version"))?;
+    tx.commit().await?;
+    Ok(Json(VersionDetail {
+        version: row.version,
+        published_by: row.published_by,
+        published_at: row.published_at,
+        definition: parse(&row.definition)?,
+    }))
+}
+
+/// Make an earlier version the draft, replacing any unpublished changes. Nothing changes for
+/// issues until the draft is published, which checks it like any other draft.
+#[utoipa::path(post, path = "/api/v1/workflows/{id}/versions/{version}/restore", security(("bearer" = [])),
+    params(("id" = Uuid, Path), ("version" = i32, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = WorkflowDetail), (status = 403), (status = 404), (status = 409), (status = 428)))]
+pub async fn restore_version(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path((id, number)): Path<(Uuid, i32)>,
+    headers: HeaderMap,
+) -> ApiResult<(HeaderMap, Json<WorkflowDetail>)> {
+    ctx.require(OrgPermission::ManageOrganization)?;
+    let expected = require_if_match(&headers)?;
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let current = store::get(tx.conn(), ctx.tenant_id, id, true).await?.ok_or(NOT_FOUND)?;
+    let row = store::version(tx.conn(), ctx.tenant_id, id, number).await?.ok_or(ApiError::NotFound("version"))?;
+    if current.version == expected && current.draft.is_none() && current.published_version == Some(number) {
+        return Err(ApiError::Conflict(format!("Version {number} is already the published version.")));
+    }
+    let Some(workflow) = store::set_draft(tx.conn(), ctx.tenant_id, id, expected, Some(&row.definition)).await? else {
+        let current = detail(&mut tx, &ctx, current).await?;
+        return Err(ApiError::VersionConflict { current: serde_json::to_value(current).ok() });
+    };
+    let version = workflow.version;
+    let out = detail(&mut tx, &ctx, workflow).await?;
+    tx.commit().await?;
+    tracing::info!(workflow_id = %id, version = number, "earlier workflow version restored as draft");
+    Ok((etag(version), Json(out)))
+}
+
 #[utoipa::path(delete, path = "/api/v1/workflows/{id}", security(("bearer" = [])), params(("id" = Uuid, Path)),
     responses((status = 204), (status = 403), (status = 404), (status = 409, description = "Still assigned")))]
 pub async fn remove(State(state): State<AppState>, ctx: OrgContext, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
@@ -544,6 +603,8 @@ pub async fn statuses(
         discard_draft,
         publish,
         versions,
+        get_version,
+        restore_version,
         remove,
         list_assignments,
         assign,
@@ -558,6 +619,7 @@ pub async fn statuses(
         SaveDraftRequest,
         VersionDto,
         VersionList,
+        VersionDetail,
         AssignmentDto,
         AssignmentList,
         AssignRequest,
@@ -581,6 +643,8 @@ pub fn router(state: AppState) -> Router {
         .route("/workflows/{id}/draft", put(save_draft).delete(discard_draft))
         .route("/workflows/{id}/publish", post(publish))
         .route("/workflows/{id}/versions", get(versions))
+        .route("/workflows/{id}/versions/{version}", get(get_version))
+        .route("/workflows/{id}/versions/{version}/restore", post(restore_version))
         .route("/workflow-assignments", get(list_assignments).put(assign))
         .route("/workflow-statuses", get(statuses));
 

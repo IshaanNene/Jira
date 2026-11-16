@@ -225,6 +225,36 @@ async fn draft_publish_and_version_lifecycle() {
         .await
         .unwrap();
     assert_eq!(events, 2);
+
+    // Looking back at version 1, then making it the draft again.
+    let v1 = h.call(Method::GET, &format!("{path}/versions/1"), &member, None, None).await;
+    assert_eq!((v1.status, v1.body["definition"]["statuses"][1]["name"].as_str()), (StatusCode::OK, Some("Doing")));
+    assert_eq!(h.call(Method::GET, &format!("{path}/versions/9"), &member, None, None).await.status, StatusCode::NOT_FOUND);
+    let now = h.call(Method::GET, &path, &admin, None, None).await.body["version"].as_i64().unwrap();
+    let restore = |n: i32| format!("{path}/versions/{n}/restore");
+    assert_eq!(h.call(Method::POST, &restore(1), &member, None, Some(now)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.call(Method::POST, &restore(1), &admin, None, None).await.status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(h.call(Method::POST, &restore(1), &admin, None, Some(now - 1)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        h.call(Method::POST, &restore(2), &admin, None, Some(now)).await.status,
+        StatusCode::CONFLICT,
+        "already published"
+    );
+    assert_eq!(h.call(Method::POST, &restore(7), &admin, None, Some(now)).await.status, StatusCode::NOT_FOUND);
+    let restored = h.call(Method::POST, &restore(1), &admin, None, Some(now)).await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.body);
+    assert_eq!(
+        (restored.body["draft"]["statuses"][1]["name"].as_str(), restored.body["published"]["statuses"][1]["name"].as_str()),
+        (Some("Doing"), Some("In flight")),
+        "issues keep following version 2 until the draft is published"
+    );
+    let next = restored.body["version"].as_i64().unwrap();
+    assert_eq!(h.call(Method::POST, &format!("{path}/publish"), &admin, None, Some(next)).await.body["published_version"], 3);
+    let (events,): (i64,) = sqlx::query_as("SELECT count(*) FROM outbox WHERE event_type = 'workflow.published'")
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(events, 3);
     h.db.cleanup().await;
 }
 

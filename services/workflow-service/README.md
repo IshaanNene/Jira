@@ -17,6 +17,8 @@ Adding a capability means adding a variant here and its effect in issue-service 
 
 **Versioning.** Edits go to a draft that never affects issues. Publishing validates the draft (unique keys, valid
 references, every status reachable from the initial one) and writes a new immutable row in `workflow_versions`.
+`GET .../versions/{n}` returns one as it was; `POST .../versions/{n}/restore` (admins, `If-Match`) makes it the
+draft, replacing unpublished changes, so going back is an ordinary, checked publish.
 Draft saves and publishing use `If-Match`.
 
 **Resolution order** for an issue: project + issue type → project → workspace default + issue type → workspace

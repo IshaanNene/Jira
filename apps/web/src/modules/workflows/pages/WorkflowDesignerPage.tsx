@@ -8,6 +8,7 @@ import { ApiError, errorMessage, type WorkflowDefinition, type WorkflowDetail } 
 import { useSession } from "@/state/session";
 
 import { useWorkflow, useWorkflowMutations } from "../api";
+import { VersionHistory } from "../components/VersionHistory";
 import { Canvas, type Selection } from "../components/Canvas";
 import { Inspector } from "../components/Inspector";
 import { addStatus, addTransition, moveStatus } from "../model";
@@ -32,7 +33,7 @@ export default function WorkflowDesignerPage() {
 function Designer({ detail }: { detail: WorkflowDetail }) {
   const role = useSession((s) => s.organization?.role);
   const readOnly = !can(role, "manageOrganization");
-  const { saveDraft, publish, discardDraft } = useWorkflowMutations();
+  const { saveDraft, publish, discardDraft, restore } = useWorkflowMutations();
   const serverDefinition = detail.draft ?? detail.published ?? EMPTY;
   // The working copy lives here; nothing reaches the server until Save or Publish.
   const [definition, setDefinition] = useState<WorkflowDefinition>(serverDefinition);
@@ -113,6 +114,22 @@ function Designer({ detail }: { detail: WorkflowDetail }) {
     }
   };
 
+  const onRestore = async (number: number) => {
+    const replacing = dirty ? "your unsaved changes" : detail.has_draft ? "the unpublished draft" : null;
+    if (replacing && !window.confirm(`Restoring version ${number} replaces ${replacing}. Continue?`)) return false;
+    try {
+      const restored = await restore.mutateAsync({ id: detail.id, version: version.current, number });
+      setDefinition(restored.draft ?? restored.published ?? EMPTY);
+      setDirty(false);
+      setSelection(null);
+      toast.success(`Version ${number} is now the draft`, "Publish it to make issues follow it again.");
+      return true;
+    } catch (error) {
+      conflict(error, "Couldn't restore the version");
+      return false;
+    }
+  };
+
   const onAddStatus = (e: FormEvent) => {
     e.preventDefault();
     if (!newStatus.trim()) return;
@@ -124,7 +141,16 @@ function Designer({ detail }: { detail: WorkflowDetail }) {
 
   const hasDraft = detail.has_draft || dirty;
   const problems = dirty ? [] : detail.problems;
-  const busy = saveDraft.isPending || publish.isPending || discardDraft.isPending;
+  const busy = saveDraft.isPending || publish.isPending || discardDraft.isPending || restore.isPending;
+  const history = (
+    <VersionHistory
+      workflowId={detail.id}
+      publishedVersion={detail.published_version ?? null}
+      canRestore={!readOnly}
+      restoring={restore.isPending}
+      onRestore={onRestore}
+    />
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -134,13 +160,17 @@ function Designer({ detail }: { detail: WorkflowDetail }) {
         {detail.published_version ? <Badge tone="success">Published v{detail.published_version}</Badge> : <Badge>Never published</Badge>}
         {hasDraft && <Badge tone="warning">{dirty ? "Unsaved changes" : "Unpublished draft"}</Badge>}
         {readOnly ? (
-          <span className="ml-auto text-sm text-ink-subtle">View only — workspace admins edit workflows.</span>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-ink-subtle">View only — workspace admins edit workflows.</span>
+            {history}
+          </div>
         ) : (
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <form onSubmit={onAddStatus} className="flex items-center gap-1">
               <Input aria-label="New status name" placeholder="New status name" value={newStatus} maxLength={40} onChange={(e) => setNewStatus(e.target.value)} className="h-8 w-40" />
               <Button type="submit" disabled={!newStatus.trim()}><Plus className="h-3.5 w-3.5" aria-hidden /> Add status</Button>
             </form>
+            {history}
             {detail.has_draft && detail.published_version !== null && <Button variant="ghost" disabled={busy} onClick={() => void onDiscard()}>Discard draft</Button>}
             <Button disabled={!dirty || busy} loading={saveDraft.isPending} onClick={() => void onSave()}>Save draft</Button>
             <Button variant="primary" disabled={!hasDraft || busy} loading={publish.isPending} onClick={() => void onPublish()}>Publish</Button>
