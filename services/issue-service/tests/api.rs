@@ -684,6 +684,77 @@ async fn mentions_added_later_are_announced_once() {
 }
 
 #[tokio::test]
+async fn cloning_copies_the_fields_and_links_the_copy() {
+    let h = harness().await;
+    let (pay, sec) = (h.project("PAY"), h.project("SEC"));
+    let (_, ada) = h.user(&[(pay, ProjectRole::Member)]);
+    let (bob_id, bob) = h.user(&[(pay, ProjectRole::Member)]);
+    let (_, viewer) = h.user(&[(pay, ProjectRole::Viewer)]);
+    let (_, outsider) = h.user(&[(sec, ProjectRole::Member)]);
+    let created = h
+        .create(
+            &ada,
+            json!({ "project_key": "PAY", "type": "bug", "summary": "Refunds fail", "priority": "high",
+            "description": text_doc("Steps"), "assignee_id": bob_id, "labels": ["payments"], "story_points": 3.0,
+            "due_date": "2026-12-01" }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let key = created.body["key"].as_str().unwrap().to_owned();
+    h.call(Method::POST, &format!("/api/v1/issues/{key}/comments"), &ada, Some(json!({ "body": text_doc("hi") })), None).await;
+    // Move the original along so the copy visibly starts over.
+    let moved = h.call(Method::PATCH, &format!("/api/v1/issues/{key}"), &ada, Some(json!({ "status": "done" })), Some(1)).await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+
+    let path = format!("/api/v1/issues/{key}/clone");
+    let copy = h.call(Method::POST, &path, &bob, Some(json!({})), None).await;
+    assert_eq!(copy.status, StatusCode::CREATED, "{}", copy.body);
+    let c = &copy.body;
+    assert_eq!(c["summary"], "CLONE - Refunds fail");
+    assert_eq!((c["type"].as_str(), c["priority"].as_str()), (Some("bug"), Some("high")));
+    assert_eq!(
+        (c["assignee_id"].as_str(), c["reporter_id"].as_str()),
+        (Some(bob_id.to_string().as_str()), Some(bob_id.to_string().as_str()))
+    );
+    assert_eq!(
+        (c["labels"].clone(), c["story_points"].clone(), c["due_date"].clone()),
+        (json!(["payments"]), json!(3.0), json!("2026-12-01"))
+    );
+    assert_eq!(c["description"], text_doc("Steps"));
+    assert_eq!((c["status"].as_str(), c["resolution"].clone()), (Some("todo"), Value::Null), "the copy starts over");
+    assert_eq!(c["version"], 1);
+    let copy_key = c["key"].as_str().unwrap().to_owned();
+    assert_ne!(copy_key, key);
+
+    // Linked both ways; comments stay with the original.
+    let out = h.call(Method::GET, &format!("/api/v1/issues/{copy_key}/links"), &ada, None, None).await;
+    assert_eq!(
+        (out.body["items"][0]["label"].as_str(), out.body["items"][0]["issue"]["key"].as_str()),
+        (Some("clones"), Some(key.as_str()))
+    );
+    let back = h.call(Method::GET, &format!("/api/v1/issues/{key}/links"), &ada, None, None).await;
+    assert_eq!(back.body["items"][0]["label"], "is cloned by");
+    let comments = h.call(Method::GET, &format!("/api/v1/issues/{copy_key}/comments"), &ada, None, None).await;
+    assert!(comments.body["items"].as_array().unwrap().is_empty());
+
+    // A summary of one's own; viewers cannot create, other projects cannot see.
+    let named = h.call(Method::POST, &path, &ada, Some(json!({ "summary": "  Refunds fail on iOS " })), None).await;
+    assert_eq!(named.body["summary"], "Refunds fail on iOS");
+    assert_eq!(
+        h.call(Method::POST, &path, &ada, Some(json!({ "summary": " " })), None).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(h.call(Method::POST, &path, &viewer, Some(json!({})), None).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.call(Method::POST, &path, &outsider, Some(json!({})), None).await.status, StatusCode::NOT_FOUND);
+    let created_events: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE event_type = 'issue.created'")
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(created_events, 3);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn links_respect_project_visibility() {
     let h = harness().await;
     let (pay, secret) = (h.project("PAY"), h.project("SEC"));

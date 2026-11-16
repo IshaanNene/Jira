@@ -269,8 +269,16 @@ pub struct LinkList {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CloneIssueRequest {
+    /// Defaults to "CLONE - " and the original's summary.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateLinkRequest {
-    /// blocks | relates | duplicates | depends_on — read as "this issue <type> target".
+    /// blocks | relates | duplicates | depends_on | clones — read as "this issue <type> target".
     pub link_type: String,
     pub target_key: String,
 }

@@ -133,6 +133,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/issues/{key}/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A copy of an issue in the same project, linked to it ("clones"). Copies the type, priority,
+         *     description, assignee, labels, components, fix versions, custom fields, parent, story points and
+         *     dates; starts in the workflow's initial status with the caller as reporter and watcher. Comments,
+         *     attachments, links, watchers and sprint placement stay with the original. References that no
+         *     longer exist (a removed component, an assignee who left) are dropped rather than refused.
+         */
+        post: operations["clone_issue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/issues/{key}/comments": {
         parameters: {
             query?: never;
@@ -269,6 +292,10 @@ export interface components {
         AttachmentList: {
             items: components["schemas"]["AttachmentDto"][];
         };
+        CloneIssueRequest: {
+            /** @description Defaults to "CLONE - " and the original's summary. */
+            summary?: string | null;
+        };
         CommentDto: {
             /** Format: uuid */
             author_id: string;
@@ -316,7 +343,7 @@ export interface components {
             type: string;
         };
         CreateLinkRequest: {
-            /** @description blocks | relates | duplicates | depends_on — read as "this issue <type> target". */
+            /** @description blocks | relates | duplicates | depends_on | clones — read as "this issue <type> target". */
             link_type: string;
             target_key: string;
         };
@@ -948,6 +975,50 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clone_issue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloneIssueRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueDto"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Archived project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

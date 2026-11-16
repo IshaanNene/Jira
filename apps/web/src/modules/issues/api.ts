@@ -184,6 +184,19 @@ export function useDeleteIssue(key: string, projectKey: string) {
   });
 }
 
+/** A copy of the issue in the same project, linked to it ("clones"). */
+export function useCloneIssue(key: string, projectKey: string) {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  return useMutation({
+    mutationFn: (summary: string) => api.post<Issue>(`${BASE}/${key}/clone`, { summary }),
+    onSuccess: () => {
+      refreshLists(qc, orgId, projectKey);
+      void qc.invalidateQueries({ queryKey: issueKeys.sub(orgId, key, "links") });
+    },
+  });
+}
+
 export function useWatch(key: string) {
   const qc = useQueryClient();
   const orgId = useOrgId();

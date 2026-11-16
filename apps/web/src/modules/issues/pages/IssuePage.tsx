@@ -2,12 +2,13 @@ import { ChevronDown, Eye, FileQuestion, MoreHorizontal } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, EmptyState, ErrorState, Skeleton, toast } from "@/components/ui";
+import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, ErrorState, Skeleton, toast } from "@/components/ui";
 import { roleAtLeast, useProject } from "@/modules/projects";
 import { ApiError, errorMessage, type IssueDetail, type RichDoc } from "@/services/api";
 import { cn } from "@/utils/cn";
 
 import { useDeleteIssue, useIssue, useTransitions, useWatch } from "../api";
+import { CloneIssueDialog } from "../components/CloneIssueDialog";
 import { Attachments } from "../components/Attachments";
 import { IssueActivity } from "../components/IssueActivity";
 import { IssueDetails } from "../components/IssueDetails";
@@ -45,7 +46,7 @@ export default function IssuePage() {
   return (
     // Keyed by issue so edit drafts never carry over to another issue.
     <div key={data.id} className="px-6 py-5">
-      <Header issue={data} projectName={project.data?.name} canDelete={roleAtLeast(data.my_role, "administrator") && writable} />
+      <Header issue={data} projectName={project.data?.name} canClone={canEdit} canDelete={roleAtLeast(data.my_role, "administrator") && writable} />
       <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-7">
           <Summary issue={data} canEdit={canEdit} />
@@ -64,8 +65,9 @@ export default function IssuePage() {
   );
 }
 
-function Header({ issue, projectName, canDelete }: { issue: IssueDetail; projectName: string | undefined; canDelete: boolean }) {
+function Header({ issue, projectName, canClone, canDelete }: { issue: IssueDetail; projectName: string | undefined; canClone: boolean; canDelete: boolean }) {
   const navigate = useNavigate();
+  const [cloning, setCloning] = useState(false);
   const watch = useWatch(issue.key);
   const remove = useDeleteIssue(issue.key, issue.project_key);
   const crumb = "text-ink-muted hover:underline";
@@ -97,11 +99,13 @@ function Header({ issue, projectName, canDelete }: { issue: IssueDetail; project
         >
           <Eye className="h-4 w-4" aria-hidden /> <span className="tabular">{issue.watcher_count}</span>
         </Button>
-        {canDelete && (
+        {(canClone || canDelete) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="More actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem
+              {canClone && <DropdownMenuItem onSelect={() => setCloning(true)}>Clone</DropdownMenuItem>}
+              {canClone && canDelete && <DropdownMenuSeparator />}
+              {canDelete && <DropdownMenuItem
                 tone="danger"
                 onSelect={() => {
                   if (!window.confirm(`Delete ${issue.key}? This cannot be undone from here.`)) return;
@@ -112,10 +116,11 @@ function Header({ issue, projectName, canDelete }: { issue: IssueDetail; project
                 }}
               >
                 Delete issue
-              </DropdownMenuItem>
+              </DropdownMenuItem>}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        {cloning && <CloneIssueDialog issue={issue} onClose={() => setCloning(false)} />}
       </div>
     </div>
   );

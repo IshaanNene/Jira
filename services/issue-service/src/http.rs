@@ -383,6 +383,119 @@ pub async fn create(
     Ok((StatusCode::CREATED, etag(issue.version), Json(dto(&state, &ctx, issue, true).await)))
 }
 
+/// A copy of an issue in the same project, linked to it ("clones"). Copies the type, priority,
+/// description, assignee, labels, components, fix versions, custom fields, parent, story points and
+/// dates; starts in the workflow's initial status with the caller as reporter and watcher. Comments,
+/// attachments, links, watchers and sprint placement stay with the original. References that no
+/// longer exist (a removed component, an assignee who left) are dropped rather than refused.
+#[utoipa::path(post, path = "/api/v1/issues/{key}/clone", request_body = CloneIssueRequest, security(("bearer" = [])),
+    params(("key" = String, Path)), responses((status = 201, body = IssueDto), (status = 404), (status = 409, description = "Archived project"), (status = 422)))]
+pub async fn clone_issue(
+    State(state): State<AppState>,
+    ctx: OrgContext,
+    Path(key): Path<String>,
+    Json(body): Json<CloneIssueRequest>,
+) -> ApiResult<(StatusCode, HeaderMap, Json<IssueDto>)> {
+    let (mut tx, original, _) = open(&state, &ctx, &key, ProjectPermission::Browse, false).await?;
+    state.policy.snapshot(&ctx).await?.require(&ctx, original.project_id, ProjectPermission::CreateIssue)?;
+    ensure_writable(&state, &ctx, &original.project_key).await?;
+    let summary = match &body.summary {
+        Some(s) => validate_summary(s)?,
+        None => format!("CLONE - {}", original.summary).chars().take(255).collect(),
+    };
+    let kind = issue_type(&original.type_key)?;
+    let assignee_id = match original.assignee_id {
+        Some(user) if ensure_assignable(&state, &ctx, user).await.is_ok() => Some(user),
+        _ => None,
+    };
+    let project = state.directory.project(ctx.tenant_id, &original.project_key, true).await?;
+    let component_ids: Vec<Uuid> =
+        original.component_ids.iter().copied().filter(|id| project.component_ids.contains(id)).collect();
+    let fix_version_ids: Vec<Uuid> =
+        original.fix_version_ids.iter().copied().filter(|id| project.version_ids.contains(id)).collect();
+    // Values of fields that still exist for this kind of issue, validated as on create.
+    let fields = store::fields(tx.conn(), ctx.tenant_id).await?;
+    let carried: serde_json::Map<String, Value> = original
+        .custom_fields
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(id, _)| fields.iter().any(|f| f.id.to_string() == **id && f.applies_to(&original.project_key, kind.key)))
+        .map(|(id, v)| (id.clone(), v.clone()))
+        .collect();
+    let custom =
+        apply_custom_fields(&state, &ctx, &mut tx, &original.project_key, kind.key, &Value::Null, &carried, true).await?;
+    let custom_values = Value::Object(custom.values);
+
+    let workflow =
+        state.workflows.info(Scope { tenant_id: ctx.tenant_id, project_id: original.project_id, issue_type: kind.key }).await?;
+    let initial = workflow
+        .status(&workflow.initial)
+        .cloned()
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("workflow has no initial status")))?;
+
+    let id = platform_common::new_id();
+    let number = store::allocate_number(tx.conn(), ctx.tenant_id, original.project_id).await?;
+    store::insert_issue(
+        tx.conn(),
+        ctx.tenant_id,
+        &NewIssue {
+            id,
+            project_id: original.project_id,
+            project_key: &original.project_key,
+            number,
+            type_key: kind.key,
+            status: &initial.key,
+            status_category: &initial.category,
+            priority: &original.priority,
+            summary: &summary,
+            description: original.description.as_ref(),
+            assignee_id,
+            reporter_id: ctx.user_id,
+            parent_id: original.parent_id,
+            labels: &original.labels,
+            component_ids: &component_ids,
+            fix_version_ids: &fix_version_ids,
+            custom_fields: &custom_values,
+            story_points: original.story_points,
+            start_date: original.start_date,
+            due_date: original.due_date,
+        },
+    )
+    .await?;
+    store::watch(tx.conn(), ctx.tenant_id, id, ctx.user_id).await?;
+    store::insert_link(tx.conn(), ctx.tenant_id, id, original.id, "clones", ctx.user_id).await?;
+    store::add_history(
+        tx.conn(),
+        ctx.tenant_id,
+        id,
+        ctx.user_id,
+        1,
+        &json!([{ "field": "created", "from": null, "to": null }, { "field": "link", "from": null, "to": format!("clones {}", original.key()) }]),
+    )
+    .await?;
+    let issue = store::issue_by_id(tx.conn(), ctx.tenant_id, id).await?.ok_or(NOT_FOUND)?;
+    // People mentioned in the copied description already heard about it, so no mention event.
+    emit(
+        &mut tx,
+        &ctx,
+        id,
+        1,
+        IssueCreatedV1 {
+            issue_id: id,
+            key: issue.key(),
+            project_id: original.project_id,
+            issue_type: kind.key.to_owned(),
+            summary,
+            reporter_id: ctx.user_id,
+            assignee_id,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, etag(issue.version), Json(dto(&state, &ctx, issue, true).await)))
+}
+
 #[utoipa::path(get, path = "/api/v1/issues", security(("bearer" = [])),
     params(("project" = String, Query), ("status" = Option<String>, Query), ("status_category" = Option<String>, Query), ("type" = Option<String>, Query),
            ("priority" = Option<String>, Query), ("assignee" = Option<String>, Query), ("label" = Option<String>, Query),
@@ -1060,6 +1173,7 @@ pub async fn unwatch(State(state): State<AppState>, ctx: OrgContext, Path(key): 
         delete_comment,
         list_links,
         add_link,
+        clone_issue,
         delete_link,
         history,
         transitions,
@@ -1088,6 +1202,7 @@ pub async fn unwatch(State(state): State<AppState>, ctx: OrgContext, Path(key): 
         LinkedIssue,
         LinkList,
         CreateLinkRequest,
+        CloneIssueRequest,
         HistoryEntry,
         HistoryList,
         IssueMeta,
@@ -1114,6 +1229,7 @@ pub fn router(state: AppState) -> Router {
         .route("/issues/{key}/comments", get(list_comments).post(add_comment))
         .route("/issues/{key}/comments/{id}", patch(edit_comment).delete(delete_comment))
         .route("/issues/{key}/links", get(list_links).post(add_link))
+        .route("/issues/{key}/clone", axum::routing::post(clone_issue))
         .route("/issues/{key}/links/{id}", delete(delete_link))
         .route("/issues/{key}/history", get(history))
         .route("/issues/{key}/transitions", get(transitions))

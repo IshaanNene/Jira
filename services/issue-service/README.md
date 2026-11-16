@@ -9,6 +9,8 @@ hierarchy (epic → issue → subtask), comments, links, change history, watcher
 **How the important parts work.**
 - *Keys*: `project_issue_counters` row per project, incremented inside the insert transaction — unique and
   gap-free under concurrency (tested with 25 parallel creators).
+- *Cloning*: `POST /issues/{key}/clone` copies an issue within its project (fields, not comments, attachments or
+  links), starts it in the initial status and links it `clones` → original; stale references are dropped.
 - *Concurrency*: `PATCH` requires `If-Match`; the row is locked, the version compared, and a mismatch returns
   `409` with the current issue. No-op edits do not bump the version.
 - *Rich text*: descriptions and comments are structured documents validated against an allow-list of nodes,

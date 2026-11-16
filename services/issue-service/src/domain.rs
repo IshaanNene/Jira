@@ -33,11 +33,12 @@ pub fn issue_type(key: &str) -> ApiResult<IssueType> {
 pub const STATUS_CATEGORIES: [&str; 3] = ["todo", "in_progress", "done"];
 
 pub const PRIORITIES: [&str; 5] = ["highest", "high", "medium", "low", "lowest"];
-pub const LINK_TYPES: [(&str, &str, &str); 4] = [
+pub const LINK_TYPES: [(&str, &str, &str); 5] = [
     ("blocks", "blocks", "is blocked by"),
     ("relates", "relates to", "relates to"),
     ("duplicates", "duplicates", "is duplicated by"),
     ("depends_on", "depends on", "is depended on by"),
+    ("clones", "clones", "is cloned by"),
 ];
 
 pub fn validate_priority(value: &str) -> ApiResult<()> {

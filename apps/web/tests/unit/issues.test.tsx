@@ -234,3 +234,38 @@ describe("custom field applicability", () => {
     expect(applicableFields(undefined, "PAY", "bug")).toEqual([]);
   });
 });
+
+describe("cloning", () => {
+  it("lets members clone with an editable summary and opens the copy", async () => {
+    signIn();
+    const copy = detail({ id: "i2", key: "PAY-2", summary: "Checkout fails on iOS" });
+    const api = fakeApi(issueRoutes(detail(), {
+      "POST /api/v1/issues/PAY-1/clone": () => ({ status: 201, body: copy }),
+      "GET /api/v1/issues/PAY-2": copy,
+      "GET /api/v1/issues/PAY-2/links": { items: [] },
+      "GET /api/v1/issues/PAY-2/comments": { items: [] },
+      "GET /api/v1/issues/PAY-2/attachments": { items: [] },
+      "GET /api/v1/issues/PAY-2/transitions": { items: [] },
+    }));
+    renderIssue();
+    await userEvent.click(await screen.findByRole("button", { name: "More actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Delete issue" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Clone" }));
+    const dialog = await screen.findByRole("dialog", { name: "Clone PAY-1" });
+    const input = within(dialog).getByLabelText("Summary");
+    expect(input).toHaveValue("CLONE - Checkout fails");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Checkout fails on iOS");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Clone" }));
+    expect(await screen.findByRole("heading", { name: "Checkout fails on iOS" })).toBeInTheDocument();
+    expect(api.sent("POST", "/api/v1/issues/PAY-1/clone")[0]!.body).toEqual({ summary: "Checkout fails on iOS" });
+  });
+
+  it("hides cloning from viewers", async () => {
+    signIn();
+    fakeApi(issueRoutes(detail({ my_role: "viewer" })));
+    renderIssue();
+    expect(await screen.findByRole("heading", { name: "Checkout fails" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+  });
+});
