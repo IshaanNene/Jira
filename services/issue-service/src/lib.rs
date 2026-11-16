@@ -87,6 +87,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     };
 
     automation::spawn_scheduler(state.clone(), db.pools());
+    let (directory, workflows) = (Arc::clone(&state.directory), Arc::clone(&state.workflows));
 
     let health_db = Arc::clone(&db);
     let health = server::health_router(move || {
@@ -105,7 +106,10 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     tracing::info!(addr = %grpc_addr, "grpc server listening");
     let grpc = tonic::transport::Server::builder()
         .timeout(std::time::Duration::from_secs(5))
-        .add_service(IssuesServer::with_interceptor(grpc::IssuesService { db }, ServiceServerAuth::new(&secret, SERVICE_NAME)?))
+        .add_service(IssuesServer::with_interceptor(
+            grpc::IssuesService { db, directory, workflows },
+            ServiceServerAuth::new(&secret, SERVICE_NAME)?,
+        ))
         .serve_with_shutdown(grpc_addr, server::shutdown_signal());
 
     tokio::try_join!(server::serve_http(http_addr, app), async { grpc.await.map_err(anyhow::Error::from) })?;

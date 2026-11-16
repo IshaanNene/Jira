@@ -130,6 +130,12 @@ impl Harness {
             indexed_at: "2026-11-02T10:00:00Z".into(),
             priority_rank: Some(3),
             key_number: key.rsplit('-').next().and_then(|n| n.parse().ok()),
+            status_name: "To Do".into(),
+            parent_key: None,
+            components: vec![],
+            fix_versions: vec![],
+            due_date: None,
+            story_points: None,
         };
         self.index.put(&doc).await.unwrap();
     }

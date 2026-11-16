@@ -162,6 +162,8 @@ export interface components {
             snippet?: null | components["schemas"]["Snippet"];
             status: string;
             status_category: string;
+            /** @description The workflow's name for the status; absent for issues indexed before names were. */
+            status_name?: string | null;
             summary: string;
             /** @description The summary split into matched and unmatched runs, when it matched. */
             summary_parts?: components["schemas"]["TextPart"][] | null;

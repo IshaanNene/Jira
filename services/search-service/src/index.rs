@@ -44,6 +44,21 @@ pub struct IssueDoc {
     /// The number in the key (`PAY-12` → 12), so keys sort as people expect.
     #[serde(default)]
     pub key_number: Option<i64>,
+    /// The workflow's name for the status (`In Review`); empty when issue-service did not know it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_key: Option<String>,
+    /// Component and fix version names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fix_versions: Vec<String>,
+    /// `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub story_points: Option<f64>,
 }
 
 /// Highlight markers: private-use characters that cannot occur in indexed text (see
@@ -106,6 +121,12 @@ impl IssueDoc {
             key_number: d.key.rsplit_once('-').and_then(|(_, n)| n.parse().ok()),
             key: d.key,
             priority: d.priority,
+            status_name: clean(&d.status_name),
+            parent_key: optional(d.parent_key),
+            components: d.components.iter().map(|c| clean(c)).collect(),
+            fix_versions: d.fix_versions.iter().map(|v| clean(v)).collect(),
+            due_date: optional(d.due_date),
+            story_points: d.story_points.filter(|p| p.is_finite()),
         })
     }
 }
@@ -201,7 +222,12 @@ impl Index {
     /// fields to a mapping is allowed in place). Documents written before have none
     /// until they are next indexed or the tenant is reindexed.
     fn added_fields() -> Value {
-        json!({ "priority_rank": { "type": "integer" }, "key_number": { "type": "long" } })
+        let lower = json!({ "type": "keyword", "normalizer": "lower" });
+        json!({
+            "priority_rank": { "type": "integer" }, "key_number": { "type": "long" },
+            "status_name": lower, "parent_key": lower, "components": lower, "fix_versions": lower,
+            "due_date": { "type": "date", "format": "strict_date" }, "story_points": { "type": "double" }
+        })
     }
 
     /// Create the index with its mapping if it does not exist yet, or add newer fields.
@@ -213,6 +239,20 @@ impl Index {
         }
         let keyword = json!({ "type": "keyword" });
         let date = json!({ "type": "date" });
+        let mut properties = json!({
+            "tenant_id": keyword, "issue_id": keyword, "project_id": keyword, "project_key": keyword,
+            "key": { "type": "keyword", "normalizer": "lower" },
+            "type": keyword, "status": keyword, "status_category": keyword, "priority": keyword,
+            "summary": { "type": "search_as_you_type", "analyzer": "english" },
+            "description": { "type": "text", "analyzer": "english" },
+            "comments": { "type": "text", "analyzer": "english" },
+            "assignee_id": keyword, "reporter_id": keyword, "labels": keyword,
+            "created_at": date, "updated_at": date, "resolved_at": date, "indexed_at": date,
+            "version": { "type": "long" }
+        });
+        if let (Some(all), Value::Object(added)) = (properties.as_object_mut(), Self::added_fields()) {
+            all.extend(added);
+        }
         let body = json!({
             "settings": {
                 "number_of_shards": shards,
@@ -222,18 +262,7 @@ impl Index {
             "mappings": {
                 "dynamic": "strict",
                 "_routing": { "required": true },
-                "properties": {
-                    "tenant_id": keyword, "issue_id": keyword, "project_id": keyword, "project_key": keyword,
-                    "key": { "type": "keyword", "normalizer": "lower" },
-                    "type": keyword, "status": keyword, "status_category": keyword, "priority": keyword,
-                    "summary": { "type": "search_as_you_type", "analyzer": "english" },
-                    "description": { "type": "text", "analyzer": "english" },
-                    "comments": { "type": "text", "analyzer": "english" },
-                    "assignee_id": keyword, "reporter_id": keyword, "labels": keyword,
-                    "created_at": date, "updated_at": date, "resolved_at": date, "indexed_at": date,
-                    "version": { "type": "long" },
-                    "priority_rank": { "type": "integer" }, "key_number": { "type": "long" }
-                }
+                "properties": properties
             }
         });
         let response = self.http.put(self.url("")).json(&body).send().await.map_err(unavailable)?;

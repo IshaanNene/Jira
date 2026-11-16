@@ -90,6 +90,12 @@ message Document {
   string updated_at = 16;
   int64 version = 17;
   string resolved_at = 18;
+  string status_name = 19;          // the workflow's display name; empty when unknown
+  string parent_key = 20;           // e.g. PAY-3; empty without a parent
+  repeated string components = 21;  // component names
+  repeated string fix_versions = 22; // fix version names
+  string due_date = 23;             // YYYY-MM-DD; empty without one
+  optional double story_points = 24;
 }
 
 message Documents {

@@ -47,7 +47,7 @@ export function SearchResultRow({ hit }: { hit: SearchHit }) {
         </span>
         <span className="flex shrink-0 items-center gap-3">
           <PriorityIcon priority={hit.priority} />
-          <StatusLozenge name={statusLabel(hit.status)} category={hit.status_category} />
+          <StatusLozenge name={hit.status_name ?? statusLabel(hit.status)} category={hit.status_category} />
           <span className="hidden w-28 whitespace-nowrap text-right text-xs text-ink-subtle sm:inline">{formatRelative(hit.updated_at)}</span>
         </span>
       </Link>

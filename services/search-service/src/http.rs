@@ -52,6 +52,8 @@ pub struct SearchHit {
     #[serde(rename = "type")]
     pub kind: String,
     pub status: String,
+    /// The workflow's name for the status; absent for issues indexed before names were.
+    pub status_name: Option<String>,
     pub status_category: String,
     pub priority: String,
     pub summary: String,
@@ -136,6 +138,7 @@ fn hit(h: Hit) -> SearchHit {
         project_key: d.project_key,
         kind: d.kind,
         status: d.status,
+        status_name: (!d.status_name.is_empty()).then_some(d.status_name),
         status_category: d.status_category,
         priority: d.priority,
         summary: d.summary,

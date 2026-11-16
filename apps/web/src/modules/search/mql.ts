@@ -30,7 +30,7 @@ export interface SuggestionData {
 }
 
 /** Which operators a field takes. `optional` fields can also be EMPTY. */
-type Kind = "list" | "date" | "optional" | "text" | "priority";
+type Kind = "list" | "date" | "optional" | "text" | "priority" | "number";
 
 const FIELDS: { name: string; kind: Kind; detail: string }[] = [
   { name: "project", kind: "list", detail: "Project key" },
@@ -49,6 +49,11 @@ const FIELDS: { name: string; kind: Kind; detail: string }[] = [
   { name: "updated", kind: "date", detail: "When it last changed" },
   { name: "resolved", kind: "date", detail: "When it was resolved" },
   { name: "key", kind: "list", detail: "Issue key, e.g. PAY-12" },
+  { name: "parent", kind: "optional", detail: "Parent issue key, e.g. PAY-3" },
+  { name: "component", kind: "optional", detail: "Component name" },
+  { name: "fixVersion", kind: "optional", detail: "Fix version name" },
+  { name: "due", kind: "date", detail: "Due date" },
+  { name: "storyPoints", kind: "number", detail: "Estimate in story points" },
 ];
 
 const ALIASES: Record<string, string> = {
@@ -58,6 +63,10 @@ const ALIASES: Record<string, string> = {
   category: "statuscategory",
   label: "labels",
   comments: "comment",
+  components: "component",
+  fixversions: "fixversion",
+  duedate: "due",
+  points: "storypoints",
 };
 
 const OPERATORS: Record<Kind, string[]> = {
@@ -66,9 +75,10 @@ const OPERATORS: Record<Kind, string[]> = {
   optional: ["=", "!=", "IN", "NOT IN", "IS EMPTY", "IS NOT EMPTY"],
   text: ["~", "!~"],
   date: [">=", "<", ">", "<=", "=", "IS EMPTY", "IS NOT EMPTY"],
+  number: ["=", "!=", ">=", "<=", ">", "<", "IS EMPTY", "IS NOT EMPTY"],
 };
 
-const SORT_FIELDS = ["created", "updated", "resolved", "priority", "key"];
+const SORT_FIELDS = ["created", "updated", "resolved", "due", "priority", "key"];
 const DATE_VALUES: Suggestion[] = [
   { label: "-1d", insert: "-1d", detail: "A day ago" },
   { label: "-7d", insert: "-7d", detail: "A week ago" },
@@ -113,6 +123,8 @@ function values(field: string, data: SuggestionData): Suggestion[] {
     case "updated":
     case "resolved":
       return DATE_VALUES;
+    case "due":
+      return [{ label: "now()", insert: "now()", detail: "Overdue when before this" }, { label: "7d", insert: "7d", detail: "A week from now" }, ...DATE_VALUES];
     default:
       return [];
   }

@@ -140,7 +140,14 @@ impl Harness {
         let id = Uuid::now_v7();
         self.world.projects.lock().unwrap().insert(
             (self.tenant, key.to_owned()),
-            ProjectInfo { id, key: key.to_owned(), archived: false, component_ids: HashSet::new(), version_ids: HashSet::new() },
+            ProjectInfo {
+                id,
+                key: key.to_owned(),
+                archived: false,
+                component_ids: HashSet::new(),
+                version_ids: HashSet::new(),
+                names: HashMap::new(),
+            },
         );
         id
     }
@@ -1144,6 +1151,7 @@ async fn watching_and_tenant_isolation() {
             archived: false,
             component_ids: HashSet::new(),
             version_ids: HashSet::new(),
+            names: HashMap::new(),
         },
     );
     let eve = Uuid::now_v7();
@@ -1542,7 +1550,7 @@ async fn cards_are_served_to_other_services_per_project() {
         h.call(Method::PATCH, &format!("/api/v1/issues/{finished}"), &member, Some(json!({ "status": "done" })), Some(1)).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
-    let service = IssuesService { db: Arc::clone(&h.router) };
+    let service = IssuesService { db: Arc::clone(&h.router), directory: h.world.clone(), workflows: h.world.clone() };
     let request = |project: Uuid| ListCardsRequest {
         tenant_id: h.tenant.to_string(),
         project_id: project.to_string(),
@@ -1615,7 +1623,23 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
         let c = h.call(Method::POST, &format!("{path}/comments"), &member, Some(json!({ "body": text_doc(text) })), None).await;
         assert_eq!(c.status, StatusCode::CREATED, "{}", c.body);
     }
-    let second = h.task(&member, "PAY", "Second issue").await;
+    let (api, v1) = (Uuid::now_v7(), Uuid::now_v7());
+    {
+        let mut projects = h.world.projects.lock().unwrap();
+        let info = projects.get_mut(&(h.tenant, "PAY".to_owned())).unwrap();
+        info.component_ids = [api].into();
+        info.version_ids = [v1].into();
+        info.names = [(api, "API".to_owned()), (v1, "1.0".to_owned())].into();
+    }
+    let sub = h
+        .create(
+            &member,
+            json!({ "project_key": "PAY", "type": "subtask", "summary": "Second issue", "parent_key": key,
+                    "component_ids": [api], "fix_version_ids": [v1], "story_points": 2.5, "due_date": "2026-12-24" }),
+        )
+        .await;
+    assert_eq!(sub.status, StatusCode::CREATED, "{}", sub.body);
+    let second = sub.body["key"].as_str().unwrap().to_owned();
     let mut ids = Vec::new();
     for k in [&key, &second] {
         ids.push(
@@ -1627,7 +1651,7 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
     }
     let (first_id, second_id) = (ids[0].clone(), ids[1].clone());
 
-    let service = IssuesService { db: Arc::clone(&h.router) };
+    let service = IssuesService { db: Arc::clone(&h.router), directory: h.world.clone(), workflows: h.world.clone() };
     let tenant = h.tenant.to_string();
 
     let audience = service
@@ -1655,13 +1679,20 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
     let docs = service
         .get_documents(tonic::Request::new(GetDocumentsRequest {
             tenant_id: tenant.clone(),
-            issue_ids: vec![first_id.clone(), gone.clone()],
+            issue_ids: vec![first_id.clone(), second_id.clone(), gone.clone()],
         }))
         .await
         .unwrap()
         .into_inner();
     assert_eq!(docs.missing_ids, [gone]);
-    let d = &docs.documents[0];
+    let d = docs.documents.iter().find(|d| d.id == first_id).unwrap();
+    assert_eq!((d.status.as_str(), d.status_name.as_str()), ("todo", "To Do"), "the workflow's display name");
+    assert!(d.parent_key.is_empty() && d.components.is_empty() && d.due_date.is_empty() && d.story_points.is_none());
+    let s = docs.documents.iter().find(|d| d.id == second_id).unwrap();
+    assert_eq!(
+        (s.parent_key.as_str(), s.components.clone(), s.fix_versions.clone(), s.due_date.as_str(), s.story_points),
+        (key.as_str(), vec!["API".to_owned()], vec!["1.0".to_owned()], "2026-12-24", Some(2.5))
+    );
     assert_eq!((d.key.as_str(), d.project_key.as_str(), d.description_text.trim()), (key.as_str(), "PAY", "Seen at checkout"));
     assert!(d.comments_text.find("First note").unwrap() < d.comments_text.find("Second note").unwrap(), "newest last");
     assert_eq!((d.labels.clone(), d.assignee_id.clone()), (vec!["billing".to_owned()], bob.to_string()));

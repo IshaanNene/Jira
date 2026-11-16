@@ -153,6 +153,7 @@ impl Harness {
             updated_at: "2026-11-02T10:00:00Z".into(),
             version,
             resolved_at: String::new(),
+            ..Default::default()
         };
         self.issues.0.lock().unwrap().insert((tenant, id), doc);
     }
@@ -354,6 +355,7 @@ fn doc(
         updated_at: format!("{created}T12:00:00Z"),
         version: 1,
         resolved_at: if status.1 == "done" { format!("{created}T15:00:00Z") } else { String::new() },
+        ..Default::default()
     }
 }
 
@@ -467,5 +469,61 @@ async fn mql_queries_stay_inside_the_tenant_and_visible_projects() {
     let (status, body) = h.mql(&guest_token, "assignee = maya@example.com", "").await;
     assert_eq!(status, 422, "{body}");
     assert_eq!(h.mql_keys(&guest_token, "assignee = currentUser()").await, Vec::<String>::new());
+    h.drop_index().await;
+}
+
+#[tokio::test]
+async fn mql_finds_by_status_name_parent_components_versions_due_dates_and_points() {
+    let h = harness().await;
+    let t = Uuid::now_v7();
+    let pay = Uuid::now_v7();
+    let mut epic = doc("PAY-1", pay, "epic", ("in_progress", "in_progress"), "medium", None, &[], "2026-11-01", "Payments");
+    epic.status_name = "In Progress".into();
+    let mut a = doc("PAY-2", pay, "story", ("in_review", "in_progress"), "medium", None, &[], "2026-11-02", "Refunds");
+    a.status_name = "Code review".into();
+    a.parent_key = "PAY-1".into();
+    a.components = vec!["API".into(), "Billing".into()];
+    a.fix_versions = vec!["1.0".into()];
+    a.due_date = "2026-11-20".into();
+    a.story_points = Some(5.0);
+    let mut b = doc("PAY-3", pay, "story", ("todo", "todo"), "medium", None, &[], "2026-11-03", "Invoices");
+    b.parent_key = "PAY-1".into();
+    b.components = vec!["Web".into()];
+    b.due_date = "2026-11-10".into();
+    b.story_points = Some(0.5);
+    let c = doc("PAY-4", pay, "task", ("todo", "todo"), "medium", None, &[], "2026-11-04", "Docs");
+    for d in [epic, a, b, c] {
+        let id = Uuid::parse_str(&d.id).unwrap();
+        h.issues.0.lock().unwrap().insert((t, id), d);
+        h.changed(t, id).await;
+    }
+    let owner = h.token(t, Uuid::now_v7(), "owner");
+
+    // A status by the workflow's name for it, any case, or by its key; results carry the name.
+    assert_eq!(h.mql_keys(&owner, "status = \"code REVIEW\"").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "status = in_review").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "status NOT IN (\"Code review\", \"In Progress\") ORDER BY key").await, ["PAY-3", "PAY-4"]);
+    let (_, body) = h.mql(&owner, "key = PAY-2", "").await;
+    assert_eq!(body["items"][0]["status_name"], "Code review");
+    let (_, body) = h.mql(&owner, "key = PAY-4", "").await;
+    assert!(body["items"][0]["status_name"].is_null(), "no name known: the client falls back to the key");
+
+    assert_eq!(h.mql_keys(&owner, "parent = pay-1 ORDER BY key").await, ["PAY-2", "PAY-3"]);
+    assert_eq!(h.mql_keys(&owner, "parent IS EMPTY ORDER BY key").await, ["PAY-1", "PAY-4"]);
+    assert_eq!(h.mql_keys(&owner, "component = billing").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "components IN (Web, API) ORDER BY key").await, ["PAY-2", "PAY-3"]);
+    assert_eq!(h.mql_keys(&owner, "component IS EMPTY ORDER BY key").await, ["PAY-1", "PAY-4"]);
+    assert_eq!(h.mql_keys(&owner, "fixVersion = \"1.0\"").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "fixVersion != \"1.0\" ORDER BY key").await, ["PAY-1", "PAY-3", "PAY-4"]);
+    assert_eq!(h.mql_keys(&owner, "due < 2026-11-15").await, ["PAY-3"]);
+    assert_eq!(h.mql_keys(&owner, "due = 2026-11-20").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "due IS NOT EMPTY ORDER BY due DESC").await, ["PAY-2", "PAY-3"]);
+    assert_eq!(h.mql_keys(&owner, "project = PAY ORDER BY due, key").await, ["PAY-3", "PAY-2", "PAY-1", "PAY-4"], "undated last");
+    assert_eq!(h.mql_keys(&owner, "storyPoints >= 1").await, ["PAY-2"]);
+    assert_eq!(h.mql_keys(&owner, "points = 0.5").await, ["PAY-3"]);
+    assert_eq!(h.mql_keys(&owner, "storyPoints != 5").await, ["PAY-3"], "unestimated issues are not \"not 5\"");
+    assert_eq!(h.mql_keys(&owner, "storyPoints IS EMPTY ORDER BY key").await, ["PAY-1", "PAY-4"]);
+    let (status, body) = h.mql(&owner, "storyPoints > lots", "").await;
+    assert_eq!((status, &body["errors"][0]["span"]), (422, &json!([14, 18])));
     h.drop_index().await;
 }

@@ -142,6 +142,11 @@ pub enum Field {
     Created,
     Updated,
     Resolved,
+    Parent,
+    Component,
+    FixVersion,
+    Due,
+    StoryPoints,
 }
 
 /// Field names people can type, lower-case, with what they mean. The first name of each
@@ -169,6 +174,15 @@ pub const FIELD_NAMES: &[(&str, Field)] = &[
     ("created", Field::Created),
     ("updated", Field::Updated),
     ("resolved", Field::Resolved),
+    ("parent", Field::Parent),
+    ("component", Field::Component),
+    ("components", Field::Component),
+    ("fixversion", Field::FixVersion),
+    ("fixversions", Field::FixVersion),
+    ("due", Field::Due),
+    ("duedate", Field::Due),
+    ("storypoints", Field::StoryPoints),
+    ("points", Field::StoryPoints),
 ];
 
 impl Field {
@@ -180,6 +194,8 @@ impl Field {
     pub fn name(self) -> &'static str {
         match self {
             Field::StatusCategory => "statusCategory",
+            Field::FixVersion => "fixVersion",
+            Field::StoryPoints => "storyPoints",
             f => FIELD_NAMES.iter().find(|(_, g)| *g == f).map(|(n, _)| *n).unwrap_or("field"),
         }
     }
@@ -191,10 +207,13 @@ impl Field {
                 matches!(op, Eq | Ne | In | NotIn)
             }
             Field::Priority => matches!(op, Eq | Ne | In | NotIn | Lt | Le | Gt | Ge),
-            Field::Assignee | Field::Reporter | Field::Labels => matches!(op, Eq | Ne | In | NotIn | IsEmpty | IsNotEmpty),
+            Field::Assignee | Field::Reporter | Field::Labels | Field::Parent | Field::Component | Field::FixVersion => {
+                matches!(op, Eq | Ne | In | NotIn | IsEmpty | IsNotEmpty)
+            }
             Field::Summary | Field::Description | Field::Comment | Field::Text => matches!(op, Contains | NotContains),
             Field::Created | Field::Updated => matches!(op, Eq | Lt | Le | Gt | Ge),
-            Field::Resolved => matches!(op, Eq | Lt | Le | Gt | Ge | IsEmpty | IsNotEmpty),
+            Field::Resolved | Field::Due => matches!(op, Eq | Lt | Le | Gt | Ge | IsEmpty | IsNotEmpty),
+            Field::StoryPoints => matches!(op, Eq | Ne | Lt | Le | Gt | Ge | IsEmpty | IsNotEmpty),
         }
     }
 
@@ -202,10 +221,13 @@ impl Field {
         match self {
             Field::Project | Field::Key | Field::Type | Field::Status | Field::StatusCategory => "=, !=, IN and NOT IN",
             Field::Priority => "=, !=, IN, NOT IN, <, <=, > and >=",
-            Field::Assignee | Field::Reporter | Field::Labels => "=, !=, IN, NOT IN, IS EMPTY and IS NOT EMPTY",
+            Field::Assignee | Field::Reporter | Field::Labels | Field::Parent | Field::Component | Field::FixVersion => {
+                "=, !=, IN, NOT IN, IS EMPTY and IS NOT EMPTY"
+            }
             Field::Summary | Field::Description | Field::Comment | Field::Text => "~ (contains) and !~ (does not contain)",
             Field::Created | Field::Updated => "=, <, <=, > and >=",
-            Field::Resolved => "=, <, <=, >, >=, IS EMPTY and IS NOT EMPTY",
+            Field::Resolved | Field::Due => "=, <, <=, >, >=, IS EMPTY and IS NOT EMPTY",
+            Field::StoryPoints => "=, !=, <, <=, >, >=, IS EMPTY and IS NOT EMPTY",
         }
     }
 }
@@ -264,6 +286,7 @@ pub enum SortField {
     Resolved,
     Priority,
     Key,
+    Due,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,7 +350,8 @@ impl Parser {
                         "resolved" => SortField::Resolved,
                         "priority" => SortField::Priority,
                         "key" | "issue" | "issuekey" => SortField::Key,
-                        _ => return fail("Sort by created, updated, resolved, priority or key.", start, end),
+                        "due" | "duedate" => SortField::Due,
+                        _ => return fail("Sort by created, updated, resolved, due, priority or key.", start, end),
                     },
                     _ => return fail("Expected a field to sort by.", start, end),
                 };
@@ -793,6 +817,9 @@ impl Compiler<'_> {
             Field::Assignee => "assignee_id",
             Field::Reporter => "reporter_id",
             Field::Labels => "labels",
+            Field::Parent => "parent_key",
+            Field::Component => "components",
+            Field::FixVersion => "fix_versions",
             _ => unreachable!("not a term field"),
         };
         let mut values = Vec::new();
@@ -810,6 +837,8 @@ impl Compiler<'_> {
                 }
                 Field::Key => json!(text(op)?.trim()),
                 Field::Labels => json!(text(op)?),
+                // Matched without regard to case (the fields have a lower-casing normalizer).
+                Field::Parent | Field::Component | Field::FixVersion => json!(text(op)?.trim()),
                 Field::StatusCategory => json!(status_category(op)?),
                 Field::Assignee | Field::Reporter => json!(self.person(op, c.field)?),
                 _ => json!(slug(text(op)?)),
@@ -828,7 +857,18 @@ impl Compiler<'_> {
     fn clause(&self, c: &Clause) -> Result<Value> {
         match c.field {
             Field::Summary | Field::Description | Field::Comment | Field::Text => self.text_clause(c),
-            Field::Created | Field::Updated | Field::Resolved => self.date_clause(c),
+            Field::Created | Field::Updated | Field::Resolved | Field::Due => self.date_clause(c),
+            Field::StoryPoints => story_points(c),
+            // A status by its key (`in_review`) or by the workflow's name for it (`In Review`).
+            Field::Status if matches!(c.op, Op::Eq | Op::Ne | Op::In | Op::NotIn) => {
+                let (field, keys) = self.terms(c)?;
+                let names = c.values.iter().map(|op| text(op).map(|t| json!(t.trim()))).collect::<Result<Vec<_>>>()?;
+                let positive = json!({ "bool": {
+                    "should": [ { "terms": { field: keys } }, { "terms": { "status_name": names } } ],
+                    "minimum_should_match": 1
+                } });
+                Ok(if matches!(c.op, Op::Ne | Op::NotIn) { not(positive) } else { positive })
+            }
             Field::Priority if matches!(c.op, Op::Lt | Op::Le | Op::Gt | Op::Ge) => {
                 let op = &c.values[0];
                 let Some(rank) = priority_rank(&slug(text(op)?)) else {
@@ -841,6 +881,9 @@ impl Compiler<'_> {
                 let field = match c.field {
                     Field::Assignee => "assignee_id",
                     Field::Reporter => "reporter_id",
+                    Field::Parent => "parent_key",
+                    Field::Component => "components",
+                    Field::FixVersion => "fix_versions",
                     _ => "labels",
                 };
                 match c.op {
@@ -880,6 +923,7 @@ impl Compiler<'_> {
         let field = match c.field {
             Field::Created => "created_at",
             Field::Updated => "updated_at",
+            Field::Due => "due_date",
             _ => "resolved_at",
         };
         match c.op {
@@ -906,6 +950,27 @@ impl Compiler<'_> {
         };
         Ok(json!({ "range": { field: { range_key(c.op): bound } } }))
     }
+}
+
+/// `storyPoints > 3`, `storyPoints = 0.5`, `storyPoints IS EMPTY`.
+fn story_points(c: &Clause) -> Result<Value> {
+    let exists = json!({ "exists": { "field": "story_points" } });
+    match c.op {
+        Op::IsEmpty => return Ok(not(exists)),
+        Op::IsNotEmpty => return Ok(exists),
+        _ => {}
+    }
+    let op = &c.values[0];
+    let points: f64 = match text(op)?.trim().parse() {
+        Ok(p) if f64::is_finite(p) && (0.0..=1000.0).contains(&p) => p,
+        _ => return fail("Story points are a number from 0 to 1000.", op.start, op.end),
+    };
+    Ok(match c.op {
+        Op::Eq => json!({ "term": { "story_points": points } }),
+        // Issues without an estimate are not "not 3" either.
+        Op::Ne => json!({ "bool": { "filter": [exists], "must_not": [ { "term": { "story_points": points } } ] } }),
+        op => json!({ "range": { "story_points": { range_key(op): points } } }),
+    })
 }
 
 fn range_key(op: Op) -> &'static str {
@@ -935,13 +1000,15 @@ pub fn compile(query: &Query, ctx: &Context<'_>) -> Result<Compiled> {
     let dir = |d: bool| if d { "desc" } else { "asc" };
     for (field, descending) in &query.order {
         match field {
-            SortField::Created | SortField::Updated | SortField::Resolved => {
+            SortField::Created | SortField::Updated | SortField::Resolved | SortField::Due => {
                 let name = match field {
                     SortField::Created => "created_at",
                     SortField::Updated => "updated_at",
+                    SortField::Due => "due_date",
                     _ => "resolved_at",
                 };
-                sort.push(json!({ name: { "order": dir(*descending), "missing": "_last" } }));
+                // unmapped_type: indexes created before due dates were indexed.
+                sort.push(json!({ name: { "order": dir(*descending), "missing": "_last", "unmapped_type": "date" } }));
                 sort_values.push(SortValue::Number);
             }
             SortField::Priority => {
@@ -1020,7 +1087,14 @@ mod tests {
         let c = compile_str("project = pay AND status = \"In Review\" AND assignee = currentUser()").unwrap();
         let must = &c.query["bool"]["must"];
         assert_eq!(must[0], json!({ "terms": { "project_key": ["PAY"] } }));
-        assert_eq!(must[1], json!({ "terms": { "status": ["in_review"] } }));
+        assert_eq!(
+            must[1],
+            json!({ "bool": {
+                "should": [{ "terms": { "status": ["in_review"] } }, { "terms": { "status_name": ["In Review"] } }],
+                "minimum_should_match": 1
+            } }),
+            "the status key or the workflow's name for it"
+        );
         assert_eq!(must[2], json!({ "terms": { "assignee_id": [me()] } }));
 
         let c = compile_str("assignee != maya@example.com").unwrap();
@@ -1086,7 +1160,7 @@ mod tests {
         assert!(error("assignee = nobody@example.com").0.starts_with("No one in this workspace"));
         assert_eq!(error("project in (PAY, ").0, "Expected a value here.");
         assert_eq!(error("project in (PAY").0, "Expected a comma or a closing parenthesis.");
-        assert_eq!(error("ORDER BY summary").0, "Sort by created, updated, resolved, priority or key.");
+        assert_eq!(error("ORDER BY summary").0, "Sort by created, updated, resolved, due, priority or key.");
         assert_eq!(error("assignee = now()").0, "now() cannot be used here; try currentUser().");
         assert_eq!(error("status = and").0, "Expected a value here. Quote it if it is a word like \"and\".");
         let (_, s, e) = error("type = bug AND (status = done");

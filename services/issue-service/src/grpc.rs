@@ -15,7 +15,11 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-use crate::{richtext, store};
+use crate::{
+    directory::{Directory, ProjectInfo},
+    richtext, store,
+    workflows::{Scope, WorkflowInfo, Workflows},
+};
 
 const MAX_DOCUMENTS: usize = 500;
 const MAX_IDS: u32 = 1000;
@@ -25,6 +29,56 @@ const MAX_CARDS: u32 = 2000;
 
 pub struct IssuesService {
     pub db: Arc<DbRouter>,
+    /// Component and version names for search documents.
+    pub directory: Arc<dyn Directory>,
+    /// Status display names for search documents.
+    pub workflows: Arc<dyn Workflows>,
+}
+
+/// Names a search document shows: per project key, its components and versions; per
+/// (project, issue type), its workflow.
+#[derive(Default)]
+struct Names {
+    projects: HashMap<String, ProjectInfo>,
+    workflows: HashMap<(Uuid, String), WorkflowInfo>,
+}
+
+impl Names {
+    async fn load(&mut self, service: &IssuesService, tenant_id: Uuid, issues: &[store::Issue]) -> Result<(), ApiError> {
+        for issue in issues {
+            if !self.projects.contains_key(&issue.project_key) {
+                let mut info = service.directory.project(tenant_id, &issue.project_key, false).await?;
+                // A component or version created moments ago may not be in a cached answer.
+                let named = |info: &ProjectInfo| {
+                    issue.component_ids.iter().chain(&issue.fix_version_ids).all(|id| info.names.contains_key(id))
+                };
+                if !named(&info) {
+                    info = service.directory.project(tenant_id, &issue.project_key, true).await?;
+                }
+                self.projects.insert(issue.project_key.clone(), info);
+            }
+            if let std::collections::hash_map::Entry::Vacant(slot) =
+                self.workflows.entry((issue.project_id, issue.type_key.clone()))
+            {
+                let scope = Scope { tenant_id, project_id: issue.project_id, issue_type: &issue.type_key };
+                slot.insert(service.workflows.info(scope).await?);
+            }
+        }
+        Ok(())
+    }
+
+    fn of(&self, project_key: &str, ids: &[Uuid]) -> Vec<String> {
+        let names = self.projects.get(project_key).map(|p| &p.names);
+        ids.iter().filter_map(|id| names.and_then(|n| n.get(id)).cloned()).collect()
+    }
+
+    fn status(&self, issue: &store::Issue) -> String {
+        self.workflows
+            .get(&(issue.project_id, issue.type_key.clone()))
+            .and_then(|w| w.status(&issue.status))
+            .map(|s| s.name.clone())
+            .unwrap_or_default()
+    }
 }
 
 fn id(field: &'static str, value: &str) -> Result<Uuid, Status> {
@@ -35,8 +89,17 @@ fn timestamp(t: OffsetDateTime) -> String {
     t.format(&Rfc3339).unwrap_or_default()
 }
 
-fn document(issue: store::Issue, comments: &[String]) -> Document {
+fn document(issue: store::Issue, comments: &[String], names: &Names) -> Document {
     Document {
+        status_name: names.status(&issue),
+        components: names.of(&issue.project_key, &issue.component_ids),
+        fix_versions: names.of(&issue.project_key, &issue.fix_version_ids),
+        parent_key: match (&issue.parent_project_key, issue.parent_number) {
+            (Some(key), Some(number)) => format!("{key}-{number}"),
+            _ => String::new(),
+        },
+        due_date: issue.due_date.map(|d| d.to_string()).unwrap_or_default(),
+        story_points: issue.story_points,
         key: issue.key(),
         id: issue.id.to_string(),
         project_id: issue.project_id.to_string(),
@@ -143,12 +206,14 @@ impl Issues for IssuesService {
             comments.entry(issue_id).or_default().push(richtext::plain_text(&body));
         }
         tx.commit().await?;
+        let mut names = Names::default();
+        names.load(self, tenant_id, &issues).await?;
         let missing_ids = ids.iter().filter(|i| !found.contains(i)).map(Uuid::to_string).collect();
         let documents = issues
             .into_iter()
             .map(|issue| {
                 let texts = comments.remove(&issue.id).unwrap_or_default();
-                document(issue, &texts)
+                document(issue, &texts, &names)
             })
             .collect();
         Ok(Response::new(Documents { documents, missing_ids }))

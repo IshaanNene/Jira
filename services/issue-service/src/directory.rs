@@ -27,6 +27,8 @@ pub struct ProjectInfo {
     pub archived: bool,
     pub component_ids: HashSet<Uuid>,
     pub version_ids: HashSet<Uuid>,
+    /// Display names of the project's components and versions, by id.
+    pub names: HashMap<Uuid, String>,
 }
 
 #[async_trait]
@@ -95,6 +97,12 @@ impl Directory for GrpcDirectory {
             archived: reply.archived,
             component_ids: reply.components.iter().filter_map(|r| Uuid::parse_str(&r.id).ok()).collect(),
             version_ids: reply.versions.iter().filter_map(|r| Uuid::parse_str(&r.id).ok()).collect(),
+            names: reply
+                .components
+                .iter()
+                .chain(&reply.versions)
+                .filter_map(|r| Some((Uuid::parse_str(&r.id).ok()?, r.name.clone())))
+                .collect(),
         };
         if let Ok(mut cache) = self.cache.lock() {
             if cache.len() > 10_000 {

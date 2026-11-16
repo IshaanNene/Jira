@@ -54,13 +54,14 @@ describe("issue search", () => {
       "GET /api/v1/projects": { items: [], next_cursor: null },
       "GET /api/v1/search/issues": (call: Call) => ({
         body: call.query.get("cursor")
-          ? { items: [hit({ id: "i2", key: "PAY-2", summary: "Second page", summary_parts: null, snippet: null })], total: 2, total_is_lower_bound: false, next_cursor: null }
+          ? { items: [hit({ id: "i2", key: "PAY-2", summary: "Second page", summary_parts: null, snippet: null, status_name: "Code review" })], total: 2, total_is_lower_bound: false, next_cursor: null }
           : { items: [hit()], total: 2, total_is_lower_bound: false, next_cursor: "c1" },
       }),
     });
     renderAt(<SearchPage />, "/search", "/search?q=refunds");
     await userEvent.click(await screen.findByRole("button", { name: "Show more" }));
     expect(await screen.findByText("Second page")).toBeInTheDocument();
+    expect(screen.getByText("Code review")).toBeInTheDocument(); // the workflow's name for the status
     expect(api.calls.filter((c) => c.path === "/api/v1/search/issues").at(-1)!.query.get("cursor")).toBe("c1");
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
@@ -85,7 +86,11 @@ describe("MQL suggestions", () => {
     expect(labels("status = done an")).toEqual(["AND"]);
     expect(labels("status = done AND pri")).toEqual(["priority"]);
     expect(labels("ORDER BY created ")).toEqual(["DESC", "ASC"]);
-    expect(labels("type = bug ORDER BY ")).toEqual(["created", "updated", "resolved", "priority", "key"]);
+    expect(labels("type = bug ORDER BY ")).toEqual(["created", "updated", "resolved", "due", "priority", "key"]);
+    expect(labels("fix")).toEqual(["fixVersion"]);
+    expect(labels("component ")).toEqual(["=", "!=", "IN", "NOT IN", "IS EMPTY", "IS NOT EMPTY"]);
+    expect(labels("points ")).toEqual(["=", "!=", ">=", "<=", ">", "<", "IS EMPTY", "IS NOT EMPTY"]);
+    expect(labels("due < ")).toContain("now()");
     expect(suggest("assignee = ma", 13, data).valuesFor).toBe("assignee");
   });
 
