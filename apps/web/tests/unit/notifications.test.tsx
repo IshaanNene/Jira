@@ -112,6 +112,39 @@ describe("notification settings", () => {
     expect(await screen.findByText("Couldn't save your notification settings. Try again.")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Status changes" })).toBeEnabled();
   });
+
+  it("chooses a digest and resumes email paused by a bounce", async () => {
+    signIn();
+    const { NotificationSettingsPage } = await import("@/modules/notifications");
+    let paused: string | null = "bounce";
+    const api = fakeApi({
+      "GET /api/v1/notifications/preferences": () => ({
+        body: {
+          email_enabled: true, email_assigned: true, email_mentioned: true, email_commented: true, email_status_changed: true,
+          email_digest: "off", email_paused: paused,
+        },
+      }),
+      "PUT /api/v1/notifications/preferences": (call: Call) => ({ body: call.body }),
+      "DELETE /api/v1/notifications/preferences/email-pause": () => {
+        paused = null;
+        return { status: 204, body: null };
+      },
+    });
+    renderAt(<NotificationSettingsPage />, "/settings/notifications", "/settings/notifications");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Email is paused");
+    expect(alert).toHaveTextContent("the mailbox doesn't exist");
+    await userEvent.click(screen.getByRole("button", { name: "Resume email" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(api.sent("DELETE", "/api/v1/notifications/preferences/email-pause")).toHaveLength(1);
+
+    expect(screen.getByRole("radio", { name: "As it happens" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(screen.getByRole("radio", { name: "Daily digest" }));
+    await waitFor(() => expect(api.sent("PUT", "/api/v1/notifications/preferences")).toHaveLength(1));
+    expect(api.sent("PUT", "/api/v1/notifications/preferences")[0]!.body).toMatchObject({ email_digest: "daily" });
+    expect(screen.getByRole("radio", { name: "Daily digest" })).toHaveAttribute("aria-checked", "true");
+  });
 });
 
 describe("unsubscribe link", () => {

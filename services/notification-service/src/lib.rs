@@ -14,6 +14,7 @@ pub mod projects;
 pub mod sender;
 pub mod source;
 pub mod store;
+pub mod suppression;
 pub mod unsubscribe;
 pub mod webhook_sender;
 pub mod webhooks;
@@ -41,6 +42,8 @@ pub struct AppState {
     pub unsubscribe: Arc<unsubscribe::UnsubscribeKey>,
     pub webhooks: Arc<webhooks::Settings>,
     pub projects: Arc<dyn projects::Projects>,
+    /// Checks the signature of bounce and complaint reports; `None`: not accepted.
+    pub email_events: Option<Arc<ring::hmac::Key>>,
 }
 
 impl FromRef<AppState> for Arc<TokenVerifier> {
@@ -84,9 +87,14 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
     let email = match config::optional("SMTP_URL") {
         Some(url) => {
             let mailer = mailer::SmtpMailer::new(&url, &config::or("EMAIL_FROM", "Meridian <notifications@meridian.localhost>"))?;
-            sender::spawn(db.pools(), Arc::new(mailer));
+            let app_url = config::required("APP_URL")?.trim_end_matches('/').to_owned();
+            sender::spawn(
+                db.pools(),
+                Arc::new(mailer),
+                sender::Settings { app_url: app_url.clone(), suppressions: db.global()?.clone() },
+            );
             Some(notifier::EmailSettings {
-                app_url: config::required("APP_URL")?.trim_end_matches('/').to_owned(),
+                app_url,
                 delay: std::time::Duration::from_secs(config::or("EMAIL_DELAY_SECONDS", "60").parse()?),
                 unsubscribe: Arc::clone(&unsubscribe),
             })
@@ -131,6 +139,8 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         unsubscribe,
         webhooks: webhook_settings,
         projects: Arc::new(projects::GrpcProjects::new(&project, &secret)?),
+        // Bounce and complaint reports from the mail provider; optional.
+        email_events: config::optional("EMAIL_EVENTS_SECRET").map(|s| Arc::new(suppression::events_key(&s))),
     };
     let health = server::health_router(move || {
         let db = Arc::clone(&db);

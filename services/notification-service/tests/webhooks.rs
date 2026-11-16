@@ -70,6 +70,7 @@ fn state(db: &PgPool, auth: &TestAuth, reach: Reach) -> AppState {
         unsubscribe: Arc::new(notification_service::unsubscribe::UnsubscribeKey::derive(SECRET)),
         webhooks: Arc::new(Settings { secrets: SecretBox::derive(SECRET), reach }),
         projects: Arc::new(NoProjects),
+        email_events: None,
     }
 }
 

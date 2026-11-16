@@ -90,6 +90,7 @@ async fn harness() -> Harness {
         unsubscribe: Arc::new(notification_service::unsubscribe::UnsubscribeKey::derive(SECRET)),
         webhooks: Arc::new(Settings { secrets: SecretBox::derive(SECRET), reach }),
         projects: world.clone(),
+        email_events: None,
     };
     let receiver = Arc::new(Receiver { status: Mutex::new(200), ..Default::default() });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

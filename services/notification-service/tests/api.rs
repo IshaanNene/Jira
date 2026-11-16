@@ -65,6 +65,18 @@ struct Harness {
     tenant: Uuid,
 }
 
+const EVENTS_SECRET: &str = "test-secret-for-email-events";
+
+/// What the preferences API answers for `sent`: the same, with the digest off and email
+/// not paused unless `sent` says otherwise.
+fn answered(sent: &Value) -> Value {
+    let mut out = json!({ "email_digest": "off", "email_paused": null });
+    for (k, v) in sent.as_object().unwrap() {
+        out[k] = v.clone();
+    }
+    out
+}
+
 async fn harness() -> Harness {
     let db = TestDb::create(&MIGRATOR).await.expect("test database");
     let world = Arc::new(World::default());
@@ -83,6 +95,7 @@ async fn harness() -> Harness {
             reach: notification_service::webhooks::Reach { allow_http: true, allow_private: true },
         }),
         projects: Arc::new(NoProjects),
+        email_events: Some(Arc::new(notification_service::suppression::events_key(EVENTS_SECRET))),
     };
     let notifier = Notifier {
         db: router,
@@ -111,6 +124,15 @@ impl Harness {
             self.world.roles.lock().unwrap().insert((tenant, id), HashMap::from([(project, ProjectRole::Viewer)]));
         }
         id
+    }
+
+    fn sender(&self) -> notification_service::sender::Settings {
+        notification_service::sender::Settings { app_url: "https://app.example.com".into(), suppressions: self.db.app.clone() }
+    }
+
+    /// A session of `user` signed in with `email`.
+    fn token_as(&self, tenant: Uuid, user: Uuid, email: &str) -> String {
+        self.auth.org_token(user, email, tenant, Uuid::now_v7(), "member").unwrap()
     }
 
     fn token(&self, tenant: Uuid, user: Uuid) -> String {
@@ -386,7 +408,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
         (200, Some(true), Some(true))
     );
     let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": false, "email_filter_digest": true });
-    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, rae), off.clone()).await, (200, off));
+    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, rae), off.clone()).await, (200, answered(&off)));
 
     h.deliver(
         t,
@@ -407,7 +429,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
     assert!(!queued.iter().any(|(who, _)| *who == rae), "muted kind is not queued");
 
     let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
-    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
     assert!(h.deliveries().await.iter().filter(|(who, _)| *who == olivia).all(|(_, s)| s == "sent"));
 
     let mails = inbox_of(&address(olivia)).await;
@@ -430,7 +452,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
                 "mentioned_user_ids": [] }),
     )
     .await;
-    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
     let mails = inbox_of(&address(rae)).await;
     assert_eq!(mails.len(), 1, "Rae, the reporter, hears of the comment");
     let id = mails[0]["ID"].as_str().unwrap();
@@ -463,7 +485,7 @@ async fn notifications_are_emailed_unless_read_first_or_turned_off() {
     let (_, inbox) = h.call("GET", "/api/v1/notifications?unread=true", &h.token(t, olivia)).await;
     let nid = inbox["items"][0]["id"].as_str().unwrap().to_owned();
     assert_eq!(h.call("POST", &format!("/api/v1/notifications/{nid}/read"), &h.token(t, olivia)).await.0, 204);
-    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
     assert_eq!(h.deliveries().await.last().unwrap().1, "skipped");
     assert_eq!(inbox_of(&address(olivia)).await.len(), 1);
 
@@ -527,14 +549,14 @@ async fn an_unreachable_mail_server_is_retried_later() {
 
     // Nothing listens on port 9.
     let down = SmtpMailer::new("smtp://127.0.0.1:9", "Meridian <notifications@meridian.localhost>").unwrap();
-    assert_eq!(sender::run_once(&h.db.app, &down).await.unwrap(), 1);
+    assert_eq!(sender::run_once(&h.db.app, &down, &h.sender()).await.unwrap(), 1);
     let (status, attempts, later): (String, i32, bool) =
         sqlx::query_as("SELECT status, attempts, send_after > now() + interval '50 seconds' FROM email_deliveries")
             .fetch_one(&h.db.owner)
             .await
             .unwrap();
     assert_eq!((status.as_str(), attempts, later), ("pending", 1, true));
-    assert_eq!(sender::run_once(&h.db.app, &down).await.unwrap(), 0, "not due yet");
+    assert_eq!(sender::run_once(&h.db.app, &down, &h.sender()).await.unwrap(), 0, "not due yet");
     h.db.cleanup().await;
 }
 
@@ -563,7 +585,7 @@ async fn emails_carry_one_click_unsubscribe_links_that_only_turn_email_off() {
     let comment = json!({ "comment_id": Uuid::now_v7(), "issue_id": issue, "key": "WEB-3", "project_id": project, "author_id": maya, "mentioned_user_ids": [] });
     h.deliver(t, "comment.created", maya, comment).await;
     let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
-    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
 
     // The delivered message has the RFC 8058 headers and a confirmation link in its body.
     let address = h.world.people.lock().unwrap()[&(t, olivia)].email.clone();
@@ -657,7 +679,7 @@ async fn filter_digests_are_emailed_to_active_subscribers_who_want_them() {
     let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, bob)).await;
     assert_eq!(prefs["email_filter_digest"], true);
     let off = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": true, "email_filter_digest": false });
-    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, bob), off.clone()).await, (200, off));
+    assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, bob), off.clone()).await, (200, answered(&off)));
     let legacy = json!({ "email_enabled": true, "email_assigned": true, "email_mentioned": true, "email_commented": true, "email_status_changed": true });
     assert_eq!(h.put_json("/api/v1/notifications/preferences", &h.token(t, ada), legacy).await.1["email_filter_digest"], true);
 
@@ -671,7 +693,7 @@ async fn filter_digests_are_emailed_to_active_subscribers_who_want_them() {
     let (_, inbox) = h.call("GET", "/api/v1/notifications", &h.token(t, ada)).await;
     assert_eq!(inbox["items"].as_array().unwrap().len(), 0);
     let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
-    sender::run_once(&h.db.app, &mailer).await.unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
     assert_eq!(h.deliveries().await, vec![(ada, "sent".to_owned())]);
 
     let mails = inbox_of(&address(ada)).await;
@@ -709,4 +731,192 @@ impl notification_service::projects::Projects for NoProjects {
     async fn id_of(&self, _tenant_id: Uuid, _key: &str) -> error_handling::ApiResult<Option<Uuid>> {
         Ok(None)
     }
+}
+
+fn put_digest(prefs: &Value, digest: &str) -> Value {
+    let mut out = prefs.clone();
+    out["email_digest"] = json!(digest);
+    out
+}
+
+#[tokio::test]
+async fn people_who_chose_a_digest_get_one_email_for_the_window() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let project = Uuid::now_v7();
+    let maya = h.person(t, "Maya", Some(project), true);
+    let olivia = h.person(t, "Olivia", Some(project), true);
+    let (issue, other) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, key) in [(issue, "OPS-1"), (other, "OPS-2")] {
+        h.world.audiences.lock().unwrap().insert(
+            id,
+            Audience {
+                key: key.into(),
+                summary: format!("Summary of {key}"),
+                project_id: project,
+                reporter_id: olivia,
+                assignee_id: None,
+                watcher_ids: vec![],
+                comment_text: String::new(),
+            },
+        );
+    }
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await;
+    let (status, saved) =
+        h.put_json("/api/v1/notifications/preferences", &h.token(t, olivia), put_digest(&prefs, "hourly")).await;
+    assert_eq!((status, saved["email_digest"].as_str()), (200, Some("hourly")));
+    let (status, _) = h.put_json("/api/v1/notifications/preferences", &h.token(t, olivia), put_digest(&prefs, "weekly")).await;
+    assert_eq!(status, 422, "only off, hourly or daily");
+
+    let transition = |id: Uuid, key: &str, to: &str| json!({ "issue_id": id, "key": key, "project_id": project, "from_status": "todo", "to_status": to });
+    h.deliver(t, "issue.transitioned", maya, transition(issue, "OPS-1", "in_progress")).await;
+    h.deliver(t, "issue.transitioned", maya, transition(other, "OPS-2", "done")).await;
+    h.deliver(t, "issue.transitioned", maya, transition(issue, "OPS-1", "in_review")).await;
+
+    // All three wait for one window, about an hour away.
+    let rows: Vec<(bool, time::OffsetDateTime)> =
+        sqlx::query_as("SELECT digest, send_after FROM email_deliveries WHERE recipient_id = $1")
+            .bind(olivia)
+            .fetch_all(&h.db.owner)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|(digest, at)| *digest && *at == rows[0].1), "{rows:?}");
+    let wait = rows[0].1 - time::OffsetDateTime::now_utc();
+    assert!(wait > time::Duration::minutes(59) && wait <= time::Duration::hours(1), "{wait}");
+
+    let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
+    assert_eq!(sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap(), 0, "the window is open");
+
+    // One is read in the app meanwhile; then the window closes.
+    let (_, inbox) = h.call("GET", "/api/v1/notifications?unread=true", &h.token(t, olivia)).await;
+    let read = inbox["items"].as_array().unwrap().iter().find(|n| n["issue_key"] == "OPS-2").unwrap()["id"].clone();
+    assert_eq!(
+        h.call("POST", &format!("/api/v1/notifications/{}/read", read.as_str().unwrap()), &h.token(t, olivia)).await.0,
+        204
+    );
+    sqlx::query("UPDATE email_deliveries SET send_after = now() - interval '1 second' WHERE digest")
+        .execute(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap(), 3);
+    let mut statuses: Vec<String> = h.deliveries().await.into_iter().map(|(_, s)| s).collect();
+    statuses.sort();
+    assert_eq!(statuses, ["sent", "sent", "skipped"]);
+
+    let address = h.world.people.lock().unwrap()[&(t, olivia)].email.clone();
+    let mails = inbox_of(&address).await;
+    assert_eq!(mails.len(), 1, "one email for the window");
+    assert_eq!(mails[0]["Subject"], "2 updates on OPS-1");
+    let id = mails[0]["ID"].as_str().unwrap().to_owned();
+    let full: Value = reqwest::get(format!("{}/api/v1/message/{id}", mailpit_api())).await.unwrap().json().await.unwrap();
+    let text = full["Text"].as_str().unwrap();
+    assert!(text.contains("Maya changed the status to In progress on OPS-1"), "{text}");
+    assert!(text.contains("Maya changed the status to In review on OPS-1"), "{text}");
+    assert!(!text.contains("OPS-2"), "read in the app first");
+
+    // Its unsubscribe link turns off activity email, not saved-filter email.
+    let headers: Value =
+        reqwest::get(format!("{}/api/v1/message/{id}/headers", mailpit_api())).await.unwrap().json().await.unwrap();
+    let one_click = headers["List-Unsubscribe"][0].as_str().unwrap().trim_matches(|c| c == '<' || c == '>').to_owned();
+    let path = one_click.trim_start_matches("https://app.example.com");
+    let (status, link) = h.anonymous("GET", path, "text/plain", "").await;
+    assert_eq!((status, link["kind"].as_str()), (200, Some("activity_digest")));
+    assert_eq!(h.anonymous("POST", path, "application/x-www-form-urlencoded", "List-Unsubscribe=One-Click").await.0, 204);
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await;
+    let off = |k: &str| prefs[k] == false;
+    assert!(["email_assigned", "email_mentioned", "email_commented", "email_status_changed"].iter().all(|k| off(k)), "{prefs}");
+    assert_eq!((prefs["email_enabled"].as_bool(), prefs["email_filter_digest"].as_bool()), (Some(true), Some(true)));
+    h.db.cleanup().await;
+}
+
+/// Says every recipient's mailbox does not exist.
+struct Rejecting;
+
+#[async_trait]
+impl notification_service::mailer::Mailer for Rejecting {
+    async fn send(&self, _: &notification_service::mailer::Outgoing<'_>) -> Result<(), notification_service::mailer::SendError> {
+        Err(notification_service::mailer::SendError::Rejected("550 5.1.1 no such user".into()))
+    }
+}
+
+impl Harness {
+    async fn report(&self, body: &str, signature: Option<String>) -> (u16, Value) {
+        let mut req = Request::builder().method("POST").uri("/hooks/email-events").header("content-type", "application/json");
+        if let Some(signature) = signature {
+            req = req.header("x-meridian-signature", signature);
+        }
+        let res = self.app.clone().oneshot(req.body(Body::from(body.to_owned())).unwrap()).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+}
+
+fn signed(body: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, EVENTS_SECRET.as_bytes());
+    format!("sha256={}", hex::encode(ring::hmac::sign(&key, body.as_bytes()).as_ref()))
+}
+
+#[tokio::test]
+async fn bounced_and_complaining_addresses_are_not_emailed_until_resumed() {
+    use notification_service::{mailer::SmtpMailer, sender};
+
+    let h = harness().await;
+    let t = h.tenant;
+    let project = Uuid::now_v7();
+    let maya = h.person(t, "Maya", Some(project), true);
+    let olivia = h.person(t, "Olivia", Some(project), true);
+    let rae = h.person(t, "Rae", Some(project), true);
+    let address = |id: Uuid| h.world.people.lock().unwrap()[&(t, id)].email.clone();
+    let issue = Uuid::now_v7();
+    h.world.audiences.lock().unwrap().insert(
+        issue,
+        Audience {
+            key: "OPS-9".into(),
+            summary: "Mail".into(),
+            project_id: project,
+            reporter_id: rae,
+            assignee_id: None,
+            watcher_ids: vec![],
+            comment_text: String::new(),
+        },
+    );
+
+    // The provider reports a complaint (address in another case) and a soft bounce.
+    let report = json!({ "events": [
+        { "type": "complaint", "email": address(olivia).to_uppercase() },
+        { "type": "bounce", "email": address(rae), "permanent": false },
+    ] })
+    .to_string();
+    assert_eq!(h.report(&report, None).await.0, 401, "unsigned");
+    assert_eq!(h.report(&report, Some(signed("{}"))).await.0, 401, "signed for another body");
+    assert_eq!(h.report(&report, Some(signed(&report))).await, (200, json!({ "recorded": 1 })));
+
+    let assign = |who: Uuid| json!({ "issue_id": issue, "key": "OPS-9", "project_id": project, "assignee_id": who, "previous_assignee_id": null });
+    h.deliver(t, "issue.assigned", maya, assign(olivia)).await;
+    let mailer = SmtpMailer::new(&smtp_url(), "Meridian <notifications@meridian.localhost>").unwrap();
+    sender::run_once(&h.db.app, &mailer, &h.sender()).await.unwrap();
+    let of =
+        |rows: Vec<(Uuid, String)>, who: Uuid| rows.into_iter().filter(|(r, _)| *r == who).map(|(_, s)| s).collect::<Vec<_>>();
+    assert_eq!(of(h.deliveries().await, olivia), ["suppressed"]);
+    assert!(inbox_of(&address(olivia)).await.is_empty());
+
+    // Olivia sees why, and resumes email; only her own address is affected.
+    let olivia_session = h.token_as(t, olivia, &address(olivia));
+    let (_, prefs) = h.call("GET", "/api/v1/notifications/preferences", &olivia_session).await;
+    assert_eq!(prefs["email_paused"], "complaint");
+    assert_eq!(h.call("GET", "/api/v1/notifications/preferences", &h.token(t, olivia)).await.1["email_paused"], Value::Null);
+    assert_eq!(h.call("DELETE", "/api/v1/notifications/preferences/email-pause", &olivia_session).await.0, 204);
+    assert_eq!(h.call("GET", "/api/v1/notifications/preferences", &olivia_session).await.1["email_paused"], Value::Null);
+
+    // A recipient the receiving server rejects is paused straight away.
+    h.deliver(t, "issue.assigned", maya, assign(rae)).await;
+    sender::run_once(&h.db.app, &Rejecting, &h.sender()).await.unwrap();
+    assert_eq!(of(h.deliveries().await, rae).last().map(String::as_str), Some("failed"));
+    let rae_session = h.token_as(t, rae, &address(rae));
+    assert_eq!(h.call("GET", "/api/v1/notifications/preferences", &rae_session).await.1["email_paused"], "bounce");
+    h.db.cleanup().await;
 }

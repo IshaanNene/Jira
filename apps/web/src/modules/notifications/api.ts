@@ -82,6 +82,20 @@ export function useSavePreferences() {
   });
 }
 
+/** Resume email to the person's own address after a bounce or spam complaint paused it. */
+export function useResumeEmail() {
+  const qc = useQueryClient();
+  const orgId = useOrgId();
+  const key = notificationKeys.preferences(orgId);
+  return useMutation({
+    mutationFn: () => api.delete(`${BASE}/preferences/email-pause`),
+    onSuccess: () => {
+      qc.setQueryData<NotificationPreferences>(key, (prev) => (prev ? { ...prev, email_paused: null } : prev));
+      void qc.invalidateQueries({ queryKey: key });
+    },
+  });
+}
+
 /** What an emailed unsubscribe link would turn off. Works signed out. */
 export function useUnsubscribeLink(token: string) {
   return useQuery({

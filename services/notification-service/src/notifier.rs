@@ -110,6 +110,7 @@ impl Notifier {
                     html_body: &rendered.html,
                     unsubscribe_url: Some(&one_click),
                     send_after: time::OffsetDateTime::now_utc(),
+                    digest: false,
                 },
             )
             .await?;
@@ -204,10 +205,11 @@ impl Handler for Notifier {
                 let prefs = preferences.iter().find(|(u, _)| *u == user).map(|(_, p)| p.clone()).unwrap_or_default();
                 if let Some(email) = &self.email {
                     if !person.email.is_empty() && prefs.wants_email(kind.as_str()) {
+                        let window = store::digest_window(&prefs.email_digest);
                         let token = email.unsubscribe.issue(&crate::unsubscribe::Claims {
                             tenant_id,
                             user_id: user,
-                            kind: kind.as_str().into(),
+                            kind: if window.is_some() { domain::ACTIVITY_DIGEST.into() } else { kind.as_str().into() },
                             issued_at: time::OffsetDateTime::now_utc().unix_timestamp(),
                         });
                         let page = format!("{}/unsubscribe?token={token}", email.app_url);
@@ -222,6 +224,10 @@ impl Handler for Notifier {
                             app_url: &email.app_url,
                             unsubscribe_url: Some(&page),
                         });
+                        let send_after = match window {
+                            Some(window) => store::digest_send_after(tx.conn(), tenant_id, user, window).await?,
+                            None => time::OffsetDateTime::now_utc() + email.delay,
+                        };
                         store::enqueue_email(
                             tx.conn(),
                             tenant_id,
@@ -234,7 +240,8 @@ impl Handler for Notifier {
                                 text_body: &rendered.text,
                                 html_body: &rendered.html,
                                 unsubscribe_url: Some(&one_click),
-                                send_after: time::OffsetDateTime::now_utc() + email.delay,
+                                send_after,
+                                digest: window.is_some(),
                             },
                         )
                         .await?;

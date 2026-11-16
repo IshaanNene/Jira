@@ -15,7 +15,14 @@ pub enum Kind {
     FilterDigest,
 }
 
+/// Unsubscribe tokens of activity digests name this instead of one kind: the link turns
+/// off email about every kind a digest gathers.
+pub const ACTIVITY_DIGEST: &str = "activity_digest";
+
 impl Kind {
+    /// The kinds an activity digest gathers (everything but saved-filter emails).
+    pub const ACTIVITY: [Kind; 4] = [Kind::Assigned, Kind::Commented, Kind::Mentioned, Kind::StatusChanged];
+
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "assigned" => Self::Assigned,

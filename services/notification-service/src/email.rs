@@ -319,6 +319,131 @@ pub fn render_digest(input: &DigestInput<'_>) -> Rendered {
     Rendered { subject, text, html }
 }
 
+/// One notification in an activity digest.
+#[derive(Debug, Clone)]
+pub struct ActivityLine<'a> {
+    pub kind: Kind,
+    pub actor_name: &'a str,
+    pub issue_key: &'a str,
+    pub issue_summary: &'a str,
+    pub to_status: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityDigestInput<'a> {
+    /// Oldest first.
+    pub items: &'a [ActivityLine<'a>],
+    pub app_url: &'a str,
+    /// Page that turns activity email off without signing in.
+    pub unsubscribe_url: Option<&'a str>,
+}
+
+/// Most lines listed in one activity digest; the rest are counted.
+pub const MAX_ACTIVITY_LINES: usize = 50;
+/// What the unsubscribe link of an activity digest turns off.
+pub const ACTIVITY_LABEL: &str = "activity (assignments, mentions, comments and status changes)";
+
+fn action(kind: Kind, to_status: Option<&str>) -> String {
+    match kind {
+        Kind::Assigned => "assigned you".to_owned(),
+        Kind::Mentioned => "mentioned you on".to_owned(),
+        Kind::Commented => "commented on".to_owned(),
+        Kind::StatusChanged => match to_status {
+            Some(to) => format!("changed the status to {} on", status_label(&one_line(to, 40))),
+            None => "changed the status of".to_owned(),
+        },
+        Kind::FilterDigest => "updated".to_owned(),
+    }
+}
+
+/// The hourly or daily email gathering a person's notifications.
+pub fn render_activity_digest(input: &ActivityDigestInput<'_>) -> Rendered {
+    let settings_url = format!("{}/settings/notifications", input.app_url);
+    let inbox_url = format!("{}/notifications", input.app_url);
+    let total = input.items.len();
+    let mut issues: Vec<String> = Vec::new();
+    for item in input.items {
+        let key = one_line(item.issue_key, 40);
+        if !issues.contains(&key) {
+            issues.push(key);
+        }
+    }
+    let updates = if total == 1 { "1 update".to_owned() } else { format!("{total} updates") };
+    let subject = match issues.as_slice() {
+        [one] => format!("{updates} on {one}"),
+        [first, second] => format!("{updates} on {first} and {second}"),
+        [first, rest @ ..] => format!("{updates} on {first} and {} other issues", rest.len()),
+        [] => updates.clone(),
+    };
+
+    let lines: Vec<(String, String, String, Option<String>)> = input
+        .items
+        .iter()
+        .take(MAX_ACTIVITY_LINES)
+        .map(|i| {
+            let who = if i.actor_name.trim().is_empty() { "Someone".to_owned() } else { one_line(i.actor_name, 80) };
+            let key = one_line(i.issue_key, 40);
+            let url = project_key(&key).map(|p| format!("{}/projects/{p}/issues/{key}", input.app_url));
+            (format!("{who} {} {key}", action(i.kind, i.to_status)), key, one_line(i.issue_summary, 150), url)
+        })
+        .collect();
+    let more = (total > lines.len()).then(|| format!("and {} more", total - lines.len()));
+
+    let mut text = format!("What happened while you were away: {updates}.\n\n");
+    for (headline, key, summary, url) in &lines {
+        text.push_str(&format!("{headline}\n    {key}: {summary}\n"));
+        if let Some(url) = url {
+            text.push_str(&format!("    {url}\n"));
+        }
+    }
+    if let Some(more) = &more {
+        text.push_str(&format!("…{more}\n"));
+    }
+    text.push_str(&format!("\nAll notifications: {inbox_url}\n"));
+    text.push_str(&format!(
+        "\n--\nYou are receiving this digest because you are involved in these issues.\nChoose which emails you get: {settings_url}\n"
+    ));
+    if let Some(url) = input.unsubscribe_url {
+        text.push_str(&format!("Stop emails about {ACTIVITY_LABEL}: {url}\n"));
+    }
+
+    let rows: String = lines
+        .iter()
+        .map(|(headline, key, summary, url)| {
+            let key_html = match url {
+                Some(u) => format!(r#"<a href="{}" style="color:#0c66e4;text-decoration:none">{}</a>"#, escape_html(u), escape_html(key)),
+                None => escape_html(key),
+            };
+            format!(
+                r#"<tr><td style="padding:8px 0;border-bottom:1px solid #f1f2f4;font-size:13px"><div>{}</div><div style="color:#44546f;margin-top:2px">{key_html} {}</div></td></tr>"#,
+                escape_html(headline),
+                escape_html(summary)
+            )
+        })
+        .collect();
+    let more_html = more
+        .map(|m| format!(r#"<p style="margin:8px 0 0;font-size:13px;color:#626f86">…{}</p>"#, escape_html(&m)))
+        .unwrap_or_default();
+    let unsubscribe = input
+        .unsubscribe_url
+        .map(|u| format!(r#" · <a href="{}" style="color:#0c66e4">Stop emails about activity</a>"#, escape_html(u)))
+        .unwrap_or_default();
+    let html = format!(
+        r#"<!doctype html><html><body style="margin:0;padding:24px;background:#f7f8f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#172b4d">
+<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #dcdfe4;border-radius:6px;padding:24px">
+<p style="margin:0 0 16px;font-size:14px">What happened while you were away: <strong>{updates}</strong>.</p>
+<table style="border-collapse:collapse;width:100%">{rows}</table>{more_html}
+<p style="margin:24px 0"><a href="{inbox}" style="background:#0c66e4;color:#ffffff;padding:8px 14px;border-radius:3px;text-decoration:none;font-weight:600">All notifications</a></p>
+<hr style="border:none;border-top:1px solid #dcdfe4;margin:24px 0 12px">
+<p style="margin:0;font-size:12px;color:#626f86">You are receiving this digest because you are involved in these issues. <a href="{settings}" style="color:#0c66e4">Choose which emails you get</a>{unsubscribe}.</p>
+</div></body></html>"#,
+        updates = escape_html(&updates),
+        inbox = escape_html(&inbox_url),
+        settings = escape_html(&settings_url),
+    );
+    Rendered { subject: one_line(&subject, 200), text, html }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +534,59 @@ mod tests {
         let one = render_digest(&DigestInput { total: 1, issues: &issues[..1], ..input.clone() });
         assert!(one.subject.ends_with("] 1 issue"));
         assert!(render_digest(&DigestInput { total_is_lower_bound: true, ..input }).subject.ends_with("25+ issues"));
+    }
+
+    #[test]
+    fn activity_digests_list_what_happened() {
+        let items = [
+            ActivityLine {
+                kind: Kind::Assigned,
+                actor_name: "Maya <b>",
+                issue_key: "PAY-12",
+                issue_summary: "Refunds",
+                to_status: None,
+            },
+            ActivityLine {
+                kind: Kind::Commented,
+                actor_name: "",
+                issue_key: "PAY-12",
+                issue_summary: "Refunds",
+                to_status: None,
+            },
+            ActivityLine {
+                kind: Kind::StatusChanged,
+                actor_name: "Li",
+                issue_key: "OPS-3",
+                issue_summary: "Disk\nfull",
+                to_status: Some("in_progress"),
+            },
+        ];
+        let out = render_activity_digest(&ActivityDigestInput {
+            items: &items,
+            app_url: "https://app.example.com",
+            unsubscribe_url: Some("https://app.example.com/unsubscribe?token=t"),
+        });
+        assert_eq!(out.subject, "3 updates on PAY-12 and OPS-3");
+        assert!(out.text.contains(
+            "Maya <b> assigned you PAY-12\n    PAY-12: Refunds\n    https://app.example.com/projects/PAY/issues/PAY-12\n"
+        ));
+        assert!(out.text.contains("Someone commented on PAY-12"));
+        assert!(out.text.contains("Li changed the status to In progress on OPS-3\n    OPS-3: Disk full"));
+        assert!(out.text.contains("unsubscribe?token=t"));
+        assert!(out.html.contains("Maya &lt;b&gt; assigned you PAY-12") && !out.html.contains("<b>"));
+
+        let many: Vec<ActivityLine<'_>> = (0..60)
+            .map(|_| ActivityLine {
+                kind: Kind::Mentioned,
+                actor_name: "A",
+                issue_key: "X-1",
+                issue_summary: "s",
+                to_status: None,
+            })
+            .collect();
+        let out = render_activity_digest(&ActivityDigestInput { items: &many, app_url: "https://a", unsubscribe_url: None });
+        assert_eq!(out.subject, "60 updates on X-1");
+        assert_eq!(out.text.matches("A mentioned you on X-1").count(), MAX_ACTIVITY_LINES);
+        assert!(out.text.contains("…and 10 more"));
     }
 }

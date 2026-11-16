@@ -23,10 +23,26 @@ preferences allow that kind and whose member record has an address (`GetMembers`
 leases due rows (`FOR UPDATE SKIP LOCKED`, 5-minute lease so a crashed instance's rows are retried) and sends a
 plain-text + HTML message with lettre. Each email waits `EMAIL_DELAY_SECONDS` (default 60) first and is skipped if
 the notification was read in the app meanwhile or the person has turned that kind off. Temporary SMTP failures are
-retried after 1, 2, 4, 8 and 16 minutes; permanent ones (5xx, invalid address) are marked `failed`. Finished rows
+retried after 1, 2, 4, 8 and 16 minutes; permanent ones (5xx) are marked `failed`. Finished rows
 are deleted after 7 days. All names and summaries are HTML-escaped and flattened to one line in the subject; links
 are built only from keys of the form `ABC-123` under `APP_URL`. Addresses are never logged. Locally, Mailpit
 catches everything (inbox at http://localhost:58025).
+
+**Digests.** A person can choose hourly or daily email instead of one per notification
+(`email_digest`: `off`, `hourly`, `daily`). Their activity rows are then queued with `digest = true`, all sharing the
+`send_after` of the window the first one opened. When it closes, the sender takes that person's due digest rows
+together (at most 200), drops the ones read in the app or muted meanwhile, and sends one email listing the rest
+(at most 50 lines, the rest counted). Its unsubscribe link (kind `activity_digest`) turns off the four activity
+kinds and leaves saved-filter email alone. Saved-filter emails are never gathered.
+
+**Bounces and complaints.** `email_suppressions` (global database, SHA-256 of the trimmed lower-cased address, no
+address in the clear) lists addresses not to email; a row for one is finished as `suppressed` without sending. An
+address goes on the list when the receiving server rejects the recipient (SMTP 550, 551, 553, or an unparseable
+address), or when the mail provider reports a hard bounce or a spam complaint to `POST /hooks/email-events`:
+`{"events":[{"type":"bounce"|"complaint","email":"…","permanent":true}]}`, at most 100 events and 256 KB, signed
+with `EMAIL_EVENTS_SECRET` as `X-Meridian-Signature: sha256=<hex HMAC-SHA256 of the body>` (401 otherwise; the
+route answers 404 when the secret is not set). Soft bounces are ignored. The person sees "Email is paused" in their
+settings (`email_paused` on the preferences) and can resume it, which takes their own address off the list.
 
 **Webhooks.** Workspace admins subscribe endpoints (`/api/v1/webhooks`) to issue and comment events, optionally for
 some projects only. A second consumer group (`notification-service.webhooks`, issue topic) queues one row per
@@ -62,11 +78,14 @@ see now (losing access hides them):
 | `GET /api/v1/notifications/unread-count` | |
 | `POST /api/v1/notifications/{id}/read` | 204, or 404 when it is not yours |
 | `POST /api/v1/notifications/read-all` | |
-| `GET/PUT /api/v1/notifications/preferences` | email on/off, and per kind (assigned, mentioned, commented, status changed) |
+| `GET/PUT /api/v1/notifications/preferences` | email on/off, per kind (assigned, mentioned, commented, status changed, saved filters), `email_digest`, and the read-only `email_paused` (`bounce`, `complaint` or null) for the caller's own address |
+| `DELETE /api/v1/notifications/preferences/email-pause` | resume email to the caller's own address |
+| `POST /hooks/email-events` | bounce and complaint reports from the mail provider, signed with `EMAIL_EVENTS_SECRET` |
 | `GET/POST /api/v1/notifications/unsubscribe?token=` | public: describe the link / turn that kind off (`{"all": true}` for all email); 404 for invalid or expired links |
 
 **Database.** Owns `notification_db`: `notifications` and `notification_preferences` (FORCE RLS); `email_deliveries`,
-`outbox` and `inbox` are system queues without RLS that no API reads.
+`outbox` and `inbox` are system queues without RLS that no API reads; `email_suppressions` (global database only)
+holds address hashes, also without RLS.
 
 | Variable | Required | Default |
 |---|---|---|
@@ -76,12 +95,13 @@ see now (losing access hides them):
 | `SMTP_URL` | no | unset: no email. `smtp://host:port`, `smtp://host?tls=required`, `smtps://user:pass@host:465` |
 | `APP_URL` | with `SMTP_URL` | base URL for links in emails |
 | `EMAIL_FROM`, `EMAIL_DELAY_SECONDS` | no | `Meridian <notifications@meridian.localhost>`, 60 |
+| `EMAIL_EVENTS_SECRET` | no | unset: bounce and complaint reports are not accepted |
 | `TENANT_SERVICE_GRPC_URL`, `PERMISSION_SERVICE_GRPC_URL`, `ISSUE_SERVICE_GRPC_URL`, `USER_SERVICE_GRPC_URL` | no | local ports 9102 / 9108 / 9105 / 9103 |
 | `WEBHOOKS_ALLOW_HTTP`, `WEBHOOKS_ALLOW_PRIVATE_NETWORKS` | no | unset (HTTPS to public addresses only); `true` for local development only |
 | `ALLOWED_ORIGINS`, `HTTP_ADDR` | no | –, `127.0.0.1:8110` |
 
 **Tests:** `cargo test -p notification-service` (PostgreSQL and Mailpit from `make infra`).
 
-**Not built yet.** Digests of several notifications in one email (one email per notification today); the comment text in comment emails; bounce and complaint handling from the
-mail provider; notifications for sprint, project or workflow events; retention of old in-app notifications; webhooks for
+**Not built yet.** Adapters for a specific provider's bounce format (SES, Postmark, SendGrid; a small relay maps
+them to the report above); asynchronous bounces sent back by mail to the From address; notifications for sprint, project or workflow events; retention of old in-app notifications; webhooks for
 sprint, project or workflow events, delivery ordering guarantees, manual redelivery, a payload format other than the event contract.

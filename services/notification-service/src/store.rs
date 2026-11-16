@@ -127,11 +127,24 @@ pub async fn mark_all_read(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uu
 pub struct Preferences {
     pub email_enabled: bool,
     pub email_muted: Vec<String>,
+    /// off | hourly | daily: activity emails one by one, or gathered into one per hour or day.
+    pub email_digest: String,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { email_enabled: true, email_muted: Vec::new() }
+        Self { email_enabled: true, email_muted: Vec::new(), email_digest: DIGEST_OFF.into() }
+    }
+}
+
+pub const DIGEST_OFF: &str = "off";
+
+/// How long a digest window lasts, for an `email_digest` value; `None` when off.
+pub fn digest_window(value: &str) -> Option<time::Duration> {
+    match value {
+        "hourly" => Some(time::Duration::hours(1)),
+        "daily" => Some(time::Duration::days(1)),
+        _ => None,
     }
 }
 
@@ -142,34 +155,40 @@ impl Preferences {
 }
 
 pub async fn preferences(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Preferences> {
-    Ok(sqlx::query_as("SELECT email_enabled, email_muted FROM notification_preferences WHERE tenant_id = $1 AND user_id = $2")
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await?
-        .unwrap_or_default())
+    Ok(sqlx::query_as(
+        "SELECT email_enabled, email_muted, email_digest FROM notification_preferences WHERE tenant_id = $1 AND user_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(user_id)
+    .fetch_optional(conn)
+    .await?
+    .unwrap_or_default())
 }
 
 pub async fn preferences_of(conn: &mut PgConnection, tenant_id: Uuid, user_ids: &[Uuid]) -> ApiResult<Vec<(Uuid, Preferences)>> {
-    let rows: Vec<(Uuid, bool, Vec<String>)> = sqlx::query_as(
-        "SELECT user_id, email_enabled, email_muted FROM notification_preferences WHERE tenant_id = $1 AND user_id = ANY($2)",
+    let rows: Vec<(Uuid, bool, Vec<String>, String)> = sqlx::query_as(
+        "SELECT user_id, email_enabled, email_muted, email_digest FROM notification_preferences WHERE tenant_id = $1 AND user_id = ANY($2)",
     )
     .bind(tenant_id)
     .bind(user_ids)
     .fetch_all(conn)
     .await?;
-    Ok(rows.into_iter().map(|(u, email_enabled, email_muted)| (u, Preferences { email_enabled, email_muted })).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(u, email_enabled, email_muted, email_digest)| (u, Preferences { email_enabled, email_muted, email_digest }))
+        .collect())
 }
 
 pub async fn save_preferences(conn: &mut PgConnection, tenant_id: Uuid, user_id: Uuid, p: &Preferences) -> ApiResult<()> {
     sqlx::query(
-        "INSERT INTO notification_preferences (tenant_id, user_id, email_enabled, email_muted) VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (tenant_id, user_id) DO UPDATE SET email_enabled = $3, email_muted = $4, updated_at = now()",
+        "INSERT INTO notification_preferences (tenant_id, user_id, email_enabled, email_muted, email_digest) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (tenant_id, user_id) DO UPDATE SET email_enabled = $3, email_muted = $4, email_digest = $5, updated_at = now()",
     )
     .bind(tenant_id)
     .bind(user_id)
     .bind(p.email_enabled)
     .bind(&p.email_muted)
+    .bind(&p.email_digest)
     .execute(conn)
     .await?;
     Ok(())
@@ -187,12 +206,15 @@ pub struct NewDelivery<'a> {
     pub html_body: &'a str,
     pub unsubscribe_url: Option<&'a str>,
     pub send_after: OffsetDateTime,
+    /// Gather into the recipient's digest; `send_after` is then only used when no digest
+    /// window is open yet (see [`digest_send_after`]).
+    pub digest: bool,
 }
 
 pub async fn enqueue_email(conn: &mut PgConnection, tenant_id: Uuid, d: &NewDelivery<'_>) -> ApiResult<()> {
     sqlx::query(
-        "INSERT INTO email_deliveries (id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, send_after, unsubscribe_url) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (notification_id) DO NOTHING",
+        "INSERT INTO email_deliveries (id, tenant_id, notification_id, recipient_id, kind, to_address, subject, text_body, html_body, send_after, unsubscribe_url, digest) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (notification_id) DO NOTHING",
     )
     .bind(platform_common::new_id())
     .bind(tenant_id)
@@ -205,9 +227,28 @@ pub async fn enqueue_email(conn: &mut PgConnection, tenant_id: Uuid, d: &NewDeli
     .bind(d.html_body)
     .bind(d.send_after)
     .bind(d.unsubscribe_url)
+    .bind(d.digest)
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// When a new digest row of the person goes out: with the digest window already open (their
+/// other pending digest rows), or a new window of `window` from now.
+pub async fn digest_send_after(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    recipient_id: Uuid,
+    window: time::Duration,
+) -> ApiResult<OffsetDateTime> {
+    let open: Option<OffsetDateTime> = sqlx::query_scalar(
+        "SELECT min(send_after) FROM email_deliveries WHERE tenant_id = $1 AND recipient_id = $2 AND digest AND status = 'pending'",
+    )
+    .bind(tenant_id)
+    .bind(recipient_id)
+    .fetch_one(conn)
+    .await?;
+    Ok(open.unwrap_or_else(|| OffsetDateTime::now_utc() + window))
 }
 
 /// Turn email off for one kind, or entirely (`kind` = None). Never turns anything on.

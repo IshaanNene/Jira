@@ -56,6 +56,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/preferences/email-pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Resume email to the caller's own address after a bounce or complaint paused it (in
+         *     every workspace: the pause is about the mailbox).
+         */
+        delete: operations["resume_email"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications/read-all": {
         parameters: {
             query?: never;
@@ -337,6 +357,8 @@ export interface components {
             /** @description Newest first, at most 100. */
             items: components["schemas"]["DevLinkDto"][];
         };
+        /** @enum {string} */
+        EmailDigest: "off" | "hourly" | "daily";
         HookReceipt: {
             /** @description Links saved or refreshed. */
             links: number;
@@ -379,11 +401,19 @@ export interface components {
         NotificationPreferences: {
             email_assigned: boolean;
             email_commented: boolean;
+            /** @description Activity email one by one (`off`), or gathered into one email an hour or a day. */
+            email_digest?: components["schemas"]["EmailDigest"];
             /** @description Master switch for email. */
             email_enabled: boolean;
             /** @description Scheduled emails of saved filters the person subscribed to. On when left out. */
             email_filter_digest?: boolean;
             email_mentioned: boolean;
+            /**
+             * @description Set when email to the person's address is paused because it bounced (`bounce`) or was
+             *     marked as spam (`complaint`). Read only (ignored when saving); resume with
+             *     `DELETE …/preferences/email-pause`.
+             */
+            readonly email_paused?: string | null;
             email_status_changed: boolean;
         };
         SourceConnectionDto: {
@@ -417,7 +447,7 @@ export interface components {
         };
         /** @description What an unsubscribe link would turn off. Says nothing about who it is for. */
         UnsubscribeLink: {
-            /** @description assigned | commented | mentioned | status_changed */
+            /** @description assigned | commented | mentioned | status_changed | filter_digest | activity_digest */
             kind: string;
             /** @description e.g. "comments" */
             kind_label: string;
@@ -598,6 +628,23 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["NotificationPreferences"];
                 };
+            };
+        };
+    };
+    resume_email: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

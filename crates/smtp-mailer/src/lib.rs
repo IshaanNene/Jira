@@ -24,9 +24,19 @@ pub enum SendError {
     /// Worth trying again later (connection refused, 4xx reply, timeout).
     #[error("temporary: {0}")]
     Transient(String),
-    /// Will never work (invalid address, 5xx reply).
+    /// Will never work (5xx reply about the message or the server).
     #[error("permanent: {0}")]
     Permanent(String),
+    /// The recipient address itself will never work: it is not an address, or the receiving
+    /// server says the mailbox does not exist (550, 551, 553). Worth not emailing it again.
+    #[error("recipient rejected: {0}")]
+    Rejected(String),
+}
+
+/// Whether a permanent SMTP reply code is about the recipient's mailbox rather than the
+/// message: 550 (no such mailbox), 551 (user not local), 553 (mailbox name not allowed).
+pub fn rejects_recipient(code: &str) -> bool {
+    matches!(code, "550" | "551" | "553")
 }
 
 #[async_trait]
@@ -54,7 +64,7 @@ impl SmtpMailer {
 #[async_trait]
 impl Mailer for SmtpMailer {
     async fn send(&self, email: &Outgoing<'_>) -> Result<(), SendError> {
-        let to: Mailbox = email.to.parse().map_err(|_| SendError::Permanent("invalid recipient address".into()))?;
+        let to: Mailbox = email.to.parse().map_err(|_| SendError::Rejected("invalid recipient address".into()))?;
         let mut message = Message::builder()
             .from(self.from.clone())
             .to(to)
@@ -75,8 +85,26 @@ impl Mailer for SmtpMailer {
         }
         match self.transport.send(message).await {
             Ok(_) => Ok(()),
+            Err(e) if e.is_permanent() && e.status().is_some_and(|c| rejects_recipient(&c.to_string())) => {
+                Err(SendError::Rejected(e.to_string()))
+            }
             Err(e) if e.is_permanent() => Err(SendError::Permanent(e.to_string())),
             Err(e) => Err(SendError::Transient(e.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_mailbox_replies_reject_the_recipient() {
+        for code in ["550", "551", "553"] {
+            assert!(rejects_recipient(code), "{code}");
+        }
+        for code in ["552", "554", "500", "421", "450"] {
+            assert!(!rejects_recipient(code), "{code}");
         }
     }
 }

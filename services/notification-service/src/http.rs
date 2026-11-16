@@ -5,7 +5,7 @@ use auth_middleware::{OrgContext, VisibleProjects};
 use axum::{
     extract::{Path, Query, State},
     http::{header, Method, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use error_handling::{ApiError, ApiResult};
@@ -63,6 +63,42 @@ pub struct NotificationPreferences {
     /// Scheduled emails of saved filters the person subscribed to. On when left out.
     #[serde(default = "on")]
     pub email_filter_digest: bool,
+    /// Activity email one by one (`off`), or gathered into one email an hour or a day.
+    #[serde(default)]
+    pub email_digest: EmailDigest,
+    /// Set when email to the person's address is paused because it bounced (`bounce`) or was
+    /// marked as spam (`complaint`). Read only (ignored when saving); resume with
+    /// `DELETE …/preferences/email-pause`.
+    #[serde(default)]
+    #[schema(read_only)]
+    pub email_paused: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailDigest {
+    #[default]
+    Off,
+    Hourly,
+    Daily,
+}
+
+impl EmailDigest {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Hourly => "hourly",
+            Self::Daily => "daily",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "hourly" => Self::Hourly,
+            "daily" => Self::Daily,
+            _ => Self::Off,
+        }
+    }
 }
 
 fn on() -> bool {
@@ -79,6 +115,8 @@ impl From<store::Preferences> for NotificationPreferences {
             email_commented: on("commented"),
             email_status_changed: on("status_changed"),
             email_filter_digest: on("filter_digest"),
+            email_digest: EmailDigest::parse(&p.email_digest),
+            email_paused: None,
         }
     }
 }
@@ -95,6 +133,7 @@ impl From<&NotificationPreferences> for store::Preferences {
         Self {
             email_enabled: p.email_enabled,
             email_muted: muted.iter().filter(|(_, on)| !on).map(|(k, _)| (*k).to_owned()).collect(),
+            email_digest: p.email_digest.as_str().to_owned(),
         }
     }
 }
@@ -199,13 +238,21 @@ pub async fn read_all(State(state): State<AppState>, ctx: OrgContext) -> ApiResu
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Why email to the caller's own address is paused, if it is.
+async fn paused(state: &AppState, ctx: &OrgContext) -> ApiResult<Option<String>> {
+    if ctx.email.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(crate::suppression::reason_of(state.db.global()?, &ctx.email).await?)
+}
+
 #[utoipa::path(get, path = "/api/v1/notifications/preferences", security(("bearer" = [])),
     responses((status = 200, body = NotificationPreferences)))]
 pub async fn get_preferences(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<Json<NotificationPreferences>> {
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let prefs = store::preferences(tx.conn(), ctx.tenant_id, ctx.user_id).await?;
     tx.commit().await?;
-    Ok(Json(prefs.into()))
+    Ok(Json(NotificationPreferences { email_paused: paused(&state, &ctx).await?, ..prefs.into() }))
 }
 
 #[utoipa::path(put, path = "/api/v1/notifications/preferences", request_body = NotificationPreferences, security(("bearer" = [])),
@@ -219,7 +266,18 @@ pub async fn put_preferences(
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     store::save_preferences(tx.conn(), ctx.tenant_id, ctx.user_id, &prefs).await?;
     tx.commit().await?;
-    Ok(Json(prefs.into()))
+    Ok(Json(NotificationPreferences { email_paused: paused(&state, &ctx).await?, ..prefs.into() }))
+}
+
+/// Resume email to the caller's own address after a bounce or complaint paused it (in
+/// every workspace: the pause is about the mailbox).
+#[utoipa::path(delete, path = "/api/v1/notifications/preferences/email-pause", security(("bearer" = [])),
+    responses((status = 204)))]
+pub async fn resume_email(State(state): State<AppState>, ctx: OrgContext) -> ApiResult<StatusCode> {
+    if !ctx.email.trim().is_empty() {
+        crate::suppression::clear(state.db.global()?, &ctx.email).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -238,7 +296,7 @@ pub struct UnsubscribeRequest {
 /// What an unsubscribe link would turn off. Says nothing about who it is for.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UnsubscribeLink {
-    /// assigned | commented | mentioned | status_changed
+    /// assigned | commented | mentioned | status_changed | filter_digest | activity_digest
     pub kind: String,
     /// e.g. "comments"
     pub kind_label: String,
@@ -249,7 +307,7 @@ fn verify_link(state: &AppState, token: &str) -> ApiResult<crate::unsubscribe::C
         .unsubscribe
         .verify(token, OffsetDateTime::now_utc().unix_timestamp())
         .ok_or(ApiError::NotFound("unsubscribe link"))?;
-    if crate::domain::Kind::parse(&claims.kind).is_none() {
+    if crate::domain::Kind::parse(&claims.kind).is_none() && claims.kind != crate::domain::ACTIVITY_DIGEST {
         return Err(ApiError::NotFound("unsubscribe link"));
     }
     Ok(claims)
@@ -264,8 +322,11 @@ pub async fn describe_unsubscribe(
     Query(q): Query<UnsubscribeQuery>,
 ) -> ApiResult<Json<UnsubscribeLink>> {
     let claims = verify_link(&state, &q.token)?;
-    let kind = crate::domain::Kind::parse(&claims.kind).expect("checked");
-    Ok(Json(UnsubscribeLink { kind: claims.kind, kind_label: crate::email::kind_label(kind).into() }))
+    let kind_label = match crate::domain::Kind::parse(&claims.kind) {
+        Some(kind) => crate::email::kind_label(kind),
+        None => crate::email::ACTIVITY_LABEL,
+    };
+    Ok(Json(UnsubscribeLink { kind: claims.kind, kind_label: kind_label.into() }))
 }
 
 /// Public. Turns off email about the link's kind; with a JSON body `{"all": true}`, all
@@ -281,7 +342,15 @@ pub async fn unsubscribe(
     let claims = verify_link(&state, &q.token)?;
     let all = serde_json::from_slice::<UnsubscribeRequest>(&body).ok().and_then(|b| b.all).unwrap_or(false);
     let mut tx = state.db.begin(claims.tenant_id).await?;
-    store::mute_email(tx.conn(), claims.tenant_id, claims.user_id, if all { None } else { Some(&claims.kind) }).await?;
+    if all {
+        store::mute_email(tx.conn(), claims.tenant_id, claims.user_id, None).await?;
+    } else if claims.kind == crate::domain::ACTIVITY_DIGEST {
+        for kind in crate::domain::Kind::ACTIVITY {
+            store::mute_email(tx.conn(), claims.tenant_id, claims.user_id, Some(kind.as_str())).await?;
+        }
+    } else {
+        store::mute_email(tx.conn(), claims.tenant_id, claims.user_id, Some(&claims.kind)).await?;
+    }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -300,6 +369,7 @@ pub async fn unsubscribe(
         read_all,
         get_preferences,
         put_preferences,
+        resume_email,
         describe_unsubscribe,
         unsubscribe,
         crate::http_webhooks::event_types,
@@ -322,6 +392,7 @@ pub async fn unsubscribe(
         NotificationList,
         UnreadCount,
         NotificationPreferences,
+        EmailDigest,
         UnsubscribeLink,
         UnsubscribeRequest,
         crate::http_webhooks::WebhookDto,
@@ -351,6 +422,7 @@ pub fn router(state: AppState) -> Router {
         .route("/notifications/unread-count", get(unread))
         .route("/notifications/read-all", post(read_all))
         .route("/notifications/preferences", get(get_preferences).put(put_preferences))
+        .route("/notifications/preferences/email-pause", delete(resume_email))
         .route("/notifications/unsubscribe", get(describe_unsubscribe).post(unsubscribe))
         .route("/notifications/{id}/read", post(read_one))
         .merge(crate::http_webhooks::routes())
@@ -363,6 +435,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .merge(crate::http_source::hook_routes())
+        .route(
+            "/hooks/email-events",
+            post(crate::suppression::email_events).layer(axum::extract::DefaultBodyLimit::max(crate::suppression::MAX_BODY)),
+        )
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .layer(cors)
         .with_state(state)
