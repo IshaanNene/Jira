@@ -1,6 +1,19 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# macOS: identity-service links xmlsec1 (SAML). Homebrew's xmlsec1 uses Homebrew's libxml2 and
+# libxslt, so the build must too (two libxml2 copies in one process crash), and openssl-sys
+# needs OpenSSL 3. `brew install libxmlsec1 libxslt openssl@3 pkg-config`. Exported for the
+# scripts that `make dev` runs as well.
+ifeq ($(shell uname),Darwin)
+BREW := $(shell brew --prefix 2>/dev/null)
+ifneq ($(BREW),)
+export PKG_CONFIG_PATH := $(BREW)/opt/libxml2/lib/pkgconfig:$(BREW)/opt/libxslt/lib/pkgconfig:$(PKG_CONFIG_PATH)
+export OPENSSL_DIR ?= $(BREW)/opt/openssl@3
+export OPENSSL_ROOT_DIR ?= $(BREW)/opt/openssl@3
+endif
+endif
+
 .PHONY: help dev stop infra build test test-rust test-web lint fmt migrate seed logs clean web-install gen-api observability images kind-up kind-down load resilience
 
 help: ## Show this help

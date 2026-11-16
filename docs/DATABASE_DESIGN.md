@@ -126,7 +126,7 @@ Cross-database references (by id, no FK): `MEMBERSHIP.user_id → ACCOUNT`, `ORG
 | `recovery_codes` | `account_id`, `code_hash` (SHA-256), `used_at` |
 | `mfa_challenges` | `account_id`, `token_hash`, `attempts`, `expires_at`, `used_at` — between password and code at sign-in |
 | `passkeys`, `webauthn_challenges` | Built (Phase 6) |
-| `sso_connections`, `sso_identities`, `sso_states` (identity_db) | OIDC per organization — built. Kept in identity_db rather than a tenant-scoped table because sign-in runs before any tenant is known and links point at global accounts; every admin query is keyed by the `organization_id` from the signed token |
+| `sso_connections`, `sso_identities`, `sso_states` (identity_db) | OIDC or SAML per organization — built (`protocol`; for SAML `issuer` is the provider's entity ID, `saml_metadata` its pasted metadata and no secret is stored, enforced by a CHECK; `sso_states.nonce` holds the AuthnRequest ID and `saml_response` the parked response until the browser returns). Kept in identity_db rather than a tenant-scoped table because sign-in runs before any tenant is known and links point at global accounts; every admin query is keyed by the `organization_id` from the signed token |
 | `api_tokens` | `id`, `account_id`, `tenant_id`, `token_hash`, `scopes text[]`, `expires_at`, `last_used_at` |
 | `login_events` | append-only login history, used for suspicious-login detection |
 

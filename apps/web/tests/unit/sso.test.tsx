@@ -52,6 +52,7 @@ describe("signing in with SSO", () => {
 });
 
 const CONNECTION: SsoConnection = {
+  protocol: "oidc", saml: null,
   sign_in_name: "acme", issuer: "https://acme.okta.com", client_id: "abc", enabled: true, require_sso: false,
   redirect_uri: "https://meridian.example.com/api/v1/auth/sso/callback", linked_members: 3, updated_at: "2026-11-16T00:00:00Z",
 };
@@ -79,7 +80,7 @@ describe("single sign-on settings", () => {
     await userEvent.click(screen.getByRole("button", { name: "Connect" }));
     expect(await screen.findByLabelText("Redirect URI")).toHaveTextContent(CONNECTION.redirect_uri);
     expect(api.sent("PUT", "/api/v1/auth/sso/connection")[0]!.body).toEqual({
-      sign_in_name: "acme", issuer: "https://acme.okta.com", client_id: "abc", client_secret: "s3cret", enabled: true, require_sso: true,
+      protocol: "oidc", sign_in_name: "acme", issuer: "https://acme.okta.com", client_id: "abc", client_secret: "s3cret", enabled: true, require_sso: true,
     });
   });
 
@@ -94,6 +95,60 @@ describe("single sign-on settings", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await vi.waitFor(() => expect(api.sent("PUT", "/api/v1/auth/sso/connection")).toHaveLength(1));
     expect((api.sent("PUT", "/api/v1/auth/sso/connection")[0]!.body as { client_secret: unknown }).client_secret).toBeNull();
+  });
+});
+
+const SP = "https://meridian.example.com/api/v1/auth/sso/saml/" + ORG_ID;
+const SAML: SsoConnection = {
+  ...CONNECTION, protocol: "saml", issuer: "http://www.okta.com/exk1", client_id: null,
+  saml: { entity_id: SP, acs_url: "https://meridian.example.com/api/v1/auth/sso/saml/acs", metadata_url: SP },
+};
+
+describe("single sign-on with SAML", () => {
+  it("connects with pasted metadata, then shows what to enter at the provider", async () => {
+    signIn("owner");
+    const api = fakeApi({
+      "GET /api/v1/auth/sso/connection": () => ({ status: 404, body: { code: "not_found", detail: "SSO connection not found" } }),
+      "PUT /api/v1/auth/sso/connection": (call: Call) =>
+        (call.body as { saml_metadata: string }).saml_metadata.includes("KeyDescriptor")
+          ? { body: { ...SAML, linked_members: 0 } }
+          : { status: 422, body: { code: "validation_failed", detail: "x", errors: [{ field: "saml_metadata", code: "invalid", message: "The metadata has no signing certificate." }] } },
+    });
+    renderAt(<SingleSignOnPage />, "/settings/sso", "/settings/sso");
+    await userEvent.click(await screen.findByRole("radio", { name: "SAML 2.0" }));
+    expect(screen.queryByLabelText("Client ID")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Sign-in name"), "acme");
+    const metadata = screen.getByLabelText("Identity provider metadata");
+    await userEvent.click(metadata);
+    await userEvent.paste("<md:EntityDescriptor/>");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("The metadata has no signing certificate.")).toBeInTheDocument();
+    await userEvent.clear(metadata);
+    await userEvent.paste("<md:EntityDescriptor><md:KeyDescriptor/></md:EntityDescriptor>");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(await screen.findByLabelText("Entity ID (audience)")).toHaveTextContent(SP);
+    expect(screen.getByLabelText("ACS URL")).toHaveTextContent("/api/v1/auth/sso/saml/acs");
+    expect(screen.getByLabelText("Metadata URL")).toHaveTextContent(SP);
+    expect(screen.queryByLabelText("Redirect URI")).not.toBeInTheDocument();
+    expect(api.sent("PUT", "/api/v1/auth/sso/connection")[1]!.body).toEqual({
+      protocol: "saml", sign_in_name: "acme", enabled: true, require_sso: false,
+      saml_metadata: "<md:EntityDescriptor><md:KeyDescriptor/></md:EntityDescriptor>",
+    });
+  });
+
+  it("keeps the stored metadata when the field is left blank, and warns before switching protocol", async () => {
+    signIn("admin");
+    const api = fakeApi({
+      "GET /api/v1/auth/sso/connection": SAML,
+      "PUT /api/v1/auth/sso/connection": (call: Call) => ({ body: { ...SAML, ...(call.body as object), updated_at: "2026-11-17T00:00:00Z" } }),
+    });
+    renderAt(<SingleSignOnPage />, "/settings/sso", "/settings/sso");
+    expect(await screen.findByRole("radio", { name: "SAML 2.0" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await vi.waitFor(() => expect(api.sent("PUT", "/api/v1/auth/sso/connection")).toHaveLength(1));
+    expect((api.sent("PUT", "/api/v1/auth/sso/connection")[0]!.body as { saml_metadata: unknown }).saml_metadata).toBeNull();
+    await userEvent.click(screen.getByRole("radio", { name: "OpenID Connect" }));
+    expect(screen.getByText(/Switching protocol deletes every member's link/)).toBeInTheDocument();
   });
 });
 

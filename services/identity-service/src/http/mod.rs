@@ -69,7 +69,10 @@ use crate::AppState;
         sso::links,
         sso::unlink,
         sso::callback,
-        sso::workspace
+        sso::workspace,
+        sso::saml_metadata,
+        sso::saml_acs,
+        sso::saml_continue
     ),
     components(schemas(
         dto::RegisterRequest,
@@ -116,7 +119,9 @@ use crate::AppState;
         sso::SsoRedirect,
         sso::SsoLinkDto,
         sso::SsoLinkList,
-        sso::WorkspaceSso
+        sso::WorkspaceSso,
+        sso::SamlServiceProvider,
+        sso::SamlPost
     ))
 )]
 pub struct ApiDoc;
@@ -136,6 +141,10 @@ pub fn router(state: AppState) -> Router {
         .route("/passkeys/sign-in", post(passkeys::sign_in))
         .route("/sso/start", post(sso::start))
         .route("/sso/callback", get(sso::callback))
+        // Before the `{organization_id}` route, which these would otherwise match.
+        .route("/sso/saml/acs", post(sso::saml_acs))
+        .route("/sso/saml/continue", get(sso::saml_continue))
+        .route("/sso/saml/{organization_id}", get(sso::saml_metadata))
         .route("/sso/link", post(sso::link))
         .route("/sso/links", get(sso::links))
         .route("/sso/workspace", get(sso::workspace))

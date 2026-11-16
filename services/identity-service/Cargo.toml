@@ -39,8 +39,12 @@ anyhow.workspace = true
 qrcode.workspace = true
 smtp-mailer.workspace = true
 openidconnect.workspace = true
+samael.workspace = true
+flate2 = "1"
 reqwest.workspace = true
 
 [dev-dependencies]
 test-utilities.workspace = true
 tower.workspace = true
+# Timestamps for the fake SAML provider's responses (samael's schema uses chrono).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

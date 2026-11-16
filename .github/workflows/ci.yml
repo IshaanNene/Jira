@@ -25,9 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # libcurl headers: librdkafka 2.12 includes curl.h even with curl turned off (its config.h
-      # always defines WITH_OAUTHBEARER_OIDC); nothing links against curl.
+      # always defines WITH_OAUTHBEARER_OIDC); nothing links against curl. OpenSSL, libxml2 and
+      # xmlsec1 (with libclang for bindgen): identity-service checks SAML signatures with xmlsec1.
       - name: Build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler cmake libcurl4-openssl-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler cmake libcurl4-openssl-dev \
+            pkg-config libssl-dev libclang-dev libxml2-dev libxmlsec1-dev
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2

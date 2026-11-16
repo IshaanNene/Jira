@@ -608,6 +608,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/sso/saml/acs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The identity provider POSTs here (HTTP-POST binding). The response is parked with the
+         *     sign-in it names and the browser sent on to `continue`, where it is checked.
+         */
+        post: operations["saml_acs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/saml/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Back in the browser that started the sign-in, with its cookie: verify the parked response. */
+        get: operations["saml_continue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/saml/{organization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The workspace's service-provider metadata (its entity ID resolves here), for its admins to
+         *     give their identity provider. Public: it holds nothing secret.
+         */
+        get: operations["saml_metadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/sso/start": {
         parameters: {
             query?: never;
@@ -865,15 +922,35 @@ export interface components {
             /** @description From the link in the email. */
             token: string;
         };
+        SamlPost: {
+            RelayState?: string | null;
+            SAMLResponse?: string | null;
+        };
+        /** @description What to enter at the identity provider for a SAML connection. */
+        SamlServiceProvider: {
+            /** @description Assertion consumer service (reply) URL, HTTP-POST binding. */
+            acs_url: string;
+            /** @description Entity ID (audience) of this workspace; its metadata is served at the same URL. */
+            entity_id: string;
+            metadata_url: string;
+        };
         SaveSsoConnection: {
-            client_id: string;
+            /** @description OIDC only. */
+            client_id?: string;
             /** @description Required the first time; leave out to keep the stored one. */
             client_secret?: string | null;
             enabled: boolean;
-            /** @description The provider's issuer URL; `/.well-known/openid-configuration` is read from it. */
-            issuer: string;
+            /** @description OIDC: the provider's issuer URL; `/.well-known/openid-configuration` is read from it. */
+            issuer?: string;
+            /** @description `oidc` (the default) or `saml`. */
+            protocol?: string | null;
             /** @description Members other than owners may enter the workspace only after signing in through it. */
             require_sso: boolean;
+            /**
+             * @description SAML only: the identity provider's metadata XML, as downloaded from its SAML app. Blank
+             *     keeps the stored metadata.
+             */
+            saml_metadata?: string | null;
             /** @description Lower-case letters, digits and dashes; what members type to find the sign-in. */
             sign_in_name: string;
         };
@@ -896,17 +973,22 @@ export interface components {
             items: components["schemas"]["SessionDto"][];
         };
         SsoConnectionDto: {
-            client_id: string;
+            /** @description OIDC only. */
+            client_id?: string | null;
             enabled: boolean;
+            /** @description OIDC: the issuer URL. SAML: the identity provider's entity ID. */
             issuer: string;
             /**
              * Format: int64
              * @description Members who have linked their account.
              */
             linked_members: number;
-            /** @description Register this as the redirect (callback) URI at the identity provider. */
+            /** @description `oidc` or `saml`. */
+            protocol: string;
+            /** @description OIDC: register this as the redirect (callback) URI at the identity provider. */
             redirect_uri: string;
             require_sso: boolean;
+            saml?: null | components["schemas"]["SamlServiceProvider"];
             sign_in_name: string;
             /** Format: date-time */
             updated_at: string;
@@ -2161,6 +2243,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saml_acs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": components["schemas"]["SamlPost"];
+            };
+        };
+        responses: {
+            /** @description On to `sso/saml/continue`, or to the sign-in page when the sign-in is unknown */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saml_continue: {
+        parameters: {
+            query?: {
+                state?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the web app: signed in, linked, or why not */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saml_metadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SAML metadata XML */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/samlmetadata+xml": unknown;
+                };
             };
             404: {
                 headers: {

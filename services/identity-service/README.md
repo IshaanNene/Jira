@@ -53,6 +53,13 @@ with a redirect into the web app). The redirect URI is `{APP_URL}/api/v1/auth/ss
 `SSO_ALLOW_PRIVATE_NETWORKS` relax this for development only). See SECURITY_DESIGN.md §2 for linking, login CSRF,
 SSRF and how an SSO session is scoped.
 
+**Single sign-on (SAML 2.0).** The same `sso/connection` takes `"protocol": "saml"` with the provider's metadata XML
+(blank on a later save keeps it). `sso/saml/{organization_id}` serves the workspace's service-provider metadata (its
+entity ID is that URL); the provider posts to `sso/saml/acs`, which parks the response on the sign-in named by
+`RelayState` and redirects to `sso/saml/continue`, where the browser's cookie is checked and the response verified
+with `samael` (`src/saml.rs`). Building needs libxml2, xmlsec1 and OpenSSL (see the root README); the image is the
+Dockerfile's `xmlsec` runtime.
+
 **Admin console API.** `admin/two-step` and `admin/api-tokens` let a workspace's admins and owners (signed in, not
 through an API token) see which active members have two-step verification on and list or revoke the API tokens issued
 for their workspace. Membership is checked over gRPC, so ids outside the workspace are silently left out; a revocation
@@ -63,7 +70,7 @@ verification: accounts are global.
 `login_events`, `email_tokens`, `totp_factors`, `recovery_codes`, `mfa_challenges`, `passkeys`, `webauthn_challenges`, `sso_connections`, `sso_identities`, `sso_states`, `outbox`, `inbox`. Accounts are global, not tenant-owned.
 
 **Not built yet.** An email when the password or two-step verification
-changes; SAML; suspicious-login detection; signing-key rotation command.
+changes; suspicious-login detection; signing-key rotation command; signed SAML requests and encrypted assertions.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|

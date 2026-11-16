@@ -7,6 +7,7 @@ pub mod http;
 pub mod keys;
 pub mod membership;
 pub mod mfa;
+pub mod saml;
 pub mod sso;
 pub mod store;
 pub mod webauthn;

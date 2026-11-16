@@ -1535,3 +1535,256 @@ async fn sso_callbacks_must_come_back_to_the_browser_that_started_them_with_a_va
         raw(&h.app, Method::POST, "/api/v1/auth/sso/start", Some(json!({ "sign_in_name": "beta" })), None, "").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[path = "support/fake_saml.rs"]
+mod fake_saml;
+
+/// POSTs a form, as an identity provider's auto-submitting page does (no cookies: cross-site).
+async fn form_post(app: &Router, path: &str, fields: &[(&str, &str)]) -> (StatusCode, String) {
+    let body = fields.iter().map(|(k, v)| format!("{k}={}", url_encode(v))).collect::<Vec<_>>().join("&");
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let location = response.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_owned()).unwrap_or_default();
+    (response.status(), location)
+}
+
+fn url_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+fn saml_sp(org: Uuid) -> (String, String) {
+    (format!("{ORIGIN}/api/v1/auth/sso/saml/{org}"), format!("{ORIGIN}/api/v1/auth/sso/saml/acs"))
+}
+
+/// Starts a flow, has the provider answer with `respond(request_id)`, posts that to the ACS
+/// and follows on to `continue` with `browser` (None: the cookie set at the start).
+async fn saml_round_trip(
+    h: &Harness,
+    path: &str,
+    body: Value,
+    bearer: Option<&str>,
+    respond: impl FnOnce(&str) -> String,
+    browser: Option<&str>,
+) -> (String, Vec<String>) {
+    let (status, _, set, started) = raw(&h.app, Method::POST, path, Some(body), bearer, "").await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let cookie = browser.map_or_else(|| cookie_value(&set, "sso_state"), str::to_owned);
+    let received = fake_saml::FakeSamlIdp::receive(started["authorization_url"].as_str().unwrap());
+    let response = respond(&received.request_id);
+    let (status, next) =
+        form_post(&h.app, "/api/v1/auth/sso/saml/acs", &[("SAMLResponse", &response), ("RelayState", &received.relay_state)])
+            .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    if !next.contains("/sso/saml/continue?") {
+        return (next, Vec::new());
+    }
+    let path = next.strip_prefix(ORIGIN).unwrap().to_owned();
+    let (status, location, set, _) = raw(&h.app, Method::GET, &path, None, None, &format!("sso_state={cookie}")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    (location, set)
+}
+
+async fn saml_workspace(h: &Harness, idp: &fake_saml::FakeSamlIdp, name: &str, email: &str) -> (Uuid, Uuid, String) {
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, owner) = member(h, email, org, tenant, OrgRole::Owner).await;
+    let connection = json!({
+        "protocol": "saml", "sign_in_name": name, "saml_metadata": idp.metadata(), "enabled": true, "require_sso": false,
+    });
+    let (status, _, _, saved) = raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(connection), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    (org, tenant, owner)
+}
+
+#[tokio::test]
+async fn workspaces_sign_members_in_with_saml() {
+    let h = harness().await;
+    let idp = fake_saml::FakeSamlIdp::new();
+    let (org, tenant) = (Uuid::now_v7(), Uuid::now_v7());
+    let (_, owner) = member(&h, "owner@saml.example", org, tenant, OrgRole::Owner).await;
+    let (_, member_org_token) = member(&h, "member@saml.example", org, tenant, OrgRole::Member).await;
+    let save = |metadata: String| {
+        json!({
+            "protocol": "saml", "sign_in_name": "Initech", "saml_metadata": metadata, "enabled": true, "require_sso": false,
+        })
+    };
+
+    // Metadata must be SAML, name a signing certificate, and not require signed requests.
+    for (metadata, why) in [
+        ("<not-saml/>".to_owned(), "not metadata"),
+        (idp.metadata_with(false, false), "no certificate"),
+        (idp.metadata_with(true, true), "signed requests"),
+    ] {
+        let (status, _, _, body) =
+            raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(save(metadata)), Some(&owner), "").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}: {body}");
+        assert_eq!(body["errors"][0]["field"], "saml_metadata", "{body}");
+    }
+    let (status, ..) =
+        raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(save(idp.metadata())), Some(&member_org_token), "").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _, saved) =
+        raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(save(idp.metadata())), Some(&owner), "").await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (entity_id, acs_url) = saml_sp(org);
+    assert_eq!(saved["protocol"], "saml");
+    assert_eq!(saved["issuer"], fake_saml::ENTITY_ID);
+    assert_eq!(saved["client_id"], Value::Null);
+    assert_eq!(saved["saml"], json!({ "entity_id": entity_id, "acs_url": acs_url, "metadata_url": entity_id }));
+    // Saving again without the metadata keeps it.
+    let mut again = save(String::new());
+    again["require_sso"] = json!(true);
+    let (status, _, _, body) = raw(&h.app, Method::PUT, "/api/v1/auth/sso/connection", Some(again), Some(&owner), "").await;
+    assert_eq!((status, &body["require_sso"]), (StatusCode::OK, &json!(true)), "{body}");
+
+    // The service-provider metadata is public, at the entity ID.
+    let req = Request::builder().uri(format!("/api/v1/auth/sso/saml/{org}")).body(Body::empty()).unwrap();
+    let response = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let xml = String::from_utf8(axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert!(xml.contains(&entity_id) && xml.contains(&acs_url), "{xml}");
+    let req = Request::builder().uri(format!("/api/v1/auth/sso/saml/{}", Uuid::now_v7())).body(Body::empty()).unwrap();
+    assert_eq!(h.app.clone().oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    let answer = |subject: &'static str| {
+        let (entity_id, acs_url) = (entity_id.clone(), acs_url.clone());
+        let idp = &idp;
+        move |request_id: &str| idp.respond(subject, "person@saml.example", &entity_id, &acs_url, request_id)
+    };
+
+    // Not linked yet: the provider's say-so is not enough.
+    let start = json!({ "sign_in_name": "initech" });
+    let (location, set) = saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, answer("member-1"), None).await;
+    assert_eq!(location, format!("{ORIGIN}/login?sso_error=not_linked"));
+    assert!(cookie_value(&set, "refresh_token").is_empty());
+
+    // The member links while signed in, then SAML signs them in to this workspace.
+    let login = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "member@saml.example", "password": "a-long-enough-password" })),
+        None,
+        None,
+    )
+    .await;
+    let account_token = token(&login);
+    let (location, _) = saml_round_trip(
+        &h,
+        "/api/v1/auth/sso/link",
+        json!({ "organization_id": org }),
+        Some(&account_token),
+        answer("member-1"),
+        None,
+    )
+    .await;
+    assert_eq!(location, format!("{ORIGIN}/settings/security?sso=linked"));
+    let (_, _, _, links) = raw(&h.app, Method::GET, "/api/v1/auth/sso/links", None, Some(&account_token), "").await;
+    assert_eq!(links["items"][0]["email"], "person@saml.example", "{links}");
+
+    let (location, set) = saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, answer("member-1"), None).await;
+    assert_eq!(location, format!("{ORIGIN}/sso/complete?workspace={org}"));
+    let refresh = cookie_value(&set, "refresh_token");
+    let refreshed =
+        call(&h.app, Method::POST, "/api/v1/auth/token/refresh", Some(json!({ "organization_id": org })), None, Some(&refresh))
+            .await;
+    assert_eq!(refreshed.body["organization"]["id"], org.to_string(), "{}", refreshed.body);
+
+    // Someone else at the provider is not this member.
+    let (location, _) = saml_round_trip(&h, "/api/v1/auth/sso/start", start, None, answer("member-2"), None).await;
+    assert_eq!(location, format!("{ORIGIN}/login?sso_error=not_linked"));
+
+    // Removing the connection drops its links.
+    let (status, ..) = raw(&h.app, Method::DELETE, "/api/v1/auth/sso/connection", None, Some(&owner), "").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, _, links) = raw(&h.app, Method::GET, "/api/v1/auth/sso/links", None, Some(&account_token), "").await;
+    assert_eq!(links["items"], json!([]), "{links}");
+}
+
+#[tokio::test]
+async fn saml_responses_are_checked_and_tied_to_the_browser_and_request() {
+    let h = harness().await;
+    let idp = fake_saml::FakeSamlIdp::new();
+    let (org, tenant, _) = saml_workspace(&h, &idp, "globex", "owner@globex.example").await;
+    let (other_org, ..) = saml_workspace(&h, &idp, "hooli", "owner@hooli.example").await;
+    member(&h, "member@globex.example", org, tenant, OrgRole::Member).await;
+    let login = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "member@globex.example", "password": "a-long-enough-password" })),
+        None,
+        None,
+    )
+    .await;
+    let account_token = token(&login);
+    let (entity_id, acs_url) = saml_sp(org);
+    let good = |request_id: &str| idp.respond("m", "m@globex.example", &entity_id, &acs_url, request_id);
+    let (location, _) =
+        saml_round_trip(&h, "/api/v1/auth/sso/link", json!({ "organization_id": org }), Some(&account_token), good, None).await;
+    assert_eq!(location, format!("{ORIGIN}/settings/security?sso=linked"));
+
+    let start = json!({ "sign_in_name": "globex" });
+    let provider = format!("{ORIGIN}/login?sso_error=provider");
+    let expired = format!("{ORIGIN}/login?sso_error=expired");
+
+    // Signed with another key.
+    let forger = fake_saml::FakeSamlIdp::new();
+    let forged = |id: &str| forger.respond("m", "m@globex.example", &entity_id, &acs_url, id);
+    assert_eq!(saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, forged, None).await.0, provider);
+
+    // Tampered after signing.
+    let tampered = |id: &str| {
+        let xml = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(good(id)).unwrap()).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(xml.replace(">m<", ">someone-else<"))
+    };
+    assert_eq!(saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, tampered, None).await.0, provider);
+
+    // Answering another request, or made for another workspace (audience).
+    let other_request = |_: &str| idp.respond("m", "m@globex.example", &entity_id, &acs_url, "_another-request");
+    assert_eq!(saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, other_request, None).await.0, provider);
+    let (other_entity, _) = saml_sp(other_org);
+    let elsewhere = |id: &str| idp.respond("m", "m@globex.example", &other_entity, &acs_url, id);
+    assert_eq!(saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, elsewhere, None).await.0, provider);
+
+    // Login CSRF: a valid response, continued in a browser that did not start the sign-in.
+    assert_eq!(saml_round_trip(&h, "/api/v1/auth/sso/start", start.clone(), None, good, Some("not-the-cookie")).await.0, expired);
+
+    // Unsolicited (no RelayState), and replayed responses.
+    let response = idp.respond("m", "m@globex.example", &entity_id, &acs_url, "_unsolicited");
+    assert_eq!(form_post(&h.app, "/api/v1/auth/sso/saml/acs", &[("SAMLResponse", &response)]).await.1, expired);
+    let (_, _, set, started) = raw(&h.app, Method::POST, "/api/v1/auth/sso/start", Some(start.clone()), None, "").await;
+    let received = fake_saml::FakeSamlIdp::receive(started["authorization_url"].as_str().unwrap());
+    let response = good(&received.request_id);
+    let fields = [("SAMLResponse", response.as_str()), ("RelayState", received.relay_state.as_str())];
+    let (_, next) = form_post(&h.app, "/api/v1/auth/sso/saml/acs", &fields).await;
+    assert!(next.contains("/sso/saml/continue?"), "{next}");
+    // A second POST for the same sign-in is not taken.
+    assert_eq!(form_post(&h.app, "/api/v1/auth/sso/saml/acs", &fields).await.1, expired);
+    // The OIDC callback does not take a SAML sign-in.
+    let cookie = format!("sso_state={}", cookie_value(&set, "sso_state"));
+    let (_, location, ..) = raw(
+        &h.app,
+        Method::GET,
+        &format!("/api/v1/auth/sso/callback?state={}&code=x", received.relay_state),
+        None,
+        None,
+        &cookie,
+    )
+    .await;
+    assert_eq!(location, expired);
+    let (_, location, set, _) = raw(&h.app, Method::GET, next.strip_prefix(ORIGIN).unwrap(), None, None, &cookie).await;
+    assert_eq!(location, format!("{ORIGIN}/sso/complete?workspace={org}"));
+    assert!(!cookie_value(&set, "refresh_token").is_empty());
+    // Once used, the same response cannot be posted again.
+    assert_eq!(form_post(&h.app, "/api/v1/auth/sso/saml/acs", &fields).await.1, expired);
+    let (_, location, ..) = raw(&h.app, Method::GET, next.strip_prefix(ORIGIN).unwrap(), None, None, &cookie).await;
+    assert_eq!(location, expired);
+}

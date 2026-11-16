@@ -60,7 +60,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | GET | `/mfa` | two-step verification status, recovery codes left | ✅ |
 | POST | `/mfa/totp/setup`, `/mfa/totp/confirm` | start (password) / finish (code) set-up; finishing returns recovery codes once | ✅ |
 | POST | `/mfa/recovery-codes`, `/mfa/totp/disable` | new recovery codes / turn off (password and a code) | ✅ |
-| … | `/passkeys/*`, `/api-tokens`, `/sso/*` (OIDC; built), SAML | Phase 6 | ◐ |
+| … | `/passkeys/*`, `/api-tokens`, `/sso/*` (OIDC and SAML; built: `sso/saml/{organization_id}` serves the workspace's SP metadata, `sso/saml/acs` takes the provider's POST, `sso/saml/continue` finishes in the browser that started) | Phase 6 | ✅ |
 
 ### Organizations & users — `/api/v1`
 | Method | Path | Purpose | |

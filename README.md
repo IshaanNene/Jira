@@ -126,7 +126,8 @@ Charts can be shared, resized and reordered, and each one has a table view.
 <td valign="top">
 
 ### 🔐 Identity and access
-- Accounts with lockout and two-step verification (TOTP plus recovery codes).
+- Accounts with lockout and two-step verification (TOTP plus recovery codes), and passkeys.
+- Single sign-on per workspace with OpenID Connect or SAML 2.0, and SCIM provisioning.
 - Refresh-token rotation with reuse detection, and session management.
 - Organisation roles and per-project role bindings, checked against local policy snapshots.
 
@@ -240,7 +241,10 @@ All nine records are in [`docs/adrs`](docs/adrs).
 ## Quick start
 
 > [!TIP]
-> You need Docker (with Compose), Rust stable, Node 22+, pnpm 10+ and `protoc`. Keep the checkout
+> You need Docker (with Compose), Rust stable, Node 22+, pnpm 10+, `protoc`, `cmake`, `pkg-config`, OpenSSL 3,
+> libxml2 and xmlsec1 (SAML signatures). On macOS: `brew install protobuf cmake pkg-config openssl@3 libxmlsec1 libxslt`
+> (the Makefile points the build at them); on Debian/Ubuntu: `apt install protobuf-compiler cmake pkg-config
+> libssl-dev libclang-dev libxml2-dev libxmlsec1-dev libcurl4-openssl-dev`. Keep the checkout
 > **outside** iCloud-synced folders such as the Desktop, because evicted files make local logs and caches hang.
 
 ```bash
@@ -369,7 +373,7 @@ a capacity claim. The full results, including what the test found, are in the
 | 3 | Workflow engine and visual designer | ✅ |
 | 4 | Boards, backlog, sprints, reports | ✅ |
 | 5 | Kafka pipeline, search, live updates, notifications | ✅ |
-| 6 | MQL, audit log and two-step verification done; SSO, SCIM, admin console and automation still to do | 🚧 |
+| 6 | MQL, audit log, two-step verification, passkeys, SSO (OIDC and SAML), SCIM users, admin console, automation rules and webhooks done; SCIM groups and integrations still to do | 🚧 |
 | 7 | ClickHouse pipeline and dashboards | ✅ |
 | 8 | Images, Helm, CI, observability, load and failure tests done; Terraform never applied, no Argo CD | 🚧 |
 

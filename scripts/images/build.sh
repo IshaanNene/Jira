@@ -12,7 +12,10 @@ SERVICES=(tenant identity user permission project workflow issue agile realtime 
 for s in "${SERVICES[@]}"; do
   image="${PREFIX}/${s}-service:${TAG}"
   echo "==> ${image}"
-  docker build -q --pull -f infrastructure/docker/service.Dockerfile --build-arg SERVICE="${s}-service" -t "${image}" .
+  runtime=plain
+  [ "${s}" = identity ] && runtime=xmlsec  # SAML: needs libxmlsec1 (see the Dockerfile)
+  docker build -q --pull -f infrastructure/docker/service.Dockerfile \
+    --build-arg SERVICE="${s}-service" --build-arg RUNTIME="${runtime}" -t "${image}" .
   if docker run --rm --network none "${image}" 2>&1 | grep -E "error while loading shared libraries|exec format error|no such file"; then
     echo "!! ${image} does not start" >&2; exit 1
   fi
