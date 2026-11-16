@@ -107,8 +107,10 @@ poll -> validate envelope -> BEGIN
 - **Replay**: reset a consumer group's offsets. A DLQ re-drive tool is specified but not built.
   Projections (search, analytics, read models) are rebuildable from offset 0 or from the owning service's
   gRPC stream when the topic has been compacted/expired.
-- **Loop prevention** for automation: the envelope's causation chain depth is carried in a header; automation
-  refuses to act on events whose chain already contains the same rule or exceeds depth 5.
+- **Loop prevention** for automation: automation runs inside issue-service, not as an event consumer, and
+  changes made by rules never trigger rules, so no chain can form (ARCHITECTURE.md §7). If automation later
+  consumes events, the envelope's causation chain depth would be carried in a header and acting on events whose
+  chain already contains the same rule, or exceeds depth 5, refused.
 
 ## 5. Schema evolution
 

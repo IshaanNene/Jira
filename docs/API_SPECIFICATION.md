@@ -102,7 +102,7 @@ Stable `code` values: `unauthenticated`, `forbidden`, `not_found`, `validation_f
 | Search 🚧 | built: `GET /search/issues?q&project_id&status_category&assignee&limit&cursor` (text search, structured highlights); `GET /search/issues/query?mql&limit&cursor` (MQL; 422 with `errors[0].span` for an invalid query). Not built: `/filters`, `/filters/{id}/subscriptions` |
 | Notifications ✅ | `/notifications` (`?unread=true`), `/notifications/unread-count`, `/notifications/{id}/read`, `/notifications/read-all`, `/notifications/preferences` (GET/PUT email choices), `/notifications/unsubscribe?token=` (public, GET describes / POST turns off; RFC 8058) |
 | Realtime ✅ | `GET /rt/stream?channel=project:{id}\|user:{id}\|org` (Server-Sent Events: `ready`, `change`, `resync`, `expired`, `denied`; resume with `Last-Event-ID`) |
-| Automation | `/automation/rules`, `/automation/rules/{id}/executions` |
+| Automation ✅ | `/automation-rules?project=` (GET, POST), `/automation-rules/{id}` (PUT with `If-Match`, DELETE), `/automation-rules/{id}/runs` (latest 100); project administrators only |
 | Integrations | `/integrations`, `/webhooks`, `/webhooks/{id}/deliveries`, `/hooks/{provider}` (inbound) |
 | Analytics ✅ | `/dashboards` (GET, POST), `/dashboards/{id}` (GET, PATCH name / description / shared / `widget_order`, DELETE), `/dashboards/{id}/widgets` (POST), `/dashboards/{id}/widgets/{widget_id}` (PATCH, DELETE), `POST /analytics/query` (a widget query → its numbers; 503 when ClickHouse is down) |
 | Jobs | `/imports`, `/exports`, `/jobs/{id}` |

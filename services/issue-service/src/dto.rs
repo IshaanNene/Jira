@@ -224,11 +224,20 @@ pub struct CommentDto {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub edited_at: Option<OffsetDateTime>,
+    /// The automation rule that posted this comment on the author's behalf, if one did.
+    pub rule_name: Option<String>,
 }
 
 impl From<Comment> for CommentDto {
     fn from(c: Comment) -> Self {
-        Self { id: c.id, author_id: c.author_id, body: c.body, created_at: c.created_at, edited_at: c.edited_at }
+        Self {
+            id: c.id,
+            author_id: c.author_id,
+            body: c.body,
+            created_at: c.created_at,
+            edited_at: c.edited_at,
+            rule_name: c.rule_name,
+        }
     }
 }
 

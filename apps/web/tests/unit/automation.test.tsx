@@ -18,6 +18,8 @@ const rule = (overrides: Partial<AutomationRule> = {}): AutomationRule => ({
   enabled: true,
   version: 3,
   created_by: USER_ID,
+  actor_id: USER_ID,
+  next_run_at: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
   definition: {
@@ -47,6 +49,54 @@ describe("automation rules", () => {
         names,
       ),
     ).toBe("When an issue moves to In Review: add labels qa, web, assign to Ada Lovelace.");
+    expect(
+      describeRule(
+        {
+          trigger: { type: "scheduled", frequency: "weekly", hour: 9, weekday: 1 },
+          conditions: { statuses: ["in_review"], untouched_days: 7 },
+          actions: [{ type: "transition", to_status: "in_review" }, { type: "add_comment", body: "Is this still needed?\nPlease update it or close it." }],
+        },
+        names,
+      ),
+    ).toBe("Every Monday at 09:00 UTC, for issues where status is In Review and unchanged for 7 days: move to In Review, comment “Is this still needed? Please update it…”.");
+    expect(describeRule({ trigger: { type: "scheduled", frequency: "daily", hour: 17 }, actions: [{ type: "add_labels", labels: ["x"] }] }, names)).toBe(
+      "Every day at 17:00 UTC, for every issue: add label x.",
+    );
+  });
+
+  it("shows who a scheduled rule runs as and edits its comment and staleness", async () => {
+    signIn();
+    const scheduled = rule({
+      id: "r3",
+      name: "Nudge",
+      next_run_at: "2026-11-17T09:00:00Z",
+      definition: {
+        trigger: { type: "scheduled", frequency: "daily", hour: 9 },
+        conditions: { statuses: ["todo"], untouched_days: 7 },
+        actions: [{ type: "add_comment", body: "Still needed?" }],
+      },
+    });
+    const api = fakeApi(routes([scheduled], { "PUT /api/v1/automation-rules/r3": rule({ id: "r3", version: 4 }) }));
+    show();
+    const list = await screen.findByRole("list", { name: "Automation rules" });
+    expect(within(list).getByText(/Runs as .* next run/)).toBeInTheDocument();
+    await userEvent.click(within(list).getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit rule" });
+    const comment = within(dialog).getByLabelText("Action 1 comment");
+    await userEvent.clear(comment);
+    await userEvent.type(comment, "Please update or close this.");
+    const days = within(dialog).getByLabelText("Unchanged for at least (days)");
+    await userEvent.clear(days);
+    await userEvent.type(days, "14");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save rule" }));
+    await vi.waitFor(() => expect(api.sent("PUT", "/api/v1/automation-rules/r3")).toHaveLength(1));
+    expect(api.sent("PUT", "/api/v1/automation-rules/r3")[0]!.body).toMatchObject({
+      definition: {
+        trigger: { type: "scheduled", frequency: "daily", hour: 9 },
+        conditions: { statuses: ["todo"], untouched_days: 14 },
+        actions: [{ type: "add_comment", body: "Please update or close this." }],
+      },
+    });
   });
 
   it("lists the project's rules and turns one off with the version it was based on", async () => {
@@ -81,7 +131,7 @@ describe("automation rules", () => {
       enabled: true,
       definition: {
         trigger: { type: "issue_created" },
-        conditions: { issue_types: [], priorities: [], labels_any: ["Customer", "outage"] },
+        conditions: { issue_types: [], priorities: [], labels_any: ["Customer", "outage"], statuses: [] },
         actions: [{ type: "set_priority", priority: "high" }, { type: "add_labels", labels: ["escalated"] }],
       },
     });
@@ -110,6 +160,7 @@ describe("automation rules", () => {
         items: [
           { id: "x1", issue_id: "i1", issue_key: "PAY-7", actor_id: USER_ID, outcome: "failed", detail: "The person to assign is no longer a member of this workspace.", created_at: "2026-01-01T00:00:00Z" },
           { id: "x2", issue_id: "i2", issue_key: "PAY-6", actor_id: USER_ID, outcome: "applied", detail: null, created_at: "2026-01-01T00:00:00Z" },
+          { id: "x3", issue_id: null, issue_key: null, actor_id: USER_ID, outcome: "failed", detail: "The person this rule runs as no longer administers this project.", created_at: "2026-01-01T00:00:00Z" },
         ],
       },
     }));
@@ -117,8 +168,9 @@ describe("automation rules", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Recent runs of Triage bugs" }));
     const runs = await screen.findByRole("list", { name: "Runs" });
     expect(within(runs).getByRole("link", { name: "PAY-7" })).toHaveAttribute("href", "/projects/PAY/issues/PAY-7");
-    expect(within(runs).getByText("Skipped")).toBeInTheDocument();
+    expect(within(runs).getAllByText("Skipped")).toHaveLength(2);
     expect(within(runs).getByText(/no longer a member/)).toBeInTheDocument();
     expect(within(runs).getByText("Applied")).toBeInTheDocument();
+    expect(within(runs).getByText("Didn't start")).toBeInTheDocument();
   });
 });

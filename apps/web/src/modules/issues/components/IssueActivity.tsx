@@ -98,6 +98,7 @@ function CommentItem({ issueKey, comment, canModerate }: { issueKey: string; com
         <header className="flex items-baseline gap-2 text-sm">
           <span className="font-semibold text-ink">{author}</span>
           <time className="text-ink-subtle" dateTime={comment.created_at} title={formatDateTime(comment.created_at)}>{formatRelative(comment.created_at)}</time>
+          {comment.rule_name && <span className="text-ink-subtle">· via automation rule “{comment.rule_name}”</span>}
           {comment.edited_at && <span className="text-ink-subtle">· Edited</span>}
         </header>
         {editing ? (

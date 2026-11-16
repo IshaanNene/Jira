@@ -9,10 +9,13 @@ use std::{
 
 use api_contracts::{
     project::v1::{projects_client::ProjectsClient, GetProjectRequest},
-    user::v1::{membership_client::MembershipClient, CheckMembershipRequest},
+    user::v1::{membership_client::MembershipClient, CheckMembershipRequest, GetMembersRequest},
 };
 use async_trait::async_trait;
-use auth_middleware::service_auth::{lazy_channel, ServiceClientAuth};
+use auth_middleware::{
+    service_auth::{lazy_channel, ServiceClientAuth},
+    OrgRole,
+};
 use error_handling::{from_status, ApiError, ApiResult};
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 use uuid::Uuid;
@@ -32,6 +35,9 @@ pub trait Directory: Send + Sync {
     /// when a cached answer says a component or version does not exist (it may be new).
     async fn project(&self, tenant_id: Uuid, key: &str, fresh: bool) -> ApiResult<ProjectInfo>;
     async fn is_org_member(&self, user_id: Uuid, organization_id: Uuid) -> ApiResult<bool>;
+    /// The person's workspace role while they are an active member; `None` otherwise.
+    /// Scheduled automation runs as a rule's owner with this role.
+    async fn active_role(&self, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Option<OrgRole>>;
 }
 
 type Authed = InterceptedService<Channel, ServiceClientAuth>;
@@ -104,5 +110,15 @@ impl Directory for GrpcDirectory {
         let reply =
             self.membership.clone().check_membership(req).await.map_err(|s| from_status(&s, "user-service"))?.into_inner();
         Ok(reply.is_member && reply.status == "active")
+    }
+
+    async fn active_role(&self, tenant_id: Uuid, user_id: Uuid) -> ApiResult<Option<OrgRole>> {
+        let req = GetMembersRequest { tenant_id: tenant_id.to_string(), user_ids: vec![user_id.to_string()] };
+        let reply = self.membership.clone().get_members(req).await.map_err(|s| from_status(&s, "user-service"))?.into_inner();
+        Ok(reply
+            .members
+            .into_iter()
+            .find(|m| m.user_id == user_id.to_string() && m.status == "active")
+            .and_then(|m| OrgRole::parse(&m.org_role)))
     }
 }

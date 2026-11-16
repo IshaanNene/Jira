@@ -142,11 +142,18 @@ pub async fn issue_by_key(
 }
 
 pub async fn issue_by_id(conn: &mut PgConnection, tenant_id: Uuid, id: Uuid) -> ApiResult<Option<Issue>> {
-    Ok(sqlx::query_as::<_, Issue>(&format!("SELECT {ISSUE} WHERE i.tenant_id = $1 AND i.id = $2 AND i.deleted_at IS NULL"))
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_optional(conn)
-        .await?)
+    issue_by_id_for(conn, tenant_id, id, false).await
+}
+
+pub async fn issue_by_id_for(conn: &mut PgConnection, tenant_id: Uuid, id: Uuid, lock: bool) -> ApiResult<Option<Issue>> {
+    let suffix = if lock { " FOR UPDATE OF i" } else { "" };
+    Ok(sqlx::query_as::<_, Issue>(&format!(
+        "SELECT {ISSUE} WHERE i.tenant_id = $1 AND i.id = $2 AND i.deleted_at IS NULL{suffix}"
+    ))
+    .bind(tenant_id)
+    .bind(id)
+    .fetch_optional(conn)
+    .await?)
 }
 
 /// Persist every mutable column of `issue` and advance its version. The caller holds the
@@ -372,9 +379,11 @@ pub struct Comment {
     pub body: Value,
     pub created_at: OffsetDateTime,
     pub edited_at: Option<OffsetDateTime>,
+    /// Set when an automation rule posted the comment (as `author_id`).
+    pub rule_name: Option<String>,
 }
 
-const COMMENT: &str = "id, issue_id, author_id, body, created_at, edited_at";
+const COMMENT: &str = "id, issue_id, author_id, body, created_at, edited_at, rule_name";
 
 pub async fn comments(conn: &mut PgConnection, tenant_id: Uuid, issue_id: Uuid) -> ApiResult<Vec<Comment>> {
     Ok(sqlx::query_as(&format!(
@@ -392,15 +401,17 @@ pub async fn insert_comment(
     issue_id: Uuid,
     author: Uuid,
     body: &Value,
+    rule_name: Option<&str>,
 ) -> ApiResult<Comment> {
     Ok(sqlx::query_as(&format!(
-        "INSERT INTO comments (id, tenant_id, issue_id, author_id, body) VALUES ($1, $2, $3, $4, $5) RETURNING {COMMENT}"
+        "INSERT INTO comments (id, tenant_id, issue_id, author_id, body, rule_name) VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COMMENT}"
     ))
     .bind(platform_common::new_id())
     .bind(tenant_id)
     .bind(issue_id)
     .bind(author)
     .bind(body)
+    .bind(rule_name)
     .fetch_one(conn)
     .await?)
 }

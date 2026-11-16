@@ -17,18 +17,30 @@ import {
   MultiSelect,
   Select,
   Skeleton,
+  Textarea,
   toast,
 } from "@/components/ui";
 import { useIssueMeta, useProjectStatuses } from "@/modules/issues";
 import { useUserDirectory } from "@/modules/organizations";
 import { ApiError, errorMessage, type AutomationAction, type AutomationRule, type AutomationRuleDefinition } from "@/services/api";
-import { formatRelative, titleCase } from "@/utils/format";
+import { formatDateTime, formatRelative, titleCase } from "@/utils/format";
 
 import { useAutomationMutations, useAutomationRules, useAutomationRuns, type RuleInput } from "../api";
-import { describeRule, type Names } from "../describe";
+import { describeRule, utcHour, WEEKDAYS, type Names } from "../describe";
 
 const MAX_ACTIONS = 5;
+const MAX_COMMENT = 2000;
 const ANY_STATUS = "__any__";
+type Trigger = AutomationRuleDefinition["trigger"];
+const HOURS = Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: utcHour(h) }));
+const DAYS = WEEKDAYS.map((d, i) => ({ value: String(i + 1), label: d }));
+const ACTION_TYPES = [
+  { value: "assign", label: "Assign" },
+  { value: "set_priority", label: "Set priority" },
+  { value: "add_labels", label: "Add labels" },
+  { value: "transition", label: "Move to status" },
+  { value: "add_comment", label: "Add comment" },
+];
 
 function useNames(projectId: string): Names & { statuses: { key: string; name: string }[]; types: { key: string; name: string }[] } {
   const statuses = useProjectStatuses(projectId);
@@ -47,7 +59,7 @@ function useNames(projectId: string): Names & { statuses: { key: string; name: s
   }, [statuses.data, meta.data, byId]);
 }
 
-/** Project settings → Automation: declarative rules that act on issues as they are created or moved. */
+/** Project settings → Automation: declarative rules that act on issues as they are created or moved, or on a schedule. */
 export function AutomationSettings({ projectKey, projectId }: { projectKey: string; projectId: string }) {
   const rules = useAutomationRules(projectKey);
   const { update, remove } = useAutomationMutations(projectKey);
@@ -65,7 +77,7 @@ export function AutomationSettings({ projectKey, projectId }: { projectKey: stri
     <Card>
       <CardHeader
         title="Automation"
-        description="Rules that act on issues for you as they are created or change status. They run as the person who made the change, in the same step."
+        description="Rules that act on issues for you as they are created or change status, or on a schedule. They run as the person who made the change, in the same step; scheduled rules run as the administrator who last saved them. Changes made by rules never trigger other rules."
         actions={<Button variant="primary" onClick={() => setEditing("new")} disabled={(rules.data?.length ?? 0) >= 50}><Plus className="h-4 w-4" aria-hidden /> New rule</Button>}
       />
       {rules.isPending ? (
@@ -88,6 +100,12 @@ export function AutomationSettings({ projectKey, projectId }: { projectKey: stri
                   {!rule.enabled && <Badge>Off</Badge>}
                 </div>
                 <p className="mt-0.5 text-sm text-ink-muted">{describeRule(rule.definition, names)}</p>
+                {rule.definition.trigger.type === "scheduled" && (
+                  <p className="mt-0.5 text-xs text-ink-subtle">
+                    Runs as {names.person(rule.actor_id)}
+                    {rule.next_run_at ? ` · next run ${formatDateTime(rule.next_run_at)}` : ""}
+                  </p>
+                )}
               </div>
               <label className="flex items-center gap-2 text-sm text-ink-muted">
                 <input type="checkbox" role="switch" checked={rule.enabled} onChange={() => toggle(rule)} aria-label={`${rule.name} enabled`} className="h-4 w-4 accent-[hsl(var(--accent))]" />
@@ -119,14 +137,29 @@ export function AutomationSettings({ projectKey, projectId }: { projectKey: stri
 
 const BLANK: AutomationRuleDefinition = {
   trigger: { type: "issue_created" },
-  conditions: { issue_types: [], priorities: [], labels_any: [] },
+  conditions: { issue_types: [], priorities: [], labels_any: [], statuses: [] },
   actions: [{ type: "set_priority", priority: "high" }],
 };
 
-function defaultAction(type: AutomationAction["type"]): AutomationAction {
-  if (type === "assign") return { type, assignee: { kind: "reporter" } };
-  if (type === "set_priority") return { type, priority: "high" };
-  return { type, labels: [] };
+function defaultAction(type: AutomationAction["type"], firstStatus: string): AutomationAction {
+  switch (type) {
+    case "assign":
+      return { type, assignee: { kind: "reporter" } };
+    case "set_priority":
+      return { type, priority: "high" };
+    case "transition":
+      return { type, to_status: firstStatus };
+    case "add_comment":
+      return { type, body: "" };
+    case "add_labels":
+      return { type, labels: [] };
+  }
+}
+
+function defaultTrigger(type: Trigger["type"]): Trigger {
+  if (type === "scheduled") return { type, frequency: "daily", hour: 9 };
+  if (type === "issue_transitioned") return { type };
+  return { type: "issue_created" };
 }
 
 const splitLabels = (text: string) => text.split(/[\s,]+/).map((l) => l.trim()).filter(Boolean);
@@ -143,9 +176,18 @@ function RuleDialog({ projectKey, names, rule, onClose }: { projectKey: string; 
   const priorities = (meta.data?.priorities ?? ["highest", "high", "medium", "low", "lowest"]).map((p) => ({ value: p, label: titleCase(p) }));
   const people = members.filter((m) => m.status === "active").map((m) => ({ value: m.user_id, label: m.display_name }));
 
-  const trigger = def.trigger.type === "issue_created" ? "issue_created" : "issue_transitioned";
-  const toStatus = def.trigger.type === "issue_transitioned" ? (def.trigger.to_status ?? ANY_STATUS) : ANY_STATUS;
+  const trigger = def.trigger;
+  const toStatus = trigger.type === "issue_transitioned" ? (trigger.to_status ?? ANY_STATUS) : ANY_STATUS;
+  const statusOptions = names.statuses.map((s) => ({ value: s.key, label: s.name }));
   const setAction = (i: number, action: AutomationAction) => setDef({ ...def, actions: def.actions.map((a, j) => (j === i ? action : a)) });
+  const setTrigger = (next: Trigger) =>
+    setDef({
+      ...def,
+      trigger: next,
+      // Only a scheduled rule can look for issues nobody has changed.
+      conditions: next.type === "scheduled" ? def.conditions : { ...def.conditions, untouched_days: null },
+    });
+  const untouched = def.conditions?.untouched_days;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -173,19 +215,44 @@ function RuleDialog({ projectKey, names, rule, onClose }: { projectKey: string; 
             <div className="grid gap-2 sm:grid-cols-2">
               <Select
                 aria-label="Trigger"
-                value={trigger}
-                onValueChange={(v) => setDef({ ...def, trigger: v === "issue_created" ? { type: "issue_created" } : { type: "issue_transitioned" } })}
-                options={[{ value: "issue_created", label: "An issue is created" }, { value: "issue_transitioned", label: "An issue changes status" }]}
+                value={trigger.type}
+                onValueChange={(v) => setTrigger(defaultTrigger(v as Trigger["type"]))}
+                options={[
+                  { value: "issue_created", label: "An issue is created" },
+                  { value: "issue_transitioned", label: "An issue changes status" },
+                  { value: "scheduled", label: "On a schedule" },
+                ]}
               />
-              {trigger === "issue_transitioned" && (
+              {trigger.type === "issue_transitioned" && (
                 <Select
                   aria-label="To status"
                   value={toStatus}
-                  onValueChange={(v) => setDef({ ...def, trigger: { type: "issue_transitioned", to_status: v === ANY_STATUS ? null : v } })}
+                  onValueChange={(v) => setTrigger({ type: "issue_transitioned", to_status: v === ANY_STATUS ? null : v })}
                   options={[{ value: ANY_STATUS, label: "To any status" }, ...names.statuses.map((s) => ({ value: s.key, label: `To ${s.name}` }))]}
                 />
               )}
+              {trigger.type === "scheduled" && (
+                <Select
+                  aria-label="Frequency"
+                  value={trigger.frequency}
+                  onValueChange={(v) =>
+                    setTrigger(v === "weekly" ? { ...trigger, frequency: "weekly", weekday: trigger.weekday ?? 1 } : { type: "scheduled", frequency: "daily", hour: trigger.hour })
+                  }
+                  options={[{ value: "daily", label: "Every day" }, { value: "weekly", label: "Every week" }]}
+                />
+              )}
+              {trigger.type === "scheduled" && trigger.frequency === "weekly" && (
+                <Select aria-label="Day" value={String(trigger.weekday ?? 1)} onValueChange={(v) => setTrigger({ ...trigger, weekday: Number(v) })} options={DAYS} />
+              )}
+              {trigger.type === "scheduled" && (
+                <Select aria-label="Time" value={String(trigger.hour)} onValueChange={(v) => setTrigger({ ...trigger, hour: Number(v) })} options={HOURS} />
+              )}
             </div>
+            {trigger.type === "scheduled" && (
+              <p className="text-xs text-ink-muted">
+                Each run looks at up to 100 of the project&apos;s issues that meet the conditions, least recently updated first, and acts as you.
+              </p>
+            )}
           </fieldset>
           <fieldset className="space-y-2">
             <legend className="text-sm font-semibold text-ink">If <span className="font-normal text-ink-muted">(all optional)</span></legend>
@@ -205,19 +272,39 @@ function RuleDialog({ projectKey, names, rule, onClose }: { projectKey: string; 
                 options={priorities}
               />
             </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <MultiSelect
+                aria-label="Statuses"
+                placeholder="Any status"
+                values={def.conditions?.statuses ?? []}
+                onChange={(v) => setDef({ ...def, conditions: { ...def.conditions, statuses: v } })}
+                options={statusOptions}
+              />
+              {trigger.type === "scheduled" && (
+                <Input
+                  type="number"
+                  min={1}
+                  max={365}
+                  aria-label="Unchanged for at least (days)"
+                  placeholder="Unchanged for at least … days"
+                  value={untouched ?? ""}
+                  onChange={(e) => setDef({ ...def, conditions: { ...def.conditions, untouched_days: e.target.value ? Number(e.target.value) : null } })}
+                />
+              )}
+            </div>
             <Input aria-label="Has any of these labels" placeholder="Has any of these labels (comma-separated)" value={labelText} onChange={(e) => setLabelText(e.target.value)} />
           </fieldset>
           <fieldset className="space-y-2">
             <legend className="text-sm font-semibold text-ink">Then</legend>
             <ol className="space-y-2">
               {def.actions.map((action, i) => (
-                <li key={i} className="flex gap-2">
+                <li key={i} className="flex items-start gap-2">
                   <Select
                     aria-label={`Action ${i + 1}`}
                     className="w-44 shrink-0"
                     value={action.type}
-                    onValueChange={(v) => setAction(i, defaultAction(v as AutomationAction["type"]))}
-                    options={[{ value: "assign", label: "Assign" }, { value: "set_priority", label: "Set priority" }, { value: "add_labels", label: "Add labels" }]}
+                    onValueChange={(v) => setAction(i, defaultAction(v as AutomationAction["type"], names.statuses[0]?.key ?? "done"))}
+                    options={ACTION_TYPES}
                   />
                   {action.type === "assign" && (
                     <Select
@@ -231,6 +318,18 @@ function RuleDialog({ projectKey, names, rule, onClose }: { projectKey: string; 
                   )}
                   {action.type === "set_priority" && (
                     <Select aria-label={`Action ${i + 1} priority`} value={action.priority} onValueChange={(v) => setAction(i, { type: "set_priority", priority: v })} options={priorities} />
+                  )}
+                  {action.type === "transition" && (
+                    <Select aria-label={`Action ${i + 1} status`} value={action.to_status} onValueChange={(v) => setAction(i, { type: "transition", to_status: v })} options={statusOptions} />
+                  )}
+                  {action.type === "add_comment" && (
+                    <Textarea
+                      aria-label={`Action ${i + 1} comment`}
+                      placeholder="Plain text, posted as a comment naming this rule"
+                      maxLength={MAX_COMMENT}
+                      value={action.body}
+                      onChange={(e) => setAction(i, { type: "add_comment", body: e.target.value })}
+                    />
                   )}
                   {action.type === "add_labels" && (
                     <Input
@@ -262,7 +361,7 @@ function RuleDialog({ projectKey, names, rule, onClose }: { projectKey: string; 
                 size="sm"
                 variant="ghost"
                 onClick={() => {
-                  setDef({ ...def, actions: [...def.actions, defaultAction("add_labels")] });
+                  setDef({ ...def, actions: [...def.actions, defaultAction("add_labels", "")] });
                   setActionLabels([...actionLabels, ""]);
                 }}
               >
@@ -305,7 +404,11 @@ function RunsDialog({ projectKey, rule, onClose }: { projectKey: string; rule: A
               return (
                 <li key={run.id} className="py-2 text-sm">
                   <div className="flex items-center gap-2">
-                    <Link to={`/projects/${projectKey}/issues/${run.issue_key}`} className="font-medium text-accent hover:underline">{run.issue_key}</Link>
+                    {run.issue_key ? (
+                      <Link to={`/projects/${projectKey}/issues/${run.issue_key}`} className="font-medium text-accent hover:underline">{run.issue_key}</Link>
+                    ) : (
+                      <span className="font-medium text-ink">Didn&apos;t start</span>
+                    )}
                     <Badge tone={outcome.tone}>{outcome.label}</Badge>
                     <span className="ml-auto text-xs text-ink-subtle">{formatRelative(run.created_at)}</span>
                   </div>

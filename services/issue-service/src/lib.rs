@@ -86,6 +86,8 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
 
+    automation::spawn_scheduler(state.clone(), db.pools());
+
     let health_db = Arc::clone(&db);
     let health = server::health_router(move || {
         let db = Arc::clone(&health_db);

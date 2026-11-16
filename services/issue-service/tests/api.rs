@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use auth_middleware::{PolicyClient, PolicySnapshot, PolicySource, ProjectRole, RedisHandle};
+use auth_middleware::{OrgRole, PolicyClient, PolicySnapshot, PolicySource, ProjectRole, RedisHandle};
 use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
@@ -12,6 +12,7 @@ use axum::{
 };
 use error_handling::{ApiError, ApiResult};
 use issue_service::{
+    automation::{self, ScheduledRun},
     directory::{Directory, ProjectInfo},
     http,
     workflows::{Evaluation, IssueFacts, PostFunction, Scope, StatusInfo, TransitionOption, WorkflowInfo, Workflows},
@@ -84,6 +85,9 @@ impl Directory for World {
     async fn is_org_member(&self, user_id: Uuid, _organization_id: Uuid) -> ApiResult<bool> {
         Ok(self.org_members.lock().unwrap().contains(&user_id))
     }
+    async fn active_role(&self, _tenant_id: Uuid, user_id: Uuid) -> ApiResult<Option<OrgRole>> {
+        Ok(self.org_members.lock().unwrap().contains(&user_id).then_some(OrgRole::Member))
+    }
 }
 
 #[async_trait]
@@ -103,6 +107,7 @@ struct Harness {
     app: Router,
     auth: TestAuth,
     world: Arc<World>,
+    state: AppState,
     tenant: Uuid,
     org: Uuid,
 }
@@ -127,7 +132,7 @@ async fn harness() -> Harness {
         blobs: Arc::new(object_store::memory::InMemory::new()),
         allowed_origins: Arc::new(vec![]),
     };
-    Harness { db, router, app: http::router(state), auth, world, tenant: Uuid::now_v7(), org: Uuid::now_v7() }
+    Harness { db, router, app: http::router(state.clone()), auth, world, state, tenant: Uuid::now_v7(), org: Uuid::now_v7() }
 }
 
 impl Harness {
@@ -921,6 +926,155 @@ async fn automation_rules() {
 }
 
 #[tokio::test]
+async fn automation_moves_comments_and_runs_on_a_schedule() {
+    let h = harness().await;
+    let pay = h.project("PAY");
+    let (admin_id, admin) = h.user(&[(pay, ProjectRole::Administrator)]);
+    let (_, member) = h.user(&[(pay, ProjectRole::Member)]);
+    let rules = "/api/v1/automation-rules";
+    let add = |name: &str, definition: Value| {
+        let body = json!({ "project_key": "PAY", "name": name, "definition": definition });
+        let (h, admin) = (&h, admin.clone());
+        async move { h.call(Method::POST, rules, &admin, Some(body), None).await }
+    };
+    let count = |event: &'static str| {
+        let pool = h.db.owner.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox WHERE event_type = $1")
+                .bind(event)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // Changes made by rules never trigger rules: this one must not fire for a rule's move.
+    let shipped = add(
+        "Label shipped",
+        json!({ "trigger": { "type": "issue_transitioned", "to_status": "done" },
+        "actions": [{ "type": "add_labels", "labels": ["shipped"] }] }),
+    )
+    .await;
+    assert_eq!(shipped.status, StatusCode::CREATED);
+    let close = add("Close duplicates", json!({ "trigger": { "type": "issue_created" }, "conditions": { "labels_any": ["duplicate"] },
+        "actions": [{ "type": "transition", "to_status": "done" }, { "type": "add_comment", "body": "Closed as a duplicate.\nReopen it if not." }] }))
+    .await;
+    assert_eq!(close.status, StatusCode::CREATED, "{}", close.body);
+    assert_eq!(close.body["next_run_at"], Value::Null);
+
+    let (moved_before, commented_before) = (count("issue.transitioned").await, count("comment.created").await);
+    let dup = h
+        .create(&member, json!({ "project_key": "PAY", "type": "task", "summary": "Same again", "labels": ["duplicate"] }))
+        .await;
+    assert_eq!(dup.status, StatusCode::CREATED, "{}", dup.body);
+    assert_eq!(
+        (dup.body["status"].as_str(), dup.body["resolution"].as_str(), dup.body["labels"].clone(), dup.body["version"].as_i64()),
+        (Some("done"), Some("done"), json!(["duplicate"]), Some(2))
+    );
+    let key = dup.body["key"].as_str().unwrap().to_owned();
+    let comments = h.call(Method::GET, &format!("/api/v1/issues/{key}/comments"), &member, None, None).await;
+    let comment = &comments.body["items"][0];
+    assert_eq!(comment["rule_name"], "Close duplicates");
+    assert_eq!(comment["body"]["content"][1]["content"][0]["text"], "Reopen it if not.");
+    assert_eq!((count("issue.transitioned").await, count("comment.created").await), (moved_before + 1, commented_before + 1));
+    let history = h.call(Method::GET, &format!("/api/v1/issues/{key}/history"), &member, None, None).await;
+    let change = &history.body["items"][0]["changes"][0];
+    assert_eq!(
+        (change["field"].as_str(), change["to"].as_str(), change["rule"].as_str()),
+        (Some("status"), Some("Done"), Some("Close duplicates"))
+    );
+
+    // The workflow decides; a move it refuses fails the whole rule, comment included.
+    h.world.denials.lock().unwrap().insert(("todo".into(), "done".into()), "Done needs a review first.".into());
+    let refused =
+        h.create(&member, json!({ "project_key": "PAY", "type": "task", "summary": "Again", "labels": ["duplicate"] })).await;
+    assert_eq!((refused.body["status"].as_str(), refused.body["version"].as_i64()), (Some("todo"), Some(1)));
+    let rkey = refused.body["key"].as_str().unwrap();
+    let none = h.call(Method::GET, &format!("/api/v1/issues/{rkey}/comments"), &member, None, None).await;
+    assert_eq!(none.body["items"].as_array().unwrap().len(), 0);
+    let close_id = close.body["id"].as_str().unwrap();
+    let runs = h.call(Method::GET, &format!("{rules}/{close_id}/runs"), &admin, None, None).await;
+    assert_eq!(
+        (runs.body["items"][0]["outcome"].as_str(), runs.body["items"][0]["detail"].as_str()),
+        (Some("failed"), Some("Done needs a review first."))
+    );
+    h.world.denials.lock().unwrap().clear();
+
+    // Validation: one move and one comment per rule, plain text, staleness only on a schedule.
+    for bad in [
+        json!({ "trigger": { "type": "issue_created" }, "actions": [{ "type": "transition", "to_status": "done" }, { "type": "transition", "to_status": "todo" }] }),
+        json!({ "trigger": { "type": "issue_created" }, "actions": [{ "type": "add_comment", "body": "   " }] }),
+        json!({ "trigger": { "type": "issue_created" }, "actions": [{ "type": "add_comment", "body": "x".repeat(2001) }] }),
+        json!({ "trigger": { "type": "issue_created" }, "conditions": { "untouched_days": 3 }, "actions": [{ "type": "add_labels", "labels": ["x"] }] }),
+        json!({ "trigger": { "type": "scheduled", "frequency": "weekly", "hour": 9 }, "actions": [{ "type": "add_labels", "labels": ["x"] }] }),
+        json!({ "trigger": { "type": "scheduled", "frequency": "daily", "hour": 24 }, "actions": [{ "type": "add_labels", "labels": ["x"] }] }),
+    ] {
+        assert_eq!(add("bad", bad.clone()).await.status, StatusCode::UNPROCESSABLE_ENTITY, "accepted {bad}");
+    }
+
+    // A scheduled rule: daily, for to-do issues nobody has touched for a week.
+    let stale = add(
+        "Nudge stale work",
+        json!({ "trigger": { "type": "scheduled", "frequency": "daily", "hour": 9 },
+        "conditions": { "statuses": ["todo"], "untouched_days": 7 },
+        "actions": [{ "type": "add_labels", "labels": ["stale"] }, { "type": "add_comment", "body": "Is this still needed?" }] }),
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::CREATED, "{}", stale.body);
+    assert_eq!(stale.body["actor_id"], admin_id.to_string());
+    assert!(stale.body["next_run_at"].is_string());
+    let stale_id: Uuid = stale.body["id"].as_str().unwrap().parse().unwrap();
+    let old = h.task(&member, "PAY", "Forgotten").await;
+    let fresh = h.task(&member, "PAY", "Fresh").await;
+    let mut tx = h.db.owner.begin().await.unwrap();
+    sqlx::query("SELECT set_config('app.tenant_id', $1, true)").bind(h.tenant.to_string()).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE issues SET updated_at = now() - interval '8 days' WHERE project_key = 'PAY' AND number = $1")
+        .bind(old.trim_start_matches("PAY-").parse::<i64>().unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Not due yet: the runner leaves it alone. Once due, it runs as the admin who saved it.
+    assert_eq!(automation::run_due(&h.state, &h.db.app).await.unwrap(), 0);
+    sqlx::query("UPDATE automation_schedule SET next_run_at = now() - interval '1 minute'").execute(&h.db.owner).await.unwrap();
+    assert_eq!(automation::run_due(&h.state, &h.db.app).await.unwrap(), 1);
+    let nudged = h.call(Method::GET, &format!("/api/v1/issues/{old}"), &member, None, None).await;
+    assert_eq!(nudged.body["labels"], json!(["stale"]));
+    let left = h.call(Method::GET, &format!("/api/v1/issues/{fresh}"), &member, None, None).await;
+    assert_eq!(left.body["labels"], json!([]));
+    let said = h.call(Method::GET, &format!("/api/v1/issues/{old}/comments"), &member, None, None).await;
+    assert_eq!(
+        (said.body["items"][0]["author_id"].as_str(), said.body["items"][0]["rule_name"].as_str()),
+        (Some(admin_id.to_string().as_str()), Some("Nudge stale work"))
+    );
+    // It booked its next run, and the issue it touched is no longer stale.
+    let next: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT next_run_at FROM automation_schedule").fetch_one(&h.db.owner).await.unwrap();
+    assert!(next > time::OffsetDateTime::now_utc());
+    assert_eq!(automation::run_scheduled(&h.state, h.tenant, stale_id).await.unwrap(), ScheduledRun::Ran(0));
+
+    // If the person it runs as leaves, it stops and says why; disabling takes it off the schedule.
+    h.world.org_members.lock().unwrap().remove(&admin_id);
+    assert_eq!(automation::run_scheduled(&h.state, h.tenant, stale_id).await.unwrap(), ScheduledRun::Blocked);
+    let (_, other_admin) = h.user(&[(pay, ProjectRole::Administrator)]);
+    let runs = h.call(Method::GET, &format!("{rules}/{stale_id}/runs"), &other_admin, None, None).await;
+    assert_eq!(
+        (runs.body["items"][0]["issue_key"].clone(), runs.body["items"][0]["outcome"].as_str()),
+        (Value::Null, Some("failed"))
+    );
+    assert!(runs.body["items"][0]["detail"].as_str().unwrap().contains("no longer an active member"));
+    let off = json!({ "name": "Nudge stale work", "enabled": false, "definition": stale.body["definition"] });
+    let saved = h.call(Method::PUT, &format!("{rules}/{stale_id}"), &other_admin, Some(off), Some(1)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(saved.body["next_run_at"], Value::Null);
+    let scheduled: i64 = sqlx::query_scalar("SELECT count(*) FROM automation_schedule").fetch_one(&h.db.owner).await.unwrap();
+    assert_eq!(scheduled, 0);
+    assert_eq!(automation::run_scheduled(&h.state, h.tenant, stale_id).await.unwrap(), ScheduledRun::Gone);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn voting() {
     let h = harness().await;
     let pay = h.project("PAY");
@@ -1011,9 +1165,10 @@ async fn watching_and_tenant_isolation() {
 
     let (visible,): (i64,) = sqlx::query_as("SELECT count(*) FROM issues").fetch_one(&h.db.app).await.unwrap();
     assert_eq!(visible, 0, "no tenant set, no rows");
+    // System queues drained across tenants hold ids and times only, never content.
     let unprotected: Vec<(String,)> = sqlx::query_as(
         "SELECT c.relname::text FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' \
-         WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace AND c.relname <> 'outbox' \
+         WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace AND c.relname NOT IN ('outbox', 'automation_schedule') \
            AND NOT (c.relrowsecurity AND c.relforcerowsecurity)",
     )
     .fetch_all(&h.db.owner)

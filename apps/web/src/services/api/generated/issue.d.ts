@@ -13,6 +13,7 @@ export interface paths {
         };
         get: operations["list"];
         put?: never;
+        /** Create a rule. A scheduled rule runs as its creator until someone else saves it. */
         post: operations["create"];
         delete?: never;
         options?: never;
@@ -28,6 +29,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** Replace a rule. Saving makes the caller the person a scheduled rule runs as. */
         put: operations["update"];
         post?: never;
         delete: operations["delete"];
@@ -372,6 +374,14 @@ export interface components {
             labels: string[];
             /** @enum {string} */
             type: "add_labels";
+        } | {
+            to_status: string;
+            /** @enum {string} */
+            type: "transition";
+        } | {
+            body: string;
+            /** @enum {string} */
+            type: "add_comment";
         };
         Assignee: {
             /** @enum {string} */
@@ -401,6 +411,11 @@ export interface components {
             items: components["schemas"]["AttachmentDto"][];
         };
         AutomationRuleDto: {
+            /**
+             * Format: uuid
+             * @description Who a scheduled run acts as: the administrator who last saved the rule.
+             */
+            actor_id: string;
             /** Format: date-time */
             created_at: string;
             /** Format: uuid */
@@ -410,6 +425,11 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+            /**
+             * Format: date-time
+             * @description When a scheduled rule runs next; absent for other rules and disabled ones.
+             */
+            next_run_at?: string | null;
             /** Format: uuid */
             project_id: string;
             /** Format: date-time */
@@ -428,9 +448,12 @@ export interface components {
             detail?: string | null;
             /** Format: uuid */
             id: string;
-            /** Format: uuid */
-            issue_id: string;
-            issue_key: string;
+            /**
+             * Format: uuid
+             * @description Absent when a scheduled run could not start (its detail says why).
+             */
+            issue_id?: string | null;
+            issue_key?: string | null;
             /** @description `applied`, `no_change` or `failed`. */
             outcome: string;
         };
@@ -451,6 +474,8 @@ export interface components {
             edited_at?: string | null;
             /** Format: uuid */
             id: string;
+            /** @description The automation rule that posted this comment on the author's behalf, if one did. */
+            rule_name?: string | null;
         };
         CommentList: {
             items: components["schemas"]["CommentDto"][];
@@ -464,6 +489,13 @@ export interface components {
             /** @description The issue has at least one of these labels. */
             labels_any?: string[];
             priorities?: string[];
+            /** @description The issue is in one of these statuses (keys). */
+            statuses?: string[];
+            /**
+             * Format: int32
+             * @description Nobody has changed the issue for at least this many days. Scheduled rules only.
+             */
+            untouched_days?: number | null;
         };
         CreateAutomationRuleRequest: {
             definition: components["schemas"]["RuleDefinition"];
@@ -523,6 +555,8 @@ export interface components {
         CustomFieldList: {
             items: components["schemas"]["CustomFieldDto"][];
         };
+        /** @enum {string} */
+        Frequency: "daily" | "weekly";
         HistoryEntry: {
             /** Format: uuid */
             actor_id: string;
@@ -667,6 +701,14 @@ export interface components {
             to_status?: string | null;
             /** @enum {string} */
             type: "issue_transitioned";
+        } | {
+            frequency: components["schemas"]["Frequency"];
+            /** Format: int32 */
+            hour: number;
+            /** @enum {string} */
+            type: "scheduled";
+            /** Format: int32 */
+            weekday?: number | null;
         };
         UpdateAutomationRuleRequest: {
             definition: components["schemas"]["RuleDefinition"];

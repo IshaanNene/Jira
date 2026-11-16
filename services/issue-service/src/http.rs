@@ -37,7 +37,7 @@ use crate::{
     dto::*,
     richtext,
     store::{self, AssigneeFilter, Issue, IssueFilter, NewIssue},
-    workflows::{humanize, Evaluation, IssueFacts, PostFunction, Scope},
+    workflows::{humanize, Evaluation, IssueFacts, PostFunction, Scope, StatusInfo},
     AppState,
 };
 
@@ -112,7 +112,7 @@ pub(crate) async fn open(
 /// How to show an issue's status: `(name, category)` from its workflow. If the status is
 /// no longer in the workflow, or the workflow service cannot be reached, the issue is
 /// still shown — with a readable form of the stored key and the stored category.
-async fn status_display(
+pub(crate) async fn status_display(
     state: &AppState,
     ctx: &OrgContext,
     project_id: Uuid,
@@ -132,6 +132,44 @@ async fn status_display(
     }
 }
 
+/// Move `next` into `target`, as the workflow allowed: the status, its category, the
+/// resolution that goes with it, and the step's post-functions. `current` is the issue
+/// before the move; `actor` is who is moving it.
+pub(crate) fn enter_status(
+    next: &mut Issue,
+    current: &Issue,
+    target: &StatusInfo,
+    post_functions: Vec<PostFunction>,
+    actor: Uuid,
+) {
+    let was_done = current.status_category == "done";
+    next.status = target.key.clone();
+    next.status_category = target.category.clone();
+    // Defaults; a workflow's post-functions below can override them.
+    if target.category == "done" && !was_done {
+        next.resolution = Some("done".to_owned());
+        next.resolved_at = Some(OffsetDateTime::now_utc());
+    } else if target.category != "done" && was_done {
+        next.resolution = None;
+        next.resolved_at = None;
+    }
+    for effect in post_functions {
+        match effect {
+            PostFunction::AssignToCurrentUser => next.assignee_id = Some(actor),
+            PostFunction::AssignToReporter => next.assignee_id = Some(current.reporter_id),
+            PostFunction::ClearAssignee => next.assignee_id = None,
+            PostFunction::SetResolution(value) => {
+                next.resolution = Some(value);
+                next.resolved_at = next.resolved_at.or_else(|| Some(OffsetDateTime::now_utc()));
+            }
+            PostFunction::ClearResolution => {
+                next.resolution = None;
+                next.resolved_at = None;
+            }
+        }
+    }
+}
+
 pub(crate) async fn dto(state: &AppState, ctx: &OrgContext, issue: Issue, with_description: bool) -> IssueDto {
     let display = status_display(state, ctx, issue.project_id, &issue.type_key, &issue.status, &issue.status_category).await;
     IssueDto::new(issue, with_description, display)
@@ -139,7 +177,7 @@ pub(crate) async fn dto(state: &AppState, ctx: &OrgContext, issue: Issue, with_d
 
 /// What workflow rules may depend on, taken from the issue as it will be after the
 /// current request's other edits.
-fn facts(ctx: &OrgContext, role: ProjectRole, issue: &Issue, children_done: bool) -> IssueFacts {
+pub(crate) fn facts(ctx: &OrgContext, role: ProjectRole, issue: &Issue, children_done: bool) -> IssueFacts {
     let mut present: Vec<String> = Vec::new();
     let mut mark = |name: &str, has_value: bool| {
         if has_value {
@@ -775,32 +813,7 @@ pub async fn update(
                     Evaluation::Allowed { to, post_functions } => (to, post_functions),
                     Evaluation::Denied { message } => return Err(ApiError::invalid("status", "transition_denied", &message)),
                 };
-            let was_done = current.status_category == "done";
-            next.status = target.key.clone();
-            next.status_category = target.category.clone();
-            // Defaults; a workflow's post-functions below can override them.
-            if target.category == "done" && !was_done {
-                next.resolution = Some("done".to_owned());
-                next.resolved_at = Some(OffsetDateTime::now_utc());
-            } else if target.category != "done" && was_done {
-                next.resolution = None;
-                next.resolved_at = None;
-            }
-            for effect in post_functions {
-                match effect {
-                    PostFunction::AssignToCurrentUser => next.assignee_id = Some(ctx.user_id),
-                    PostFunction::AssignToReporter => next.assignee_id = Some(current.reporter_id),
-                    PostFunction::ClearAssignee => next.assignee_id = None,
-                    PostFunction::SetResolution(value) => {
-                        next.resolution = Some(value);
-                        next.resolved_at = next.resolved_at.or_else(|| Some(OffsetDateTime::now_utc()));
-                    }
-                    PostFunction::ClearResolution => {
-                        next.resolution = None;
-                        next.resolved_at = None;
-                    }
-                }
-            }
+            enter_status(&mut next, &current, &target, post_functions, ctx.user_id);
             let (from_name, _) =
                 status_display(&state, &ctx, current.project_id, &current.type_key, &current.status, &current.status_category)
                     .await;
@@ -974,7 +987,7 @@ pub async fn add_comment(
     }
     let (mut tx, issue, _) = open(&state, &ctx, &key, ProjectPermission::Comment, false).await?;
     ensure_writable(&state, &ctx, &issue.project_key).await?;
-    let comment = store::insert_comment(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id, &body.body).await?;
+    let comment = store::insert_comment(tx.conn(), ctx.tenant_id, issue.id, ctx.user_id, &body.body, None).await?;
     emit(
         &mut tx,
         &ctx,

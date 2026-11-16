@@ -9,6 +9,7 @@ use axum::{
 };
 use error_handling::{require_if_match, ApiError, ApiResult};
 use serde::{Deserialize, Serialize};
+use sqlx::PgConnection;
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -30,6 +31,11 @@ pub struct AutomationRuleDto {
     pub definition: RuleDefinition,
     pub version: i64,
     pub created_by: Uuid,
+    /// Who a scheduled run acts as: the administrator who last saved the rule.
+    pub actor_id: Uuid,
+    /// When a scheduled rule runs next; absent for other rules and disabled ones.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub next_run_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -72,8 +78,9 @@ pub struct RuleQuery {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AutomationRunDto {
     pub id: Uuid,
-    pub issue_id: Uuid,
-    pub issue_key: String,
+    /// Absent when a scheduled run could not start (its detail says why).
+    pub issue_id: Option<Uuid>,
+    pub issue_key: Option<String>,
     pub actor_id: Uuid,
     /// `applied`, `no_change` or `failed`.
     pub outcome: String,
@@ -87,8 +94,9 @@ pub struct AutomationRunList {
     pub items: Vec<AutomationRunDto>,
 }
 
-fn dto(rule: automation::Rule) -> ApiResult<AutomationRuleDto> {
+async fn dto(conn: &mut PgConnection, rule: automation::Rule) -> ApiResult<AutomationRuleDto> {
     let definition = serde_json::from_value(rule.definition).map_err(ApiError::internal)?;
+    let next_run_at = automation::next_run_at(conn, rule.id).await?;
     Ok(AutomationRuleDto {
         id: rule.id,
         project_id: rule.project_id,
@@ -97,6 +105,8 @@ fn dto(rule: automation::Rule) -> ApiResult<AutomationRuleDto> {
         definition,
         version: rule.version,
         created_by: rule.created_by,
+        actor_id: rule.actor_id,
+        next_run_at,
         created_at: rule.created_at,
         updated_at: rule.updated_at,
     })
@@ -156,10 +166,15 @@ pub async fn list(
     require_admin(&state, &ctx, project.id).await?;
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let rules = automation::rules_for_project(tx.conn(), ctx.tenant_id, project.id, false).await?;
+    let mut items = Vec::with_capacity(rules.len());
+    for rule in rules {
+        items.push(dto(tx.conn(), rule).await?);
+    }
     tx.commit().await?;
-    Ok(Json(AutomationRuleList { items: rules.into_iter().map(dto).collect::<ApiResult<_>>()? }))
+    Ok(Json(AutomationRuleList { items }))
 }
 
+/// Create a rule. A scheduled rule runs as its creator until someone else saves it.
 #[utoipa::path(post, path = "/api/v1/automation-rules", request_body = CreateAutomationRuleRequest, security(("bearer" = [])),
     responses((status = 201, body = AutomationRuleDto), (status = 403), (status = 404), (status = 409, description = "Too many rules"), (status = 422)))]
 pub async fn create(
@@ -175,11 +190,14 @@ pub async fn create(
     if automation::count_rules(tx.conn(), ctx.tenant_id, project.id).await? >= MAX_RULES_PER_PROJECT {
         return Err(ApiError::Conflict(format!("A project can have at most {MAX_RULES_PER_PROJECT} automation rules.")));
     }
-    let rule = automation::insert_rule(tx.conn(), ctx.tenant_id, project.id, &name, body.enabled, &def, ctx.user_id).await?;
+    let rule = automation::insert_rule(tx.conn(), ctx.tenant_id, project.id, &name, body.enabled, &def, &ctx).await?;
+    automation::sync_schedule(tx.conn(), ctx.tenant_id, &rule, &def).await?;
+    let body = dto(tx.conn(), rule).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, etag(rule.version), Json(dto(rule)?)))
+    Ok((StatusCode::CREATED, etag(body.version), Json(body)))
 }
 
+/// Replace a rule. Saving makes the caller the person a scheduled rule runs as.
 #[utoipa::path(put, path = "/api/v1/automation-rules/{id}", request_body = UpdateAutomationRuleRequest, security(("bearer" = [])),
     params(("id" = Uuid, Path), ("If-Match" = String, Header, description = "Version the edit is based on")),
     responses((status = 200, body = AutomationRuleDto), (status = 404), (status = 409, description = "Edited by someone else"), (status = 422), (status = 428)))]
@@ -196,11 +214,13 @@ pub async fn update(
     let mut tx = state.db.begin(ctx.tenant_id).await?;
     let current = load(&state, &ctx, &mut tx, id, true).await?;
     if current.version != expected {
-        return Err(ApiError::VersionConflict { current: serde_json::to_value(dto(current)?).ok() });
+        return Err(ApiError::VersionConflict { current: serde_json::to_value(dto(tx.conn(), current).await?).ok() });
     }
-    let rule = automation::update_rule(tx.conn(), ctx.tenant_id, id, &name, body.enabled, &def).await?;
+    let rule = automation::update_rule(tx.conn(), ctx.tenant_id, id, &name, body.enabled, &def, &ctx).await?;
+    automation::sync_schedule(tx.conn(), ctx.tenant_id, &rule, &def).await?;
+    let body = dto(tx.conn(), rule).await?;
     tx.commit().await?;
-    Ok((etag(rule.version), Json(dto(rule)?)))
+    Ok((etag(body.version), Json(body)))
 }
 
 #[utoipa::path(delete, path = "/api/v1/automation-rules/{id}", security(("bearer" = [])), params(("id" = Uuid, Path)),
