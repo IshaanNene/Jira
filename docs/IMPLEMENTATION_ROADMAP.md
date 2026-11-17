@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-17 (Phase 8: epic filters, rank rebalancing and an event-fed card copy for boards; Argo Rollouts canaries and signature enforcement at admission; email digests and suppression).
+Last updated: 2026-11-17 (Phase 8: swimlanes, epic filters, rank rebalancing and an event-fed card copy for boards; Argo Rollouts canaries and signature enforcement at admission; email digests and suppression).
 
 ## Phase status
 
@@ -52,7 +52,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Workflow designer (web) | Draggable status diagram, connect statuses to add transitions, side panel for names, categories, initial status and rules, save draft / publish / discard, problems list, view-only for non-admins; workflow list, workspace default, per-project and per-type assignment | 10 web tests; opened and dragged in a real browser against a published workflow |
 | agile-service | Scrum and Kanban boards with columns mapped to workflow statuses (explicit status or category catch-all), WIP limits, shared per-project ranking (fractional ranks, advisory-locked), sprints (plan, start with commitment snapshot, one active per board, complete moving open work, delete planned), burndown from a scope-change log, velocity, per-caller permissions on every board; cards read from an event-fed local copy (filled per project on first load through `ListIssueIds` by project, refreshed from issue-service on each issue event, version-guarded, tombstoned on deletion) | 10 unit tests (ranks, columns, burndown) + 8 integration tests incl. cross-tenant isolation, rank rebalancing (order kept, ranks back to 6 characters, moves still working) and the card copy (paged first copy, no second copy, parent renames reaching children, stale versions refused, deletions sticking, other workspaces untouched, project deletion) |
 | Issue cards over gRPC | `issue.v1.Issues/ListCards` serves board cards per project (open + recently done, or by id), capped at 2000 with a `truncated` flag, service-token authenticated | `cards_are_served_to_other_services_per_project` |
-| Boards and backlog (web) | Board with drag between columns (the move goes through the workflow; refusals put the card back with the engine's reason), search, "Only my issues", an epic filter (one epic, or issues without one), an MQL filter (the editor from `/search`, kept in the URL as `?mql=`; ranking by drag pauses in the backlog while a filter hides issues), sprint header with time left; backlog with drag to rank and between sprints, row menus, create / edit / start / complete / delete sprint dialogs; board settings with a column editor; Reports with burndown and velocity charts (ECharts, light and dark) and issue tables | 15 web tests; driven in a real browser: plan a sprint, start it, drag a card To Do → In Progress (persisted with history), complete it, read the frozen report and velocity in both themes |
+| Boards and backlog (web) | Board with drag between columns (the move goes through the workflow; refusals put the card back with the engine's reason), search, "Only my issues", an epic filter (one epic, or issues without one), swimlanes by epic or assignee, an MQL filter (the editor from `/search`, kept in the URL as `?mql=`; ranking by drag pauses in the backlog while a filter hides issues), sprint header with time left; backlog with drag to rank and between sprints, row menus, create / edit / start / complete / delete sprint dialogs; board settings with a column editor; Reports with burndown and velocity charts (ECharts, light and dark) and issue tables | 15 web tests; driven in a real browser: plan a sprint, start it, drag a card To Do → In Progress (persisted with history), complete it, read the frozen report and velocity in both themes |
 | Internal gRPC | identity → user (`CheckMembership`), user → tenant (`ProvisionTenant`, `ResolveTenant`, `AbandonTenant`), authenticated, with deadlines, bounded retry, breaker | exercised live across three processes |
 | Outbox | Every write enqueues its event in the same transaction | asserted in integration tests |
 | Gateway | Envoy: routing, request ids, rate limits, edge EdDSA JWT validation, identity headers stripped | manual curl checks (401 without/with bad token, 200 with valid) |
@@ -112,7 +112,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **304 Rust tests, 188 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **304 Rust tests, 191 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -130,7 +130,7 @@ Totals: **304 Rust tests, 188 web tests, all passing**; `cargo clippy -D warning
 | Item | State |
 |---|---|
 | Epics and subtasks on boards | Partly fixed in Phase 8: board and backlog responses list the project's unfinished and recently finished epics (up to 200), and both pages filter by an epic or "Issues without epic" (ranking by drag pauses while filtered). Epics are still not cards, there is no epic panel with progress, and subtasks are not shown |
-| Swimlanes, quick filters, card layout settings | Not built; the board has text search and "Only my issues" |
+| Swimlanes, quick filters, card layout settings | Swimlanes built in Phase 8 (by epic or assignee; a drop into another lane changes only the status, not the epic or assignee). Quick filters are the text search, "Only my issues", the epic filter and MQL; no saved per-board quick filters or card layout settings |
 | Issue data on boards | Fixed in Phase 8: boards and backlogs read an event-fed local copy (`agile-service.cards`), filled per project on its first board load and kept current by issue events; up to 5000 cards per board. Moves and sprint reports still ask issue-service |
 | Ranks | Fixed in Phase 8: a move producing a rank over 12 characters queues the project, and a leased per-database runner rewrites its ranks evenly in the same order. Ranking is per project, so two boards of one project share an order |
 | Deleted issues | Fixed in Phase 5: the agile cleanup consumer removes placements and records scope removal from running sprints |

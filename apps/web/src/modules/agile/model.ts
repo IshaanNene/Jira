@@ -1,6 +1,6 @@
 // Pure board logic: where a card belongs, what a drop means, and chart series.
 // No React and no I/O, so it is unit-tested directly.
-import type { BacklogView, BoardCard, BoardColumn, BoardView, BurndownSample, IssueTransition, Sprint } from "@/services/api";
+import type { BacklogView, BoardCard, BoardColumn, BoardView, BurndownSample, Epic, IssueTransition, Sprint } from "@/services/api";
 
 /** Target of a drop in the planning view: a sprint id, or the backlog. */
 export const BACKLOG = "backlog";
@@ -136,3 +136,51 @@ export function inEpic(card: BoardCard, epic: string): boolean {
   if (epic === NO_EPIC) return !card.parent_key;
   return card.parent_key === epic;
 }
+
+/** How the board splits its cards into horizontal lanes. */
+export type LaneGrouping = "none" | "epic" | "assignee";
+
+/** One swimlane: the cards of one epic or one person (or of none), in board order. */
+export interface Lane {
+  id: string;
+  /** epic: `key` and `title` name it; assignee: `userId`; the others hold the rest. */
+  kind: "epic" | "no-epic" | "assignee" | "unassigned";
+  key?: string;
+  title?: string;
+  userId?: string;
+  cards: BoardCard[];
+}
+
+/**
+ * Split cards into lanes, keeping each lane's cards in the order given. Epic lanes follow the
+ * board's epic order (then parents it does not list, as first seen) with "No epic" last;
+ * person lanes follow the order people first appear, with "Unassigned" last. Lanes without
+ * cards are left out.
+ */
+export function swimlanes(cards: BoardCard[], by: Exclude<LaneGrouping, "none">, epics: Epic[]): Lane[] {
+  const lanes = new Map<string, Lane>();
+  const rest: Lane = by === "epic" ? { id: "no-epic", kind: "no-epic", cards: [] } : { id: "unassigned", kind: "unassigned", cards: [] };
+  if (by === "epic") {
+    for (const e of epics) lanes.set(e.key, { id: `epic:${e.key}`, kind: "epic", key: e.key, title: e.summary, cards: [] });
+  }
+  for (const card of cards) {
+    const group = by === "epic" ? card.parent_key : card.assignee_id;
+    if (!group) {
+      rest.cards.push(card);
+      continue;
+    }
+    let lane = lanes.get(group);
+    if (!lane) {
+      lane =
+        by === "epic"
+          ? { id: `epic:${group}`, kind: "epic", key: group, title: card.parent_summary ?? undefined, cards: [] }
+          : { id: `user:${group}`, kind: "assignee", userId: group, cards: [] };
+      lanes.set(group, lane);
+    }
+    lane.cards.push(card);
+  }
+  return [...lanes.values(), rest].filter((lane) => lane.cards.length > 0);
+}
+
+/** The column a drop list stands for: lists are `<column>` or `<lane>|<column>`. */
+export const columnOfList = (list: string): number => Number(list.slice(list.lastIndexOf("|") + 1));

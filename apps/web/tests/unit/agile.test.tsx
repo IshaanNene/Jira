@@ -13,6 +13,7 @@ import {
   inEpic,
   moveRequest,
   sprintTimeLeft,
+  swimlanes,
   totalPoints,
   transitionInto,
 } from "@/modules/agile/model";
@@ -89,6 +90,37 @@ describe("epic filter", () => {
     expect([inCheckout, loose].filter((c) => inEpic(c, "PAY-9"))).toEqual([inCheckout]);
     expect([inCheckout, loose].filter((c) => inEpic(c, "none"))).toEqual([loose]);
     expect([inCheckout, loose].filter((c) => inEpic(c, "PAY-10"))).toEqual([]);
+  });
+});
+
+describe("swimlanes", () => {
+  const epics = [
+    { id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" },
+    { id: "e8", key: "PAY-8", summary: "Empty epic", status_category: "todo" },
+  ];
+  const cards = [
+    card(1, { assignee_id: "u2" }),
+    card(2, { parent_key: "PAY-7", parent_summary: "Old epic", assignee_id: "u1" }),
+    card(3, { parent_key: "PAY-9", parent_summary: "Checkout", assignee_id: "u2" }),
+    card(4, { parent_key: "PAY-9", parent_summary: "Checkout" }),
+  ];
+
+  it("groups by epic in the board's epic order, unlisted parents next, no epic last, empty lanes left out", () => {
+    const lanes = swimlanes(cards, "epic", epics);
+    expect(lanes.map((l) => [l.id, l.title, l.cards.map((c) => c.key)])).toEqual([
+      ["epic:PAY-9", "Checkout", ["PAY-3", "PAY-4"]],
+      ["epic:PAY-7", "Old epic", ["PAY-2"]],
+      ["no-epic", undefined, ["PAY-1"]],
+    ]);
+  });
+
+  it("groups by assignee as people first appear, unassigned last", () => {
+    const lanes = swimlanes(cards, "assignee", epics);
+    expect(lanes.map((l) => [l.id, l.cards.map((c) => c.key)])).toEqual([
+      ["user:u2", ["PAY-1", "PAY-3"]],
+      ["user:u1", ["PAY-2"]],
+      ["unassigned", ["PAY-4"]],
+    ]);
   });
 });
 
@@ -288,6 +320,39 @@ describe("board page", () => {
     expect(within(todo).getByText(/Max 1/)).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: /^In Progress/ })).getByText("PAY-3")).toBeInTheDocument();
     expect(screen.getByText("PAY Sprint 1")).toBeInTheDocument();
+  });
+
+  it("splits the board into swimlanes by epic, each with every column", async () => {
+    signIn();
+    const running = sprint({ state: "active", started_at: "2026-11-10T09:00:00Z", start_date: "2026-11-10", end_date: "2026-11-24" });
+    const checkout = { parent_key: "PAY-9", parent_summary: "Checkout" };
+    fakeApi(
+      agileRoutes({
+        "GET /api/v1/boards/b1/view": {
+          board: board(), sprint: running, truncated: false, unmapped: [],
+          epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" }],
+          columns: [
+            { ...COLUMNS[0], issues: [card(1, checkout), card(2)] },
+            { ...COLUMNS[1], issues: [card(3, { ...checkout, status: "in_progress", status_category: "in_progress" })] },
+            { ...COLUMNS[2], issues: [] },
+          ],
+        },
+      }),
+    );
+    renderAt(<BoardPage />, "/projects/:projectKey/board", "/projects/PAY/board");
+    await screen.findByRole("region", { name: /^To Do/ });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Swimlanes" }));
+    await user.click(await screen.findByRole("option", { name: "Swimlanes by epic" }));
+
+    const lane = await screen.findByRole("region", { name: /PAY-9 Checkout/ });
+    expect(within(lane).getByText("2 issues")).toBeInTheDocument();
+    expect(within(lane).getByText("PAY-1")).toBeInTheDocument();
+    expect(within(lane).getByText("PAY-3")).toBeInTheDocument();
+    const loose = screen.getByRole("region", { name: /No epic/ });
+    expect(within(loose).getByText("PAY-2")).toBeInTheDocument();
+    expect(within(loose).queryByText("PAY-1")).not.toBeInTheDocument();
   });
 });
 

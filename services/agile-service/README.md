@@ -66,8 +66,8 @@ issue-service directly. `project.deleted` drops the project's copy.
 **Epics.** Board and backlog responses carry `epics`: the project's unfinished and recently finished epics (up
 to 200, from the card copy), which the web pages offer as a filter; issues belong to an epic through `parent_key`.
 
-**Not built yet.** Epics are not cards and subtasks are not shown on boards; swimlanes and quick filters (the web board has
-search and "Only my issues"); cumulative flow and control charts.
+**Not built yet.** Epics are not cards and subtasks are not shown on boards; saved per-board quick filters (the web board has
+search, "Only my issues", an epic filter, MQL and swimlanes by epic or assignee); cumulative flow and control charts.
 
 | Variable | Required | Default |
 |---|---|---|

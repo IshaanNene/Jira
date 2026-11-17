@@ -3,9 +3,10 @@ import { CalendarClock, Flag, Search, Target } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Button, EmptyState, ErrorState, Input, Skeleton, toast } from "@/components/ui";
+import { Button, EmptyState, ErrorState, Input, Select, Skeleton, toast } from "@/components/ui";
+import { UserChip } from "@/modules/organizations";
 import { MqlFilterButton, MqlFilterPanel, useMqlFilter } from "@/modules/search";
-import type { Board, BoardCard } from "@/services/api";
+import type { Board, BoardCard, BoardColumn, BoardView } from "@/services/api";
 import { useSession } from "@/state/session";
 import { cn } from "@/utils/cn";
 import { formatDate } from "@/utils/format";
@@ -16,7 +17,41 @@ import { CardTile } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
 import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
 import { CompleteSprintDialog } from "../components/SprintDialogs";
-import { ALL_EPICS, inEpic, sprintTimeLeft } from "../model";
+import { ALL_EPICS, columnOfList, inEpic, sprintTimeLeft, swimlanes, type Lane, type LaneGrouping } from "../model";
+
+const GROUPINGS = [
+  { value: "none", label: "No swimlanes" },
+  { value: "epic", label: "Swimlanes by epic" },
+  { value: "assignee", label: "Swimlanes by assignee" },
+];
+
+function ColumnHeading({ column, shown, total }: { column: BoardColumn; shown: number; total: number }) {
+  const over = column.wip_limit != null && total > column.wip_limit;
+  return (
+    <h2 className="flex items-center gap-2 px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+      <span className="truncate">{column.name}</span>
+      <span className="font-normal">{shown === total ? total : `${shown} of ${total}`}</span>
+      {column.wip_limit != null && (
+        <span className={cn("ml-auto rounded-sm px-1.5 font-medium normal-case tracking-normal", over ? "bg-danger text-white" : "bg-line text-ink-muted")} title="Issue limit for this column">
+          Max {column.wip_limit}
+        </span>
+      )}
+    </h2>
+  );
+}
+
+function LaneTitle({ lane }: { lane: Lane }) {
+  switch (lane.kind) {
+    case "epic":
+      return <span className="truncate"><span className="font-medium text-ink-muted">{lane.key}</span> {lane.title}</span>;
+    case "assignee":
+      return <UserChip userId={lane.userId} />;
+    case "no-epic":
+      return <span>No epic</span>;
+    case "unassigned":
+      return <span>Unassigned</span>;
+  }
+}
 
 function BoardBody({ board }: { board: Board }) {
   const view = useBoardView(board);
@@ -27,6 +62,7 @@ function BoardBody({ board }: { board: Board }) {
   const [search, setSearch] = useState("");
   const [mine, setMine] = useState(false);
   const [epicChoice, setEpic] = useState(ALL_EPICS);
+  const [grouping, setGrouping] = useState<LaneGrouping>("none");
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [completing, setCompleting] = useState(false);
   const mql = useMqlFilter(board.project_id);
@@ -73,7 +109,7 @@ function BoardBody({ board }: { board: Board }) {
     const dropped = readDrop(event);
     if (!dropped) return;
     const { card, target } = dropped;
-    const column = Number(target.list);
+    const column = columnOfList(target.list);
     const from = columns.findIndex((c) => c.issues.some((i) => i.id === card.id));
     if (from === column && !target.beforeId) return;
     drop.mutate(
@@ -96,6 +132,7 @@ function BoardBody({ board }: { board: Board }) {
         </div>
         <Button size="sm" variant={mine ? "primary" : "secondary"} aria-pressed={mine} onClick={() => setMine((v) => !v)}>Only my issues</Button>
         <EpicFilter epics={view.data.epics} value={epic} onChange={setEpic} />
+        <Select size="sm" className="w-48" aria-label="Swimlanes" value={grouping} onValueChange={(v) => setGrouping(v as LaneGrouping)} options={GROUPINGS} />
         <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
         {sprint && (
           <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-muted">
@@ -123,32 +160,28 @@ function BoardBody({ board }: { board: Board }) {
         </p>
       )}
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 pb-6">
-          {columns.map((column, index) => {
-            const cards = column.issues.filter(visible);
-            const over = column.wip_limit != null && column.issues.length > column.wip_limit;
-            return (
-              <section key={column.id} aria-label={column.name} className={cn("flex w-72 shrink-0 flex-col rounded-md bg-sunken", over && "bg-danger-soft")}>
-                <h2 className="flex items-center gap-2 px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                  <span className="truncate">{column.name}</span>
-                  <span className="font-normal">{cards.length === column.issues.length ? column.issues.length : `${cards.length} of ${column.issues.length}`}</span>
-                  {column.wip_limit != null && (
-                    <span className={cn("ml-auto rounded-sm px-1.5 font-medium normal-case tracking-normal", over ? "bg-danger text-white" : "bg-line text-ink-muted")} title="Issue limit for this column">
-                      Max {column.wip_limit}
-                    </span>
-                  )}
-                </h2>
-                <DropList list={String(index)} className="min-h-24 flex-1 space-y-1.5 overflow-y-auto rounded-b-md px-1.5 pb-1.5">
-                  {cards.map((card) => (
-                    <DraggableCard key={card.id} card={card} list={String(index)} disabled={!canDrag}>
-                      <CardTile card={card} />
-                    </DraggableCard>
-                  ))}
-                </DropList>
-              </section>
-            );
-          })}
-        </div>
+        {grouping === "none" ? (
+          <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 pb-6">
+            {columns.map((column, index) => {
+              const cards = column.issues.filter(visible);
+              const over = column.wip_limit != null && column.issues.length > column.wip_limit;
+              return (
+                <section key={column.id} aria-label={column.name} className={cn("flex w-72 shrink-0 flex-col rounded-md bg-sunken", over && "bg-danger-soft")}>
+                  <ColumnHeading column={column} shown={cards.length} total={column.issues.length} />
+                  <DropList list={String(index)} className="min-h-24 flex-1 space-y-1.5 overflow-y-auto rounded-b-md px-1.5 pb-1.5">
+                    {cards.map((card) => (
+                      <DraggableCard key={card.id} card={card} list={String(index)} disabled={!canDrag}>
+                        <CardTile card={card} />
+                      </DraggableCard>
+                    ))}
+                  </DropList>
+                </section>
+              );
+            })}
+          </div>
+        ) : (
+          <Lanes columns={columns} lanes={swimlanes(columns.flatMap((c) => c.issues).filter(visible), grouping, view.data.epics)} canDrag={canDrag} />
+        )}
         <DragOverlay>{dragging && <div className="w-[17.25rem]"><CardTile card={dragging} overlay /></div>}</DragOverlay>
       </DndContext>
       {sprint && (
@@ -161,6 +194,51 @@ function BoardBody({ board }: { board: Board }) {
           onOpenChange={setCompleting}
         />
       )}
+    </div>
+  );
+}
+
+/** The board split into horizontal lanes; dropping into another lane changes only the status. */
+function Lanes({ columns, lanes, canDrag }: { columns: BoardView["columns"]; lanes: Lane[]; canDrag: boolean }) {
+  const columnOf = new Map(columns.flatMap((c, index) => c.issues.map((i) => [i.id, index] as const)));
+  return (
+    <div className="min-h-0 flex-1 overflow-auto px-6 pb-6">
+      <div className="flex w-max gap-3">
+        {columns.map((column) => {
+          const over = column.wip_limit != null && column.issues.length > column.wip_limit;
+          const shown = lanes.reduce((n, lane) => n + lane.cards.filter((c) => column.issues.some((i) => i.id === c.id)).length, 0);
+          return (
+            <div key={column.id} className={cn("w-72 shrink-0 rounded-t-md bg-sunken", over && "bg-danger-soft")}>
+              <ColumnHeading column={column} shown={shown} total={column.issues.length} />
+            </div>
+          );
+        })}
+      </div>
+      {lanes.length === 0 && <p className="py-6 text-sm text-ink-subtle">No issues match the filters.</p>}
+      {lanes.map((lane) => (
+        <section key={lane.id} aria-labelledby={`lane-${lane.id}`} className="mt-3 w-max">
+          <h3 id={`lane-${lane.id}`} className="mb-1.5 flex max-w-xl items-center gap-2 text-sm text-ink">
+            <LaneTitle lane={lane} />
+            <span className="text-ink-subtle">{lane.cards.length} {lane.cards.length === 1 ? "issue" : "issues"}</span>
+          </h3>
+          <div className="flex gap-3">
+            {columns.map((column, index) => {
+              const list = `${lane.id}|${index}`;
+              return (
+                <DropList key={column.id} list={list} className="min-h-16 w-72 shrink-0 space-y-1.5 rounded-md bg-sunken p-1.5">
+                  {lane.cards
+                    .filter((card) => columnOf.get(card.id) === index)
+                    .map((card) => (
+                      <DraggableCard key={card.id} card={card} list={list} disabled={!canDrag}>
+                        <CardTile card={card} />
+                      </DraggableCard>
+                    ))}
+                </DropList>
+              );
+            })}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
