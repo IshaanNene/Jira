@@ -13,7 +13,10 @@ Scrum boards show the running sprint; Kanban boards show every open issue plus r
 **Ranking.** One order per project, shared by all of its boards and the backlog, stored as fractional base-36
 strings (`rank.rs`) compared bytewise (`COLLATE "C"`). Moves are serialised per project with a transaction-scoped
 advisory lock and are expressed relative to a neighbour (`before_id` / `after_id`). Issues without a stored rank
-follow the ranked ones in creation order.
+follow the ranked ones in creation order. Many moves into one gap make ranks longer; a move that produces a
+rank over 12 characters queues the project (`rank_rebalance`, a content-free system queue), and a per-database
+runner claims it with a lease and, under the same lock, rewrites every rank of the project evenly spaced in the
+same order (6 characters or fewer for up to ~800,000 issues).
 
 **Sprints.** `future → active → closed`. One active sprint per board (unique partial index). Starting needs at
 least one issue and records the commitment (issues and points). Completing moves open issues to a planned sprint
@@ -61,7 +64,7 @@ card back. A board shows at most 5000 cards (then `truncated`). Moves and sprint
 issue-service directly. `project.deleted` drops the project's copy.
 
 **Not built yet.** Epics and subtasks are not shown on boards; swimlanes and quick filters (the web board has
-search and "Only my issues"); a rank rebalancing job (ranks grow when many moves land in one gap); cumulative flow and control charts.
+search and "Only my issues"); cumulative flow and control charts.
 
 | Variable | Required | Default |
 |---|---|---|

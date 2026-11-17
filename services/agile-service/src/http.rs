@@ -828,9 +828,11 @@ pub async fn move_issues(
         .into_iter()
         .map(|p| (p.issue_id, p))
         .collect();
-    for (issue_id, rank) in ids.iter().zip(rank::spread(lo.as_deref(), hi.as_deref(), ids.len())) {
-        store::place(tx.conn(), ctx.tenant_id, board.project_id, *issue_id, &rank, body.sprint_id).await?;
+    let ranks = rank::spread(lo.as_deref(), hi.as_deref(), ids.len());
+    for (issue_id, rank) in ids.iter().zip(&ranks) {
+        store::place(tx.conn(), ctx.tenant_id, board.project_id, *issue_id, rank, body.sprint_id).await?;
     }
+    crate::rebalance::queue_if_long(tx.conn(), ctx.tenant_id, board.project_id, &ranks).await?;
     if let Some(target) = body.sprint_id {
         // Scope changes feed the burndown chart.
         let mut left: HashMap<Uuid, Vec<Uuid>> = HashMap::new();

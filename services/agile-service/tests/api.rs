@@ -716,3 +716,48 @@ async fn boards_read_a_copy_filled_once_and_kept_current_by_issue_events() {
     assert_eq!((left, synced), (0, 0));
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn long_ranks_are_rewritten_in_the_same_order() {
+    let h = harness().await;
+    let project = h.project("DEMO");
+    let admin = h.user(&[(project, ProjectRole::Administrator)]);
+    let ids: Vec<Uuid> = (1..=4).map(|n| h.issue(project, n, "task", None)).collect();
+    let board = h.board(&admin, "scrum").await;
+    let backlog_path = format!("/api/v1/boards/{board}/backlog");
+    let move_path = format!("/api/v1/boards/{board}/move");
+    h.get(&backlog_path, &admin).await;
+    let queued =
+        || async { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM rank_rebalance").fetch_one(&h.db.owner).await.unwrap() };
+
+    // Moving issues again and again into the gap after DEMO-1 halves it each time.
+    let mut moves = 0;
+    while queued().await == 0 {
+        let moving = ids[2 + moves % 2];
+        let reply = h.post(&move_path, &admin, json!({ "issue_ids": [moving], "after_id": ids[0] })).await;
+        assert_eq!(reply.status, StatusCode::NO_CONTENT);
+        moves += 1;
+        assert!(moves < 500, "ranks never grew long");
+    }
+    let longest = || async {
+        sqlx::query_scalar::<_, i32>("SELECT max(length(rank)) FROM issue_placements").fetch_one(&h.db.owner).await.unwrap()
+    };
+    assert!(longest().await > agile_service::rebalance::LONG_RANK as i32);
+    let order = |v: Value| keys(&v["backlog"]).into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let before = order(h.get(&backlog_path, &admin).await);
+
+    let db = DbRouter::single(h.db.app.clone());
+    assert_eq!(agile_service::rebalance::run_due(&db, &h.db.app).await.unwrap(), 1);
+    assert_eq!(queued().await, 0);
+    assert!(longest().await <= 6);
+    assert_eq!(order(h.get(&backlog_path, &admin).await), before);
+    // Nothing left to do.
+    assert_eq!(agile_service::rebalance::run_due(&db, &h.db.app).await.unwrap(), 0);
+
+    // Moves keep working on the fresh ranks.
+    let reply = h.post(&move_path, &admin, json!({ "issue_ids": [ids[0]], "after_id": ids[1] })).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let after = order(h.get(&backlog_path, &admin).await);
+    assert_eq!(after.iter().position(|k| k == "DEMO-1"), after.iter().position(|k| k == "DEMO-2").map(|p| p + 1));
+    h.db.cleanup().await;
+}

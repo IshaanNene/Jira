@@ -5,6 +5,7 @@ pub mod cleanup;
 pub mod domain;
 pub mod http;
 pub mod rank;
+pub mod rebalance;
 pub mod sources;
 pub mod store;
 
@@ -57,6 +58,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         Arc::new(RegistryPlacement::new(&registry, &secret, SERVICE_NAME)?),
     ));
     event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
+    rebalance::spawn(Arc::clone(&db));
     let issues: Arc<dyn sources::Issues> = Arc::new(sources::GrpcIssues::new(&issue, &secret)?);
     match event_bus::KafkaSettings::from_env(SERVICE_NAME) {
         Some(settings) => {
