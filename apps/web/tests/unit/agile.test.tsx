@@ -10,6 +10,7 @@ import {
   changesColumn,
   columnIndex,
   formatPoints,
+  inEpic,
   moveRequest,
   sprintTimeLeft,
   totalPoints,
@@ -50,6 +51,7 @@ const backlogView = (): BacklogView => ({
   sprints: [{ sprint: sprint(), issues: [card(1, { sprint_id: "s1" }), card(2, { sprint_id: "s1" })] }],
   backlog: [card(3), card(4), card(5)],
   truncated: false,
+  epics: [],
 });
 
 describe("planning moves", () => {
@@ -79,6 +81,17 @@ describe("planning moves", () => {
   });
 });
 
+describe("epic filter", () => {
+  it("keeps one epic's cards, cards without an epic, or every card", () => {
+    const inCheckout = card(1, { parent_key: "PAY-9", parent_summary: "Checkout" });
+    const loose = card(2);
+    expect([inCheckout, loose].filter((c) => inEpic(c, "all"))).toHaveLength(2);
+    expect([inCheckout, loose].filter((c) => inEpic(c, "PAY-9"))).toEqual([inCheckout]);
+    expect([inCheckout, loose].filter((c) => inEpic(c, "none"))).toEqual([loose]);
+    expect([inCheckout, loose].filter((c) => inEpic(c, "PAY-10"))).toEqual([]);
+  });
+});
+
 describe("board columns", () => {
   it("places statuses by explicit mapping first, then by category", () => {
     expect(columnIndex(COLUMNS, "in_review", "done")).toBe(1);
@@ -104,7 +117,7 @@ describe("board columns", () => {
 
   it("moves a card between columns for an instant update", () => {
     const view: BoardView = {
-      board: board(), truncated: false, unmapped: [],
+      board: board(), truncated: false, unmapped: [], epics: [],
       columns: [
         { ...COLUMNS[0]!, issues: [card(1), card(2)] },
         { ...COLUMNS[1]!, issues: [card(3)] },
@@ -219,6 +232,35 @@ describe("backlog page", () => {
     expect(screen.queryByRole("button", { name: "Start sprint" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Move PAY-/ })).not.toBeInTheDocument();
   });
+
+  it("narrows the backlog and sprints to one epic and pauses ranking by drag", async () => {
+    signIn();
+    const view: BacklogView = {
+      ...backlogView(),
+      backlog: [card(3, { parent_key: "PAY-9", parent_summary: "Checkout" }), card(4), card(5, { parent_key: "PAY-9", parent_summary: "Checkout" })],
+      epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" }],
+    };
+    fakeApi(agileRoutes({ "GET /api/v1/boards/b1/backlog": view }));
+    renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog");
+    const backlog = await screen.findByRole("region", { name: "Backlog" });
+    const sprintSection = screen.getByRole("region", { name: "PAY Sprint 1" });
+    expect(within(backlog).getAllByText(/^PAY-[345]$/)).toHaveLength(3);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Filter by epic" }));
+    await user.click(await screen.findByRole("option", { name: "PAY-9 · Checkout" }));
+    await waitFor(() => expect(within(backlog).queryByText("PAY-4")).not.toBeInTheDocument());
+    expect(within(backlog).getByText("PAY-3")).toBeInTheDocument();
+    expect(within(backlog).getByText(/^2 of 3 issues/)).toBeInTheDocument();
+    expect(within(sprintSection).getByText("No issues here match the filter.")).toBeInTheDocument();
+    expect(screen.getByText("Clear the filters to rank issues by dragging.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Filter by epic" }));
+    await user.click(await screen.findByRole("option", { name: "Issues without epic" }));
+    await waitFor(() => expect(within(backlog).queryByText("PAY-3")).not.toBeInTheDocument());
+    expect(within(backlog).getByText("PAY-4")).toBeInTheDocument();
+    expect(within(sprintSection).getByText("PAY-1")).toBeInTheDocument();
+  });
 });
 
 describe("board page", () => {
@@ -230,7 +272,7 @@ describe("board page", () => {
       agileRoutes({
         "GET /api/v1/boards": { items: [board({ columns })] },
         "GET /api/v1/boards/b1/view": {
-          board: board({ columns }), sprint: running, truncated: false, unmapped: [],
+          board: board({ columns }), sprint: running, truncated: false, unmapped: [], epics: [],
           columns: [
             { ...columns[0], issues: [card(1), card(2)] },
             { ...columns[1], issues: [card(3, { status: "in_progress", status_category: "in_progress" })] },
@@ -259,7 +301,7 @@ describe("filtering the board and backlog with MQL", () => {
       agileRoutes({
         "GET /api/v1/projects": { items: [project()], next_cursor: null },
         "GET /api/v1/boards/b1/view": {
-          board: board(), sprint: running, truncated: false, unmapped: [],
+          board: board(), sprint: running, truncated: false, unmapped: [], epics: [],
           columns: [
             { ...COLUMNS[0], issues: [card(1), card(2)] },
             { ...COLUMNS[1], issues: [card(3, { status: "in_progress", status_category: "in_progress" })] },
@@ -312,7 +354,7 @@ describe("filtering the board and backlog with MQL", () => {
     expect(within(backlog).getByText("PAY-3")).toBeInTheDocument();
     expect(within(backlog).getByText(/1 of 3 issues/)).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "PAY Sprint 1" })).getByText("No issues here match the filter.")).toBeInTheDocument();
-    expect(screen.getByText("Clear the filter to rank issues by dragging.")).toBeInTheDocument();
+    expect(screen.getByText("Clear the filters to rank issues by dragging.")).toBeInTheDocument();
     expect(within(backlog).getByRole("button", { name: "Move PAY-3" })).toBeInTheDocument();
   });
 });

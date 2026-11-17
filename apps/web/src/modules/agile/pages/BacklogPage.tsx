@@ -26,8 +26,9 @@ import { useBacklog, useMoveIssues, useSprintMutations } from "../api";
 import { AgileFrame, reason } from "../components/AgileFrame";
 import { CardRow } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
+import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
 import { CompleteSprintDialog, SprintDialog, StartSprintDialog } from "../components/SprintDialogs";
-import { BACKLOG, formatPoints, totalPoints, type Move } from "../model";
+import { ALL_EPICS, BACKLOG, formatPoints, inEpic, totalPoints, type Move } from "../model";
 
 type SprintAction = { kind: "create" } | { kind: "edit" | "start" | "complete"; sprint: Sprint };
 
@@ -52,6 +53,7 @@ function BacklogBody({ board }: { board: Board }) {
   const [action, setAction] = useState<SprintAction | null>(null);
   const mql = useMqlFilter(board.project_id);
   const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
+  const [epicChoice, setEpic] = useState(ALL_EPICS);
 
   if (backlog.isPending) return <div className="space-y-3 px-6" aria-busy><Skeleton className="h-32" /><Skeleton className="h-64" /></div>;
   if (backlog.isError) return <ErrorState className="py-16" error={backlog.error} onRetry={() => void backlog.refetch()} />;
@@ -96,8 +98,9 @@ function BacklogBody({ board }: { board: Board }) {
 
   // While a filter hides issues, ranking by drag would place issues among ones nobody can
   // see, so it pauses; the row menus still move issues between sprints and the backlog.
-  const filtering = mql.matches !== null;
-  const shown = (issues: BoardCard[]) => (mql.matches ? issues.filter((i) => mql.matches!.has(i.id)) : issues);
+  const epic = effectiveEpic(data.epics, epicChoice);
+  const filtering = mql.matches !== null || epic !== ALL_EPICS;
+  const shown = (issues: BoardCard[]) => issues.filter((i) => inEpic(i, epic) && (!mql.matches || mql.matches.has(i.id)));
   const rows = (issues: BoardCard[], list: string, empty: string) => (
     <DropList list={list} className="min-h-12 overflow-hidden rounded border border-line bg-surface">
       {issues.length === 0 && <p className="px-3 py-3 text-sm text-ink-subtle">{empty}</p>}
@@ -117,8 +120,9 @@ function BacklogBody({ board }: { board: Board }) {
     <div className="h-full overflow-y-auto px-6 pb-8">
       <div className="mb-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
+          <EpicFilter epics={data.epics} value={epic} onChange={setEpic} />
           <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
-          {filtering && permissions.move_issues && <span className="text-sm text-ink-subtle">Clear the filter to rank issues by dragging.</span>}
+          {filtering && permissions.move_issues && <span className="text-sm text-ink-subtle">Clear the filters to rank issues by dragging.</span>}
         </div>
         {mqlOpen && <MqlFilterPanel filter={mql} label="backlog" onClose={() => setMqlOpen(false)} />}
       </div>

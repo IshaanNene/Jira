@@ -125,3 +125,14 @@ export function burndownSeries(samples: BurndownSample[], sprint: Pick<Sprint, "
   const scope = unit === "points" ? first.scope_points : first.scope_issues;
   return { remaining, guideline: [[start, scope], [end, 0]] };
 }
+
+/** Epic filter values besides an epic's key. */
+export const ALL_EPICS = "all";
+export const NO_EPIC = "none";
+
+/** Whether a card passes the epic filter: every card, cards with no epic, or one epic's. */
+export function inEpic(card: BoardCard, epic: string): boolean {
+  if (epic === ALL_EPICS) return true;
+  if (epic === NO_EPIC) return !card.parent_key;
+  return card.parent_key === epic;
+}

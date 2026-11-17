@@ -300,6 +300,8 @@ async fn backlog_order_is_kept_and_changed_by_moves() {
     // First sight: creation order; epics are not planned on boards.
     let backlog = h.get(&backlog_path, &viewer).await;
     assert_eq!(keys(&backlog["backlog"]), ["DEMO-1", "DEMO-2", "DEMO-3", "DEMO-4", "DEMO-5"]);
+    assert_eq!(keys(&backlog["epics"]), ["DEMO-6"]);
+    assert_eq!(backlog["epics"][0]["id"], json!(epic));
 
     // Two issues to the top (in the order given), one after another issue, one to the bottom.
     let top = json!({ "issue_ids": [ids[4], ids[3]], "before_id": ids[0] });
@@ -638,6 +640,8 @@ async fn boards_read_a_copy_filled_once_and_kept_current_by_issue_events() {
     let board = h.board(&admin, "kanban").await;
     let path = format!("/api/v1/boards/{board}/view");
     let view = h.get(&path, &admin).await;
+    // The epic is offered as a filter, not shown as a card.
+    assert_eq!(view["epics"], json!([{ "id": epic, "key": "DEMO-1206", "summary": "Issue 1206", "status_category": "todo" }]));
     let cards: Vec<&Value> = view["columns"].as_array().unwrap().iter().flat_map(|c| c["issues"].as_array().unwrap()).collect();
     assert_eq!(cards.len(), 1205, "every story and task, not the epic");
     assert_eq!(view["truncated"], false);

@@ -254,6 +254,21 @@ pub struct ColumnView {
     pub issues: Vec<CardDto>,
 }
 
+/// An epic the board's issues can be filtered by; issues belong to it through `parent_key`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EpicDto {
+    pub id: Uuid,
+    pub key: String,
+    pub summary: String,
+    pub status_category: String,
+}
+
+impl From<&Card> for EpicDto {
+    fn from(card: &Card) -> Self {
+        Self { id: card.id, key: card.key.clone(), summary: card.summary.clone(), status_category: card.status_category.clone() }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BoardView {
     pub board: BoardDto,
@@ -264,6 +279,8 @@ pub struct BoardView {
     pub unmapped: Vec<CardDto>,
     /// The project has more open issues than one board can load.
     pub truncated: bool,
+    /// The project's unfinished (and recently finished) epics, in creation order.
+    pub epics: Vec<EpicDto>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -280,6 +297,8 @@ pub struct BacklogView {
     /// Unfinished issues that are in no planned or running sprint, in rank order.
     pub backlog: Vec<CardDto>,
     pub truncated: bool,
+    /// The project's unfinished (and recently finished) epics, in creation order.
+    pub epics: Vec<EpicDto>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -461,6 +480,7 @@ struct Loaded {
     cards: HashMap<Uuid, Card>,
     placements: Vec<store::Placement>,
     truncated: bool,
+    epics: Vec<EpicDto>,
 }
 
 /// The project's open cards from the local copy (filled on a project's first load), making
@@ -497,8 +517,9 @@ async fn load(state: &AppState, ctx: &OrgContext, board: &store::Board) -> ApiRe
             cards.insert(card.id, card);
         }
     }
+    let epics = crate::cards::epics(tx.conn(), ctx.tenant_id, board.project_id, since).await?.iter().map(EpicDto::from).collect();
     tx.commit().await?;
-    Ok(Loaded { cards, placements, truncated })
+    Ok(Loaded { cards, placements, truncated, epics })
 }
 
 async fn board_sprints(state: &AppState, ctx: &OrgContext, board_id: Uuid) -> ApiResult<Vec<store::Sprint>> {
@@ -689,10 +710,12 @@ pub async fn view(State(state): State<AppState>, ctx: OrgContext, Path(id): Path
     let mut out: Vec<ColumnView> = columns.iter().cloned().map(|column| ColumnView { column, issues: vec![] }).collect();
     let mut unmapped = Vec::new();
     let mut truncated = false;
+    let mut epics = Vec::new();
 
     if !scrum || active.is_some() {
         let loaded = load(&state, &ctx, &board).await?;
         truncated = loaded.truncated;
+        epics = loaded.epics;
         let active_id = active.as_ref().map(|s| s.id);
         for placement in &loaded.placements {
             let Some(card) = loaded.cards.get(&placement.issue_id) else { continue };
@@ -712,6 +735,7 @@ pub async fn view(State(state): State<AppState>, ctx: OrgContext, Path(id): Path
         columns: out,
         unmapped,
         truncated,
+        epics,
     }))
 }
 
@@ -738,7 +762,13 @@ pub async fn backlog(State(state): State<AppState>, ctx: OrgContext, Path(id): P
             backlog.push(CardDto::new(card, None));
         }
     }
-    Ok(Json(BacklogView { board: board_dto(&board, role)?, sprints: groups, backlog, truncated: loaded.truncated }))
+    Ok(Json(BacklogView {
+        board: board_dto(&board, role)?,
+        sprints: groups,
+        backlog,
+        truncated: loaded.truncated,
+        epics: loaded.epics,
+    }))
 }
 
 /// Reorder issues and/or move them between sprints and the backlog. Order is shared by
@@ -1184,6 +1214,7 @@ pub async fn velocity(State(state): State<AppState>, ctx: OrgContext, Path(id): 
         StartSprintRequest,
         CompleteSprintRequest,
         CardDto,
+        EpicDto,
         ColumnView,
         BoardView,
         SprintGroup,

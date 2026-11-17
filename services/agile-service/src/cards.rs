@@ -160,6 +160,29 @@ pub async fn open(
     .await?)
 }
 
+/// Most epics listed beside a board.
+pub const MAX_EPICS: i64 = 200;
+
+/// The project's epics for filtering a board: unfinished, or finished at or after
+/// `done_since`, in issue number order; at most [`MAX_EPICS`].
+pub async fn epics(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    project_id: Uuid,
+    done_since: OffsetDateTime,
+) -> ApiResult<Vec<Card>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM cards WHERE tenant_id = $1 AND project_id = $2 AND NOT deleted AND issue_type = 'epic' \
+         AND (status_category <> 'done' OR resolved_at >= $3) ORDER BY number LIMIT $4"
+    ))
+    .bind(tenant_id)
+    .bind(project_id)
+    .bind(done_since)
+    .bind(MAX_EPICS)
+    .fetch_all(conn)
+    .await?)
+}
+
 /// These issues' cards, any type or status, as far as they exist in the project.
 pub async fn by_ids(conn: &mut PgConnection, tenant_id: Uuid, project_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Card>> {
     Ok(sqlx::query_as(&format!(

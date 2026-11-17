@@ -214,6 +214,8 @@ export interface components {
             /** @description Unfinished issues that are in no planned or running sprint, in rank order. */
             backlog: components["schemas"]["CardDto"][];
             board: components["schemas"]["BoardDto"];
+            /** @description The project's unfinished (and recently finished) epics, in creation order. */
+            epics: components["schemas"]["EpicDto"][];
             /** @description The running sprint first, then planned sprints in order. */
             sprints: components["schemas"]["SprintGroup"][];
             truncated: boolean;
@@ -252,6 +254,8 @@ export interface components {
         BoardView: {
             board: components["schemas"]["BoardDto"];
             columns: components["schemas"]["ColumnView"][];
+            /** @description The project's unfinished (and recently finished) epics, in creation order. */
+            epics: components["schemas"]["EpicDto"][];
             sprint?: null | components["schemas"]["SprintDto"];
             /** @description The project has more open issues than one board can load. */
             truncated: boolean;
@@ -304,6 +308,14 @@ export interface components {
          * @description One board column. An issue lands in the column that lists its status; a status no
          *     column lists falls into the column that catches its category, if there is one.
          */
+        /** @description An epic the board's issues can be filtered by; issues belong to it through `parent_key`. */
+        EpicDto: {
+            /** Format: uuid */
+            id: string;
+            key: string;
+            status_category: string;
+            summary: string;
+        };
         Column: {
             /**
              * @description todo | in_progress | done: also show every status of this category that no

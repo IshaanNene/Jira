@@ -63,7 +63,10 @@ by the same or a newer issue version, and `issue.deleted` leaves a tombstone so 
 card back. A board shows at most 5000 cards (then `truncated`). Moves and sprint reports still check
 issue-service directly. `project.deleted` drops the project's copy.
 
-**Not built yet.** Epics and subtasks are not shown on boards; swimlanes and quick filters (the web board has
+**Epics.** Board and backlog responses carry `epics`: the project's unfinished and recently finished epics (up
+to 200, from the card copy), which the web pages offer as a filter; issues belong to an epic through `parent_key`.
+
+**Not built yet.** Epics are not cards and subtasks are not shown on boards; swimlanes and quick filters (the web board has
 search and "Only my issues"); cumulative flow and control charts.
 
 | Variable | Required | Default |

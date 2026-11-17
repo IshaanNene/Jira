@@ -123,6 +123,7 @@ export type BoardColumn = AgileApi["Column"];
 export type BoardCard = AgileApi["CardDto"];
 export type BoardView = AgileApi["BoardView"];
 export type BacklogView = AgileApi["BacklogView"];
+export type Epic = AgileApi["EpicDto"];
 export type Sprint = AgileApi["SprintDto"];
 export type SprintList = AgileApi["SprintList"];
 export type SprintReport = AgileApi["SprintReport"];

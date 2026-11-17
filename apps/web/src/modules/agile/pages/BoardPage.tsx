@@ -14,8 +14,9 @@ import { NoTransitionError, useBoardView, useDropCard, useSprints } from "../api
 import { AgileFrame, reason } from "../components/AgileFrame";
 import { CardTile } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
+import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
 import { CompleteSprintDialog } from "../components/SprintDialogs";
-import { sprintTimeLeft } from "../model";
+import { ALL_EPICS, inEpic, sprintTimeLeft } from "../model";
 
 function BoardBody({ board }: { board: Board }) {
   const view = useBoardView(board);
@@ -25,19 +26,23 @@ function BoardBody({ board }: { board: Board }) {
   const userId = useSession((s) => s.account?.id);
   const [search, setSearch] = useState("");
   const [mine, setMine] = useState(false);
+  const [epicChoice, setEpic] = useState(ALL_EPICS);
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [completing, setCompleting] = useState(false);
   const mql = useMqlFilter(board.project_id);
   const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
   const matches = mql.matches;
 
+  const epics = view.data?.epics;
+  const epic = effectiveEpic(epics ?? [], epicChoice);
   const visible = useMemo(() => {
     const text = search.trim().toLowerCase();
     return (card: BoardCard) =>
       (!mine || card.assignee_id === userId) &&
+      inEpic(card, epic) &&
       (!matches || matches.has(card.id)) &&
       (!text || card.summary.toLowerCase().includes(text) || card.key.toLowerCase().includes(text));
-  }, [search, mine, userId, matches]);
+  }, [search, mine, userId, matches, epic]);
 
   if (view.isPending) {
     return <div className="flex gap-3 px-6" aria-busy>{[0, 1, 2].map((i) => <Skeleton key={i} className="h-72 w-72" />)}</div>;
@@ -90,6 +95,7 @@ function BoardBody({ board }: { board: Board }) {
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this board" aria-label="Search this board" className="h-8 pl-8 text-sm" />
         </div>
         <Button size="sm" variant={mine ? "primary" : "secondary"} aria-pressed={mine} onClick={() => setMine((v) => !v)}>Only my issues</Button>
+        <EpicFilter epics={view.data.epics} value={epic} onChange={setEpic} />
         <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
         {sprint && (
           <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-muted">
