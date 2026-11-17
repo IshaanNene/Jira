@@ -83,6 +83,11 @@ changes roll the pods.
   `main` (`imageVerification.subjectRegExp`) and, by default, a signed CycloneDX SBOM attestation; pods are
   pinned to the verified digest. An image built elsewhere, or a tag moved to an unsigned image, is refused.
 
+- **Alerting** (Argo CD add-on `prometheus`, staging): pages go to PagerDuty and Slack, tickets to Slack. Before the
+  first sync, write the Secrets Manager entry `meridian-staging/alertmanager-receivers` as JSON with `slack-url`
+  (an incoming webhook) and `pagerduty-routing-key` (an Events v2 integration key), and set the role ARN in
+  `infrastructure/argocd/secret-store/observability.yaml` from `terraform output alerting_secrets_role_arn`.
+
 Every rendered manifest, for the default, kind and staging values, passes `kubeconform -strict` against the
 Kubernetes 1.31 schemas and the CRD catalog (ExternalSecret, ScaledObject, Argo CD) in CI.
 

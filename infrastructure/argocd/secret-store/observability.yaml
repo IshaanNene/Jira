@@ -1,0 +1,31 @@
+# Alertmanager's receiver credentials (Slack webhook URL, PagerDuty routing key) for the
+# observability namespace. This store is usable from that namespace only and assumes a role
+# that may read one Secrets Manager entry, meridian-staging/alertmanager-receivers
+# (terraform/environments/staging/alerting.tf), never the application's secrets.
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager-alerting
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: eu-west-1
+      # terraform output alerting_secrets_role_arn
+      role: "<terraform output alerting_secrets_role_arn>"
+  conditions:
+    - namespaces: [observability]
+---
+# Mounted into Alertmanager as files (slack-url, pagerduty-routing-key); its configuration
+# names the files, so the credentials are never in a ConfigMap.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: alertmanager-receivers
+  namespace: observability
+spec:
+  refreshInterval: 1h
+  secretStoreRef: { kind: ClusterSecretStore, name: aws-secrets-manager-alerting }
+  target: { name: alertmanager-receivers }
+  dataFrom:
+    - extract: { key: meridian-staging/alertmanager-receivers }

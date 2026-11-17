@@ -28,5 +28,10 @@ exists yet). A new build reaches staging by committing its tag to `values-stagin
 service then rolls out as a canary (25, 50, 75 % of replicas, five minutes each) while Argo
 Rollouts checks the new pods' own 5xx and slow-request ratios in Prometheus, and scales them
 back if either check misses twice. Pods start only from images CI signed and attested. The
-canary checks read that Prometheus (`prometheus-server.observability`). Alertmanager runs with
-the chart's defaults and no receivers: alerts fire but notify no one yet.
+canary checks read that Prometheus (`prometheus-server.observability`). Alertmanager sends
+pages to PagerDuty and Slack and tickets to Slack only (a page silences the matching ticket);
+the Slack webhook URL and PagerDuty routing key are files from the `alertmanager-receivers`
+Secret, which `secret-store/observability.yaml` fills from Secrets Manager through a store
+usable only from `observability` and a role that can read that one entry. Write the entry
+(`slack-url`, `pagerduty-routing-key`) and put `terraform output alerting_secrets_role_arn`
+into that file before the first sync.

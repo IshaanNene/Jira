@@ -111,13 +111,21 @@ jobs:
           git diff --exit-code infrastructure/argocd/prometheus/values.yaml
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm template prometheus prometheus-community/prometheus --version 26.0.1 -n observability \
-            -f infrastructure/argocd/prometheus/values.yaml \
-            | yq 'select(.kind == "ConfigMap" and .metadata.name == "prometheus-server") | .data' > server-config.yaml
+            -f infrastructure/argocd/prometheus/values.yaml > prometheus.yaml
+          yq 'select(.kind == "ConfigMap" and .metadata.name == "prometheus-server") | .data' prometheus.yaml > server-config.yaml
           mkdir -p promconf
           for f in prometheus.yml recording_rules.yml alerting_rules.yml; do yq ".\"$f\"" server-config.yaml > "promconf/$f"; done
           # Syntax only: the in-pod service-account files it names do not exist here.
           docker run --rm -v "$PWD/promconf:/etc/config:ro" --entrypoint promtool prom/prometheus:v3.0.1 check config --syntax-only /etc/config/prometheus.yml
           docker run --rm -v "$PWD/promconf:/etc/config:ro" -w /etc/config --entrypoint promtool prom/prometheus:v3.0.1 check rules recording_rules.yml alerting_rules.yml
+      - name: Alertmanager routes pages and tickets as documented
+        run: |
+          mkdir -p amconf
+          yq 'select(.kind == "ConfigMap" and .metadata.name == "prometheus-alertmanager") | .data["alertmanager.yml"]' prometheus.yaml > amconf/alertmanager.yml
+          am() { docker run --rm -v "$PWD/amconf:/am:ro" --entrypoint amtool prom/alertmanager:v0.27.0 "$@"; }
+          am check-config /am/alertmanager.yml
+          test "$(am config routes test --config.file=/am/alertmanager.yml severity=page service=issue-service)" = "pagerduty,slack"
+          test "$(am config routes test --config.file=/am/alertmanager.yml severity=ticket service=issue-service)" = "slack"
       - name: Gateway configuration is valid Envoy
         run: |
           helm template ci infrastructure/helm/meridian --set image.tag=ci --show-only templates/gateway.yaml \
