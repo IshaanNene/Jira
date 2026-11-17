@@ -1722,14 +1722,18 @@ async fn audiences_and_search_documents_are_served_to_other_services() {
     let too_many = GetDocumentsRequest { tenant_id: tenant.clone(), issue_ids: vec![first_id.clone(); 501] };
     assert_eq!(service.get_documents(tonic::Request::new(too_many)).await.unwrap_err().code(), tonic::Code::InvalidArgument);
 
-    let page = |after: &str, limit: u32| {
-        let req = ListIssueIdsRequest { tenant_id: tenant.clone(), after_id: after.to_owned(), limit };
+    let in_project = |project: String, after: &str, limit: u32| {
+        let req = ListIssueIdsRequest { tenant_id: tenant.clone(), after_id: after.to_owned(), limit, project_id: project };
         let service = &service;
         async move { service.list_issue_ids(tonic::Request::new(req)).await.unwrap().into_inner().ids }
     };
+    let page = |after: &str, limit: u32| in_project(String::new(), after, limit);
     assert_eq!(page("", 1000).await, [first_id.clone(), second_id.clone()]);
     assert_eq!(page("", 1).await, std::slice::from_ref(&first_id));
-    assert_eq!(page(&first_id, 10).await, [second_id]);
+    assert_eq!(page(&first_id, 10).await, std::slice::from_ref(&second_id));
+    // One project's issues only.
+    assert_eq!(in_project(d.project_id.clone(), "", 1000).await, [first_id.clone(), second_id]);
+    assert!(in_project(Uuid::now_v7().to_string(), "", 1000).await.is_empty());
     h.db.cleanup().await;
 }
 

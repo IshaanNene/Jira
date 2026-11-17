@@ -4,7 +4,7 @@
 //!   records it as removed from scope so the burndown drops it. Closed sprints keep their
 //!   frozen reports.
 //! - `project.deleted` (a soft delete): the project's boards are marked deleted and its
-//!   placements removed. Sprints and their reports stay, unreachable without a board.
+//!   placements and copied cards removed. Sprints and their reports stay, unreachable without a board.
 
 use std::sync::Arc;
 
@@ -44,6 +44,7 @@ impl Handler for Cleanup {
         } else {
             let p: ProjectDeletedV1 = event.payload()?;
             store::retire_project(tx.conn(), tenant_id, p.project_id).await?;
+            crate::cards::forget_project(tx.conn(), tenant_id, p.project_id).await?;
         }
         tx.commit().await?;
         Ok(())

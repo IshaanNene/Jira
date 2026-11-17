@@ -5,7 +5,7 @@ use std::{
 
 use agile_service::{
     http,
-    sources::{Card, Issues, ProjectRef, Projects, OFF_BOARD_TYPES},
+    sources::{Card, Issues, ProjectRef, Projects},
     AppState, MIGRATOR,
 };
 use async_trait::async_trait;
@@ -29,6 +29,8 @@ struct World {
     projects: Mutex<HashMap<(Uuid, String), ProjectRef>>,
     issues: Mutex<Vec<(Uuid, Uuid, Card)>>, // (tenant, project, card)
     roles: Mutex<HashMap<(Uuid, Uuid), HashMap<Uuid, ProjectRole>>>,
+    /// Sizes of the id pages a backfill asked for.
+    id_pages: Mutex<Vec<usize>>,
 }
 
 #[async_trait]
@@ -40,21 +42,19 @@ impl Projects for World {
 
 #[async_trait]
 impl Issues for World {
-    async fn open_cards(&self, tenant_id: Uuid, project_id: Uuid, done_since: OffsetDateTime) -> ApiResult<(Vec<Card>, bool)> {
-        let cards = self
+    async fn issue_ids(&self, tenant_id: Uuid, project_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>> {
+        let mut ids: Vec<Uuid> = self
             .issues
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, p, c)| {
-                *t == tenant_id
-                    && *p == project_id
-                    && !OFF_BOARD_TYPES.contains(&c.issue_type.as_str())
-                    && (!c.done() || c.resolved_at.is_some_and(|at| at >= done_since))
-            })
-            .map(|(_, _, c)| c.clone())
+            .filter(|(t, p, c)| *t == tenant_id && *p == project_id && after.is_none_or(|a| c.id > a))
+            .map(|(_, _, c)| c.id)
             .collect();
-        Ok((cards, false))
+        ids.sort();
+        ids.truncate(limit as usize);
+        self.id_pages.lock().unwrap().push(ids.len());
+        Ok(ids)
     }
     async fn cards_by_id(&self, tenant_id: Uuid, project_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Card>> {
         Ok(self
@@ -81,6 +81,7 @@ impl PolicySource for World {
 
 struct Harness {
     db: TestDb,
+    cards: agile_service::cards::CardSync,
     app: Router,
     auth: TestAuth,
     world: Arc<World>,
@@ -105,7 +106,8 @@ async fn harness() -> Harness {
         issues: world.clone(),
         allowed_origins: Arc::new(vec![]),
     };
-    Harness { db, app: http::router(state), auth, world, tenant: Uuid::now_v7(), org: Uuid::now_v7() }
+    let cards = agile_service::cards::CardSync { db: Arc::new(DbRouter::single(db.app.clone())), issues: world.clone() };
+    Harness { db, cards, app: http::router(state), auth, world, tenant: Uuid::now_v7(), org: Uuid::now_v7() }
 }
 
 impl Harness {
@@ -153,12 +155,28 @@ impl Harness {
         id
     }
 
-    fn set_status(&self, issue: Uuid, status: &str, category: &str) {
-        let mut issues = self.world.issues.lock().unwrap();
-        let card = &mut issues.iter_mut().find(|(_, _, c)| c.id == issue).unwrap().2;
-        card.status = status.into();
-        card.status_category = category.into();
-        card.resolved_at = (category == "done").then(OffsetDateTime::now_utc);
+    async fn set_status(&self, issue: Uuid, status: &str, category: &str) {
+        {
+            let mut issues = self.world.issues.lock().unwrap();
+            let card = &mut issues.iter_mut().find(|(_, _, c)| c.id == issue).unwrap().2;
+            card.status = status.into();
+            card.status_category = category.into();
+            card.resolved_at = (category == "done").then(OffsetDateTime::now_utc);
+            card.version += 1;
+        }
+        self.changed(issue, "issue.transitioned").await;
+    }
+
+    /// What issue-service would publish about the issue: the card consumer hears it.
+    async fn changed(&self, issue: Uuid, event_type: &str) {
+        use event_bus::Handler;
+        let (tenant, project, key) = {
+            let issues = self.world.issues.lock().unwrap();
+            let (t, p, c) = issues.iter().find(|(_, _, c)| c.id == issue).unwrap();
+            (*t, *p, c.key.clone())
+        };
+        let payload = json!({ "issue_id": issue, "key": key, "project_id": project });
+        self.cards.handle(&event(tenant, event_contracts::topics::ISSUE, event_type, payload)).await.unwrap();
     }
 
     async fn call(&self, method: Method, path: &str, token: &str, body: Option<Value>, if_match: Option<i64>) -> Reply {
@@ -295,12 +313,15 @@ async fn backlog_order_is_kept_and_changed_by_moves() {
     assert_eq!(keys(&backlog["backlog"]), ["DEMO-4", "DEMO-2", "DEMO-1", "DEMO-3", "DEMO-5"]);
 
     // An issue created later joins at the bottom without disturbing the order.
-    h.issue(project, 7, "bug", None);
+    let late = h.issue(project, 7, "bug", None);
+    // Not on the board until issue-service's event says it exists.
+    assert_eq!(keys(&h.get(&backlog_path, &admin).await["backlog"]), ["DEMO-4", "DEMO-2", "DEMO-1", "DEMO-3", "DEMO-5"]);
+    h.changed(late, "issue.created").await;
     let backlog = h.get(&backlog_path, &admin).await;
     assert_eq!(keys(&backlog["backlog"]), ["DEMO-4", "DEMO-2", "DEMO-1", "DEMO-3", "DEMO-5", "DEMO-7"]);
 
     // Finished issues leave the backlog.
-    h.set_status(ids[1], "done", "done");
+    h.set_status(ids[1], "done", "done").await;
     assert_eq!(keys(&h.get(&backlog_path, &admin).await["backlog"]), ["DEMO-4", "DEMO-1", "DEMO-3", "DEMO-5", "DEMO-7"]);
 
     let code = |reply: &Reply| reply.body["errors"][0]["code"].as_str().unwrap_or_default().to_owned();
@@ -376,8 +397,8 @@ async fn sprint_lifecycle_from_planning_to_report() {
     assert_eq!(h.call(Method::DELETE, &format!("/api/v1/sprints/{s1}"), &admin, None, None).await.status, StatusCode::CONFLICT);
 
     // The board shows the running sprint, each card in the column of its status.
-    h.set_status(a, "done", "done");
-    h.set_status(b, "in_review", "in_progress");
+    h.set_status(a, "done", "done").await;
+    h.set_status(b, "in_review", "in_progress").await;
     let view = h.get(&view_path, &viewer).await;
     assert_eq!(view["sprint"]["id"], s1.as_str());
     let column =
@@ -418,7 +439,7 @@ async fn sprint_lifecycle_from_planning_to_report() {
     assert_eq!(keys(&backlog["sprints"][0]["issues"]), ["DEMO-2", "DEMO-3", "DEMO-4"]);
 
     // The report is frozen: reopening the finished issue afterwards does not change it.
-    h.set_status(a, "todo", "todo");
+    h.set_status(a, "todo", "todo").await;
     let frozen = h.get(&report_path, &viewer).await;
     assert_eq!(keys(&frozen["outcome"]["completed"]), ["DEMO-1"]);
     assert_eq!(keys(&frozen["outcome"]["incomplete"]), ["DEMO-2", "DEMO-3"]);
@@ -459,9 +480,9 @@ async fn kanban_columns_follow_explicit_mapping_then_category() {
     let project = h.project("DEMO");
     let admin = h.user(&[(project, ProjectRole::Administrator)]);
     let (a, b, c) = (h.issue(project, 1, "task", None), h.issue(project, 2, "task", None), h.issue(project, 3, "task", None));
-    h.set_status(a, "in_review", "in_progress");
-    h.set_status(b, "building", "in_progress");
-    h.set_status(c, "shipped", "done");
+    h.set_status(a, "in_review", "in_progress").await;
+    h.set_status(b, "building", "in_progress").await;
+    h.set_status(c, "shipped", "done").await;
     let board = h.board(&admin, "kanban").await;
     let columns = json!({ "columns": [
         { "id": "doing", "name": "Doing", "category": "in_progress" },
@@ -591,5 +612,107 @@ async fn deleted_issues_and_projects_leave_the_boards() {
         .unwrap();
     assert!(placements().await.is_empty());
     assert_eq!(h.call(Method::GET, &format!("/api/v1/boards/{board}"), &admin, None, None).await.status, StatusCode::NOT_FOUND);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn boards_read_a_copy_filled_once_and_kept_current_by_issue_events() {
+    use event_bus::Handler;
+    use event_contracts::topics;
+
+    let h = harness().await;
+    let project = h.project("DEMO");
+    let admin = h.user(&[(project, ProjectRole::Administrator)]);
+    // More issues than one page of ids, so the first load copies them a page at a time.
+    let first = h.issue(project, 1, "story", None);
+    for n in 2..=1205 {
+        h.issue(project, n, "task", None);
+    }
+    let epic = h.issue(project, 1206, "epic", None);
+    {
+        let mut issues = h.world.issues.lock().unwrap();
+        let card = &mut issues.iter_mut().find(|(_, _, c)| c.id == first).unwrap().2;
+        card.parent_key = Some("DEMO-1206".into());
+        card.parent_summary = Some("Checkout".into());
+    }
+    let board = h.board(&admin, "kanban").await;
+    let path = format!("/api/v1/boards/{board}/view");
+    let view = h.get(&path, &admin).await;
+    let cards: Vec<&Value> = view["columns"].as_array().unwrap().iter().flat_map(|c| c["issues"].as_array().unwrap()).collect();
+    assert_eq!(cards.len(), 1205, "every story and task, not the epic");
+    assert_eq!(view["truncated"], false);
+    assert_eq!(*h.world.id_pages.lock().unwrap(), [1000, 206], "copied in pages");
+
+    // Later loads read only the copy.
+    h.get(&path, &admin).await;
+    assert_eq!(h.world.id_pages.lock().unwrap().len(), 2, "not copied again");
+
+    // A renamed parent reaches its children's cards.
+    {
+        let mut issues = h.world.issues.lock().unwrap();
+        for (_, _, c) in issues.iter_mut() {
+            if c.id == first {
+                c.parent_summary = Some("Checkout v2".into());
+            }
+            if c.id == epic {
+                c.summary = "Checkout v2".into();
+                c.version += 1;
+            }
+        }
+    }
+    h.changed(epic, "issue.updated").await;
+    let parent: Option<String> = sqlx::query_scalar("SELECT parent_summary FROM cards WHERE issue_id = $1")
+        .bind(first)
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(parent.as_deref(), Some("Checkout v2"));
+
+    // An older copy never replaces a newer one, and a deleted issue never comes back.
+    let stale = {
+        let issues = h.world.issues.lock().unwrap();
+        let mut c = issues.iter().find(|(_, _, c)| c.id == first).unwrap().2.clone();
+        c.summary = "Old".into();
+        c.version = 0;
+        c
+    };
+    let mut tx = DbRouter::single(h.db.app.clone()).begin(h.tenant).await.unwrap();
+    agile_service::cards::upsert(tx.conn(), h.tenant, project, &stale).await.unwrap();
+    tx.commit().await.unwrap();
+    let summary: String =
+        sqlx::query_scalar("SELECT summary FROM cards WHERE issue_id = $1").bind(first).fetch_one(&h.db.owner).await.unwrap();
+    assert_eq!(summary, "Issue 1");
+    let deleted = json!({ "issue_id": first, "key": "DEMO-1", "project_id": project });
+    h.cards.handle(&event(h.tenant, topics::ISSUE, "issue.deleted", deleted)).await.unwrap();
+    // The issue still answers in issue-service (a refresh racing the deletion): it stays gone.
+    h.changed(first, "issue.updated").await;
+    let view = h.get(&path, &admin).await;
+    let shown = view["columns"].as_array().unwrap().iter().flat_map(|c| c["issues"].as_array().unwrap()).count();
+    assert_eq!(shown, 1204);
+
+    // Another workspace's events about the same issue change nothing here.
+    let other = json!({ "issue_id": epic, "key": "DEMO-1206", "project_id": project });
+    h.cards.handle(&event(Uuid::now_v7(), topics::ISSUE, "issue.deleted", other)).await.unwrap();
+    let epics: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE issue_id = $1 AND NOT deleted AND tenant_id = $2")
+        .bind(epic)
+        .bind(h.tenant)
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(epics, 1);
+
+    // A deleted project's copy goes with it.
+    let cleanup = agile_service::cleanup::Cleanup { db: Arc::new(DbRouter::single(h.db.app.clone())) };
+    cleanup
+        .handle(&event(h.tenant, topics::PROJECT, "project.deleted", json!({ "project_id": project, "key": "DEMO" })))
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE tenant_id = $1")
+        .bind(h.tenant)
+        .fetch_one(&h.db.owner)
+        .await
+        .unwrap();
+    let synced: i64 = sqlx::query_scalar("SELECT count(*) FROM card_projects").fetch_one(&h.db.owner).await.unwrap();
+    assert_eq!((left, synced), (0, 0));
     h.db.cleanup().await;
 }

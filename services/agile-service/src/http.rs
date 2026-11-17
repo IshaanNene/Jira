@@ -463,14 +463,19 @@ struct Loaded {
     truncated: bool,
 }
 
-/// Fetch a project's open cards and make sure each has a rank: issues the board has not
-/// seen before are appended to the bottom in creation order.
+/// The project's open cards from the local copy (filled on a project's first load), making
+/// sure each has a rank: issues the board has not seen before are appended to the bottom in
+/// creation order.
 async fn load(state: &AppState, ctx: &OrgContext, board: &store::Board) -> ApiResult<Loaded> {
+    crate::cards::ensure_synced(&state.db, state.issues.as_ref(), ctx.tenant_id, board.project_id).await?;
     let since = OffsetDateTime::now_utc() - Duration::days(DONE_WINDOW_DAYS);
-    let (open, truncated) = state.issues.open_cards(ctx.tenant_id, board.project_id, since).await?;
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    let mut open =
+        crate::cards::open(tx.conn(), ctx.tenant_id, board.project_id, since, crate::cards::MAX_BOARD_CARDS + 1).await?;
+    let truncated = open.len() as i64 > crate::cards::MAX_BOARD_CARDS;
+    open.truncate(crate::cards::MAX_BOARD_CARDS as usize);
     let mut cards: HashMap<Uuid, Card> = open.into_iter().map(|c| (c.id, c)).collect();
 
-    let mut tx = state.db.begin(ctx.tenant_id).await?;
     let mut placements = store::placements(tx.conn(), ctx.tenant_id, board.project_id).await?;
     let placed: HashSet<Uuid> = placements.iter().map(|p| p.issue_id).collect();
     let mut unranked: Vec<&Card> = cards.values().filter(|c| !placed.contains(&c.id)).collect();
@@ -483,16 +488,16 @@ async fn load(state: &AppState, ctx: &OrgContext, board: &store::Board) -> ApiRe
         }
         placements = store::placements(tx.conn(), ctx.tenant_id, board.project_id).await?;
     }
-    tx.commit().await?;
 
     // Issues planned into a sprint stay visible there however long ago they were finished.
     let extra: Vec<Uuid> =
         placements.iter().filter(|p| p.in_open_sprint() && !cards.contains_key(&p.issue_id)).map(|p| p.issue_id).collect();
     if !extra.is_empty() {
-        for card in state.issues.cards_by_id(ctx.tenant_id, board.project_id, &extra).await? {
+        for card in crate::cards::by_ids(tx.conn(), ctx.tenant_id, board.project_id, &extra).await? {
             cards.insert(card.id, card);
         }
     }
+    tx.commit().await?;
     Ok(Loaded { cards, placements, truncated })
 }
 

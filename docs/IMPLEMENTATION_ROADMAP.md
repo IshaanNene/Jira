@@ -5,7 +5,7 @@ authorization → database → outbox) and has tests. "Specified" means there is
 
 Legend: ✅ done and verified · 🚧 partly done · ⬜ not started
 
-Last updated: 2026-11-17 (Phase 8: Argo Rollouts canaries and signature enforcement at admission; email digests and suppression).
+Last updated: 2026-11-17 (Phase 8: an event-fed card copy for boards; Argo Rollouts canaries and signature enforcement at admission; email digests and suppression).
 
 ## Phase status
 
@@ -50,7 +50,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | workflow-service | Declarative engine (conditions, validators, post-functions from closed sets), draft / publish with immutable versions and `If-Match`, publish-time validation incl. reachability, assignment per project and issue type with fallback order | 10 engine unit tests + 4 integration tests |
 | Issues on workflows | Initial status, available transitions, and every status change decided by the engine; post-functions applied atomically with the move; refusals carry the engine's explanation; status names resolved per workflow with graceful fallback | `status_changes_are_decided_by_the_workflow_engine`; live: custom workflow assigned to tasks, skip refused, required field enforced, auto-assign and custom resolution applied |
 | Workflow designer (web) | Draggable status diagram, connect statuses to add transitions, side panel for names, categories, initial status and rules, save draft / publish / discard, problems list, view-only for non-admins; workflow list, workspace default, per-project and per-type assignment | 10 web tests; opened and dragged in a real browser against a published workflow |
-| agile-service | Scrum and Kanban boards with columns mapped to workflow statuses (explicit status or category catch-all), WIP limits, shared per-project ranking (fractional ranks, advisory-locked), sprints (plan, start with commitment snapshot, one active per board, complete moving open work, delete planned), burndown from a scope-change log, velocity, per-caller permissions on every board | 10 unit tests (ranks, columns, burndown) + 5 integration tests incl. cross-tenant isolation |
+| agile-service | Scrum and Kanban boards with columns mapped to workflow statuses (explicit status or category catch-all), WIP limits, shared per-project ranking (fractional ranks, advisory-locked), sprints (plan, start with commitment snapshot, one active per board, complete moving open work, delete planned), burndown from a scope-change log, velocity, per-caller permissions on every board; cards read from an event-fed local copy (filled per project on first load through `ListIssueIds` by project, refreshed from issue-service on each issue event, version-guarded, tombstoned on deletion) | 10 unit tests (ranks, columns, burndown) + 7 integration tests incl. cross-tenant isolation and the card copy (paged first copy, no second copy, parent renames reaching children, stale versions refused, deletions sticking, other workspaces untouched, project deletion) |
 | Issue cards over gRPC | `issue.v1.Issues/ListCards` serves board cards per project (open + recently done, or by id), capped at 2000 with a `truncated` flag, service-token authenticated | `cards_are_served_to_other_services_per_project` |
 | Boards and backlog (web) | Board with drag between columns (the move goes through the workflow; refusals put the card back with the engine's reason), search, "Only my issues", an MQL filter (the editor from `/search`, kept in the URL as `?mql=`; ranking by drag pauses in the backlog while a filter hides issues), sprint header with time left; backlog with drag to rank and between sprints, row menus, create / edit / start / complete / delete sprint dialogs; board settings with a column editor; Reports with burndown and velocity charts (ECharts, light and dark) and issue tables | 15 web tests; driven in a real browser: plan a sprint, start it, drag a card To Do → In Progress (persisted with history), complete it, read the frozen report and velocity in both themes |
 | Internal gRPC | identity → user (`CheckMembership`), user → tenant (`ProvisionTenant`, `ResolveTenant`, `AbandonTenant`), authenticated, with deadlines, bounded retry, breaker | exercised live across three processes |
@@ -112,7 +112,7 @@ Everything else is not started. Three of the fifteen logical services have no co
 | Load test | `make load`: k6 open-model scenarios (reads across six endpoints, writes creating issues and comments) with p95 and error thresholds; `tests/load/stress.mjs`: autocannon stages at rising rates to find saturation | see Measured performance |
 | Developer workflow | `make dev/stop/test/lint/migrate/seed/logs/clean/gen-api/observability/images/kind-up/kind-down/load/resilience`, `.env.example`, seed script (idempotent, via public API) | each command run |
 
-Totals: **302 Rust tests, 186 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
+Totals: **303 Rust tests, 186 web tests, all passing**; `cargo clippy -D warnings`, `rustfmt --check`, `eslint`, `tsc` clean.
 
 ## Incomplete within Phase 5 scope
 
@@ -131,7 +131,7 @@ Totals: **302 Rust tests, 186 web tests, all passing**; `cargo clippy -D warning
 |---|---|
 | Epics and subtasks on boards | Not shown (as in many Jira configurations, but not configurable here); no epic panel in the backlog |
 | Swimlanes, quick filters, card layout settings | Not built; the board has text search and "Only my issues" |
-| Issue data on boards | Fetched from issue-service on every board load (capped at 2000 cards, shown as truncated) instead of an event-fed local copy; the relay now exists but the consumer does not |
+| Issue data on boards | Fixed in Phase 8: boards and backlogs read an event-fed local copy (`agile-service.cards`), filled per project on its first board load and kept current by issue events; up to 5000 cards per board. Moves and sprint reports still ask issue-service |
 | Ranks | No rebalancing job; ranks grow longer when many moves land in the same gap. Ranking is per project, so two boards of one project share an order |
 | Deleted issues | Fixed in Phase 5: the agile cleanup consumer removes placements and records scope removal from running sprints |
 | Reports | Burndown uses each issue's current estimate, not the estimate at the time; cumulative flow is a dashboard chart, not a board report, as are time in status and the control chart; no sprint retrospective or epic/version reports. The guideline starts from scope at start even when part of it was already done |

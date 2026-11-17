@@ -72,7 +72,7 @@ services:
   project:      { grpc: true,  database: true }
   workflow:     { grpc: true,  database: true }
   issue:        { grpc: true,  database: true }
-  agile:        { grpc: false, database: true, consumers: [agile-service.cleanup] }
+  agile:        { grpc: false, database: true, consumers: [agile-service.cleanup, agile-service.cards] }
   # Server-Sent Events: long-lived connections, drained on shutdown.
   realtime:     { grpc: false, database: false, terminationGracePeriodSeconds: 120 }
   notification: { grpc: false, database: true, consumers: [notification-service, notification-service.webhooks] }

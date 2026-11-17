@@ -83,6 +83,7 @@ impl Source for GrpcSource {
                 tenant_id: tenant_id.to_string(),
                 after_id: after.map(|a| a.to_string()).unwrap_or_default(),
                 limit,
+                project_id: String::new(),
             };
             async move { client.list_issue_ids(req).await }
         })

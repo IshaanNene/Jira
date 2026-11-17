@@ -239,9 +239,10 @@ impl Issues for IssuesService {
         let req = request.into_inner();
         let tenant_id = id("tenant_id", &req.tenant_id)?;
         let after = if req.after_id.is_empty() { None } else { Some(id("after_id", &req.after_id)?) };
+        let project = if req.project_id.is_empty() { None } else { Some(id("project_id", &req.project_id)?) };
         let limit = if req.limit == 0 { MAX_IDS } else { req.limit.min(MAX_IDS) };
         let mut tx = self.db.begin(tenant_id).await?;
-        let ids = store::issue_ids_after(tx.conn(), tenant_id, after, i64::from(limit)).await?;
+        let ids = store::issue_ids_after(tx.conn(), tenant_id, project, after, i64::from(limit)).await?;
         tx.commit().await?;
         Ok(Response::new(IssueIds { ids: ids.iter().map(Uuid::to_string).collect() }))
     }

@@ -21,6 +21,7 @@ dependencies = [
  "event-bus",
  "event-contracts",
  "http",
+ "metrics",
  "observability",
  "platform-common",
  "serde",

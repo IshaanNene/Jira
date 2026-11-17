@@ -10,7 +10,8 @@ service Issues {
   rpc GetAudience(GetAudienceRequest) returns (Audience);
   // Search documents. Deleted or unknown issues come back in `missing_ids`.
   rpc GetDocuments(GetDocumentsRequest) returns (Documents);
-  // Every issue id of a tenant in id order, a page at a time (full reindex).
+  // Every issue id of a tenant (or of one project) in id order, a page at a time (full
+  // reindex, board backfill).
   rpc ListIssueIds(ListIssueIdsRequest) returns (IssueIds);
 }
 
@@ -109,6 +110,7 @@ message ListIssueIdsRequest {
   string tenant_id = 1;
   string after_id = 2; // empty = from the start
   uint32 limit = 3;    // at most 1000
+  string project_id = 4; // empty = every project of the tenant
 }
 
 message IssueIds {

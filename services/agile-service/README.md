@@ -50,9 +50,18 @@ placement and, when it was in a running sprint, logs it as removed from scope so
 sprints keep their frozen reports). `project.deleted` marks the project's boards deleted and removes its
 placements. Inbox-deduplicated; tenant from the event envelope.
 
+**Card copy** (`cards`, `card_projects`; consumer `agile-service.cards` on the issue topic). Boards and
+backlogs read cards from a local copy instead of asking issue-service on every load. A project is copied the
+first time one of its boards loads (`ListIssueIds` for the project a page of 1000 at a time, then the cards by
+id); afterwards `issue.created`, `issue.updated`, `issue.transitioned` and `issue.assigned` make the consumer
+fetch that issue's current card again, and its children's (up to 500) when it is someone's parent. Fetching
+rather than applying the event means late, repeated or reordered events are harmless; a row is only replaced
+by the same or a newer issue version, and `issue.deleted` leaves a tombstone so a racing copy cannot bring the
+card back. A board shows at most 5000 cards (then `truncated`). Moves and sprint reports still check
+issue-service directly. `project.deleted` drops the project's copy.
+
 **Not built yet.** Epics and subtasks are not shown on boards; swimlanes and quick filters (the web board has
-search and "Only my issues"); a rank rebalancing job (ranks grow when many moves land in one gap); an event-fed
-copy of issue data (each board load asks issue-service, capped at 2000 cards); cumulative flow and control charts.
+search and "Only my issues"); a rank rebalancing job (ranks grow when many moves land in one gap); cumulative flow and control charts.
 
 | Variable | Required | Default |
 |---|---|---|

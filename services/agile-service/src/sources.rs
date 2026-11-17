@@ -1,9 +1,9 @@
-//! What this service reads from other services: project identity and issue cards.
-//! Boards never store issue fields; they are fetched when a board is rendered.
-//! (Phase 5 replaces the per-request read with a local projection fed by issue events.)
+//! What this service reads from other services: project identity and issue cards. Boards
+//! read cards from the local copy (see [`crate::cards`]); issue-service is asked only to fill
+//! and refresh it.
 
 use api_contracts::{
-    issue::v1::{issues_client::IssuesClient, Card as WireCard, ListCardsRequest},
+    issue::v1::{issues_client::IssuesClient, Card as WireCard, ListCardsRequest, ListIssueIdsRequest},
     project::v1::{projects_client::ProjectsClient, GetProjectRequest},
 };
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// Issue types that are not planned on boards in this phase.
 pub const OFF_BOARD_TYPES: [&str; 2] = ["epic", "subtask"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Card {
     pub id: Uuid,
     pub key: String,
@@ -57,9 +57,8 @@ pub trait Projects: Send + Sync {
 
 #[async_trait]
 pub trait Issues: Send + Sync {
-    /// Board-eligible issues that are unfinished or were resolved at or after
-    /// `done_since`. The flag reports that more matched than could be returned.
-    async fn open_cards(&self, tenant_id: Uuid, project_id: Uuid, done_since: OffsetDateTime) -> ApiResult<(Vec<Card>, bool)>;
+    /// The project's issue ids in id order after `after`, at most `limit` (a page).
+    async fn issue_ids(&self, tenant_id: Uuid, project_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>>;
     /// The given issues, as far as they exist in the project (any type, any status).
     async fn cards_by_id(&self, tenant_id: Uuid, project_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Card>>;
 }
@@ -170,16 +169,24 @@ fn card(w: WireCard) -> ApiResult<Card> {
 
 #[async_trait]
 impl Issues for GrpcIssues {
-    async fn open_cards(&self, tenant_id: Uuid, project_id: Uuid, done_since: OffsetDateTime) -> ApiResult<(Vec<Card>, bool)> {
-        self.list(ListCardsRequest {
-            tenant_id: tenant_id.to_string(),
-            project_id: project_id.to_string(),
-            issue_ids: vec![],
-            done_since: done_since.format(&Rfc3339).map_err(ApiError::internal)?,
-            exclude_types: OFF_BOARD_TYPES.iter().map(|t| (*t).to_owned()).collect(),
-            limit: 0,
+    async fn issue_ids(&self, tenant_id: Uuid, project_id: Uuid, after: Option<Uuid>, limit: u32) -> ApiResult<Vec<Uuid>> {
+        if self.breaker.try_acquire().is_err() {
+            return Err(ApiError::DependencyUnavailable(ISSUE_SERVICE));
+        }
+        let result = retry(RetryPolicy::default(), is_transient, || {
+            let mut client = self.client.clone();
+            let req = ListIssueIdsRequest {
+                tenant_id: tenant_id.to_string(),
+                project_id: project_id.to_string(),
+                after_id: after.map(|a| a.to_string()).unwrap_or_default(),
+                limit,
+            };
+            async move { client.list_issue_ids(req).await }
         })
-        .await
+        .await;
+        self.breaker.record(result.as_ref().map_or_else(|s| !is_transient(s), |_| true));
+        let reply = result.map_err(|s| from_status(&s, ISSUE_SERVICE))?.into_inner();
+        reply.ids.iter().map(|id| Uuid::parse_str(id).map_err(|_| invalid("issue id"))).collect()
     }
 
     async fn cards_by_id(&self, tenant_id: Uuid, project_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Card>> {

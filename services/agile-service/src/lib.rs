@@ -1,5 +1,6 @@
 //! Agile service: boards, their columns, the order of issues, and sprints.
 
+pub mod cards;
 pub mod cleanup;
 pub mod domain;
 pub mod http;
@@ -56,17 +57,28 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         Arc::new(RegistryPlacement::new(&registry, &secret, SERVICE_NAME)?),
     ));
     event_bus::spawn_relay(SERVICE_NAME, db.pools())?;
+    let issues: Arc<dyn sources::Issues> = Arc::new(sources::GrpcIssues::new(&issue, &secret)?);
     match event_bus::KafkaSettings::from_env(SERVICE_NAME) {
         Some(settings) => {
             let handler = Arc::new(cleanup::Cleanup { db: Arc::clone(&db) });
             let topics = [event_contracts::topics::ISSUE, event_contracts::topics::PROJECT];
+            let cleanup_settings = settings.clone();
             tokio::spawn(async move {
-                if let Err(error) = event_bus::run_consumer(&settings, cleanup::CONSUMER, &topics, handler).await {
+                if let Err(error) = event_bus::run_consumer(&cleanup_settings, cleanup::CONSUMER, &topics, handler).await {
                     tracing::error!(%error, "agile cleanup consumer stopped");
                 }
             });
+            let sync = Arc::new(cards::CardSync { db: Arc::clone(&db), issues: Arc::clone(&issues) });
+            tokio::spawn(async move {
+                let topics = [event_contracts::topics::ISSUE];
+                if let Err(error) = event_bus::run_consumer(&settings, cards::CONSUMER, &topics, sync).await {
+                    tracing::error!(%error, "agile card consumer stopped");
+                }
+            });
         }
-        None => tracing::warn!("KAFKA_BROKERS is not set: placements of deleted issues are not cleaned up"),
+        None => tracing::warn!(
+            "KAFKA_BROKERS is not set: boards show cards as of their first load, and deleted issues are not cleaned up"
+        ),
     }
     let redis = RedisHandle::connect_in_background(&config::required("REDIS_URL")?)?;
     let state = AppState {
@@ -77,7 +89,7 @@ pub async fn run(telemetry: Telemetry) -> anyhow::Result<Telemetry> {
         ),
         policy: Arc::new(PolicyClient::new(Arc::new(GrpcPolicySource::new(&permission, &secret, SERVICE_NAME)?), redis)),
         projects: Arc::new(sources::GrpcProjects::new(&project, &secret)?),
-        issues: Arc::new(sources::GrpcIssues::new(&issue, &secret)?),
+        issues,
         allowed_origins: Arc::new(config::list("ALLOWED_ORIGINS")),
     };
 

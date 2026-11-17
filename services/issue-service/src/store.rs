@@ -787,13 +787,21 @@ pub async fn comment_bodies(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uui
     .await?)
 }
 
-pub async fn issue_ids_after(conn: &mut PgConnection, tenant_id: Uuid, after: Option<Uuid>, limit: i64) -> ApiResult<Vec<Uuid>> {
+pub async fn issue_ids_after(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    project_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: i64,
+) -> ApiResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM issues WHERE tenant_id = $1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT $3",
+        "SELECT id FROM issues WHERE tenant_id = $1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id > $2) \
+         AND ($4::uuid IS NULL OR project_id = $4) ORDER BY id LIMIT $3",
     )
     .bind(tenant_id)
     .bind(after)
     .bind(limit)
+    .bind(project_id)
     .fetch_all(conn)
     .await?)
 }
