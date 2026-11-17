@@ -73,7 +73,8 @@ changes roll the pods.
 
 - **Canaries** (`rollouts.enabled`, staging): services are Argo Rollouts `Rollout`s. A new version takes 25, 50
   and 75 % of the replicas for five minutes each; the `meridian-canary` AnalysisTemplate checks the new pods'
-  own 5xx ratio and share of requests over 500 ms in Prometheus (`rollouts.prometheusAddress`) each minute, and
+  own 5xx ratio and share of requests over 500 ms in Prometheus (`rollouts.prometheusAddress`, the `prometheus`
+  Argo CD add-on in staging) each minute, and
   two misses abort the release and scale the canary back. `kubectl argo rollouts promote <service>` skips the
   remaining pauses; `kubectl argo rollouts abort <service>` stops one by hand.
 

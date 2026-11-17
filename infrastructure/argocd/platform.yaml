@@ -80,6 +80,30 @@ spec:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true, ServerSideApply=true]
 ---
+# Metrics, alerts and the canary checks' data. Values (scrape jobs and the same rule files as
+# local Compose) are generated into the repository by scripts/prometheus-values.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: prometheus
+      targetRevision: 26.0.1
+      helm:
+        releaseName: prometheus
+        valueFiles: [$repo/infrastructure/argocd/prometheus/values.yaml]
+    - repoURL: https://github.com/IshaanNene/Jira.git
+      targetRevision: main
+      ref: repo
+  destination: { server: "https://kubernetes.default.svc", namespace: observability }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+---
 # Where ExternalSecrets read from. Credentials come from the controller's Pod Identity.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

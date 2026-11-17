@@ -104,6 +104,20 @@ jobs:
         run: |
           docker run --rm -v "$PWD/infrastructure/observability/prometheus:/w:ro" -w /w --entrypoint promtool prom/prometheus:v3.0.1 check rules alerts.yml slo.yml
           docker run --rm -v "$PWD/infrastructure/observability/prometheus:/w:ro" -w /w --entrypoint promtool prom/prometheus:v3.0.1 test rules slo.test.yml
+      - name: In-cluster Prometheus values are current and valid
+        # Generated from the rule files; rendered with the pinned chart and checked by promtool.
+        run: |
+          ./scripts/prometheus-values.sh
+          git diff --exit-code infrastructure/argocd/prometheus/values.yaml
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm template prometheus prometheus-community/prometheus --version 26.0.1 -n observability \
+            -f infrastructure/argocd/prometheus/values.yaml \
+            | yq 'select(.kind == "ConfigMap" and .metadata.name == "prometheus-server") | .data' > server-config.yaml
+          mkdir -p promconf
+          for f in prometheus.yml recording_rules.yml alerting_rules.yml; do yq ".\"$f\"" server-config.yaml > "promconf/$f"; done
+          # Syntax only: the in-pod service-account files it names do not exist here.
+          docker run --rm -v "$PWD/promconf:/etc/config:ro" --entrypoint promtool prom/prometheus:v3.0.1 check config --syntax-only /etc/config/prometheus.yml
+          docker run --rm -v "$PWD/promconf:/etc/config:ro" -w /etc/config --entrypoint promtool prom/prometheus:v3.0.1 check rules recording_rules.yml alerting_rules.yml
       - name: Gateway configuration is valid Envoy
         run: |
           helm template ci infrastructure/helm/meridian --set image.tag=ci --show-only templates/gateway.yaml \
