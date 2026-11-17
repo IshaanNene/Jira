@@ -1,121 +1,281 @@
-import { ArrowRight, Check } from "lucide-react";
-import { useEffect } from "react";
+import { ArrowRight } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Button } from "@/components/ui";
+import { useSession } from "@/state/session";
 import { PRODUCT_NAME } from "@/utils/config";
 
-import { MarketingLayout, Section } from "../components/MarketingLayout";
-import { ProductPreview } from "../components/ProductPreview";
-import { FEATURE_AREAS } from "../content";
+import { FEATURE_AREAS, PLANS } from "../content";
+import { FACTS, FAQ, quote, SECURITY_POINTS } from "../landing/data";
+import { DemoBoard } from "../landing/DemoBoard";
+import { QueryPlayground } from "../landing/QueryPlayground";
+import { WorkflowDiagram } from "../landing/WorkflowDiagram";
+import "../landing/landing.css";
 
-const STEPS = [
-  { title: "Create a workspace", body: "Sign up, name your workspace and invite your team by email. Guests can be invited to just the projects they need." },
-  { title: "Shape your process", body: "Start from a project template, then draw your own workflow, add custom fields and set up the board's columns." },
-  { title: "Plan, ship, learn", body: "Run sprints from the backlog, track them on the board and see velocity, cycle time and flow on your dashboards." },
-];
+const FONTS_ID = "landing-fonts";
+const FONTS_URL =
+  "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap";
 
-const PROOF = [
-  { value: "Row-level", label: "tenant isolation in the database" },
-  { value: "Live", label: "board and issue updates" },
-  { value: "7", label: "built-in chart kinds" },
-  { value: "0", label: "lines of user code run by workflows" },
-];
+const SECTIONS = [
+  ["#features", "Features"],
+  ["#query", "Query"],
+  ["#workflows", "Workflows"],
+  ["#security", "Security"],
+  ["#pricing", "Pricing"],
+  ["#faq", "FAQ"],
+] as const;
+
+const CARD_COLORS = ["c-yellow", "c-blue", "c-pink", "c-mint", "c-paper", "c-tomato", "c-yellow", "c-blue"];
+const TILTS = [-0.6, 0.5, -0.3, 0.7, -0.5, 0.4, -0.7, 0.3];
+const QUICK_SIZES = [5, 10, 25, 60, 150, 500];
+
+function Mark({ size = 18 }: { size?: number }) {
+  return (
+    <span className="logo-mark" aria-hidden>
+      <svg width={size} height={size} viewBox="0 0 18 18"><path d="M2 16V2l7 8 7-8v14" fill="none" stroke="#121016" strokeWidth="3" /></svg>
+    </span>
+  );
+}
+
+function SectionHead({ chip, title, intro }: { chip: string; title: React.ReactNode; intro?: string }) {
+  return (
+    <div className="sec-head">
+      <div>
+        <span className="chip">{chip}</span>
+        <h2>{title}</h2>
+      </div>
+      {intro && <p>{intro}</p>}
+    </div>
+  );
+}
+
+function Pricing() {
+  const [people, setPeople] = useState(12);
+  const q = quote(people);
+  const money = (n: number) => `$${n.toLocaleString("en-US")}`;
+  return (
+    <>
+      <div className="calc">
+        <div className="calc-l">
+          <label htmlFor="landing-seats">Your team size</label>
+          <div className="seats"><output htmlFor="landing-seats">{people}</output><span className="unit">{people === 1 ? "person" : "people"}</span></div>
+          <input id="landing-seats" type="range" min={1} max={500} value={people} onChange={(e) => setPeople(Number(e.target.value))} />
+          <div className="steps" role="group" aria-label="Quick team sizes">
+            {QUICK_SIZES.map((n) => <button key={n} type="button" onClick={() => setPeople(n)}>{n}</button>)}
+          </div>
+        </div>
+        <div className="calc-r" role="status">
+          <span className="which">{q.plan} plan</span>
+          <span className="total">{money(q.monthly)}</span>
+          <span className="per">
+            {q.plan === "Free" ? "forever, for up to 10 people" : `per month · ${money(q.yearly)} a year${people >= 100 ? ". Need SSO or SCIM? See Enterprise." : ""}`}
+          </span>
+        </div>
+      </div>
+      <ul className="plans">
+        {PLANS.map((plan) => {
+          const fits = plan.name === q.plan;
+          return (
+            <li key={plan.name}>
+              <article className={["plan", plan.highlighted && "hot", fits && "fit"].filter(Boolean).join(" ")} aria-label={`${plan.name} plan`}>
+                {fits && <span className="fits">FITS YOUR TEAM</span>}
+                <h3>{plan.name}</h3>
+                <div className="price">{plan.price} {plan.name === "Team" && <small>/ person / month</small>}</div>
+                <p className="muted">{plan.name === "Team" ? plan.blurb : `${plan.cadence} · ${plan.blurb}`}</p>
+                <ul>
+                  {plan.features.map((f) => <li key={f}>{f}</li>)}
+                  {plan.soon?.map((f) => <li key={f} className="soon">{f} (coming)</li>)}
+                </ul>
+                <Link className={plan.name === "Enterprise" ? "btn dark" : "btn"} to="/register">{plan.cta}</Link>
+              </article>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="fine">Prices in US dollars, before tax. Dashed items are on the way and not built yet.</p>
+    </>
+  );
+}
 
 export default function LandingPage() {
+  const signedIn = useSession((s) => s.status === "authenticated");
   useEffect(() => {
-    document.title = `${PRODUCT_NAME} · Plan, track and ship work`;
+    document.title = `${PRODUCT_NAME} · Plan it. Ship it. Prove it.`;
+    if (!document.getElementById(FONTS_ID)) {
+      const link = document.createElement("link");
+      link.id = FONTS_ID;
+      link.rel = "stylesheet";
+      link.href = FONTS_URL;
+      document.head.appendChild(link);
+    }
   }, []);
+
   return (
-    <MarketingLayout>
-      <div className="border-b border-line bg-gradient-to-b from-accent-soft/60 to-canvas">
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 py-16 lg:grid-cols-[1fr_1.15fr] lg:py-24">
-          <div>
-            <p className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-ink-muted">
-              <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden /> Now in preview
-            </p>
-            <h1 className="mt-5 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
-              Plan, track and ship work with your whole team.
-            </h1>
-            <p className="mt-5 max-w-xl text-lg text-ink-muted">
-              {PRODUCT_NAME} brings issues, boards, sprints, workflows and dashboards together in one place, with the
-              security an organisation needs from day one.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Button asChild variant="primary" size="lg">
-                <Link to="/register">Get started free <ArrowRight className="h-4 w-4" aria-hidden /></Link>
-              </Button>
-              <Button asChild size="lg"><Link to="/features">See the features</Link></Button>
+    <div className="nb">
+      <a className="skip" href="#main">Skip to content</a>
+      <header className="top">
+        <div className="wrap">
+          <Link className="logo" to="/" aria-label={`${PRODUCT_NAME} home`}><Mark />{PRODUCT_NAME}</Link>
+          <nav className="links" aria-label="Sections">
+            {SECTIONS.map(([href, label]) => <a key={href} href={href}>{label}</a>)}
+          </nav>
+          <div className="actions">
+            {signedIn ? (
+              <Link className="btn" to="/">Open your workspace</Link>
+            ) : (
+              <>
+                <Link className="signin" to="/login">Sign in</Link>
+                <Link className="btn" to="/register">Get started free</Link>
+              </>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main id="main">
+        <section className="hero" aria-labelledby="landing-title">
+          <div className="wrap hero-grid">
+            <div>
+              <span className="chip">Issue tracking · boards · sprints</span>
+              <h1 id="landing-title">Plan it.<br /><span className="hl">Ship it.</span><br /><span className="under">Prove it.</span></h1>
+              <p className="lede">
+                {PRODUCT_NAME} is the project tracker for teams who want <b>issues, boards, workflows, search and reports</b> in one place,
+                with every workspace locked down in the database itself.
+              </p>
+              <div className="ctas">
+                <Link className="btn" to="/register">Get started free <ArrowRight className="h-5 w-5" strokeWidth={3} aria-hidden /></Link>
+                <a className="btn alt" href="#query">Try the query language</a>
+              </div>
+              <ul className="meta" aria-label="Highlights">
+                {["Free for up to 10 people", "Scrum + Kanban", "SSO · SCIM · passkeys", "Self-host on Kubernetes"].map((t) => <li key={t} className="tag">{t}</li>)}
+              </ul>
             </div>
-            <ul className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ink-muted">
-              {["Free for up to 10 people", "No credit card", "Invite your team in minutes"].map((t) => (
-                <li key={t} className="flex items-center gap-1.5"><Check className="h-4 w-4 text-success" aria-hidden /> {t}</li>
+            <DemoBoard />
+          </div>
+        </section>
+
+        <div className="ticker" aria-hidden>
+          <div className="track">{[...FACTS, ...FACTS].map((f, i) => <span key={i}>{f}</span>)}</div>
+        </div>
+
+        <section className="block" id="features">
+          <div className="wrap">
+            <SectionHead chip="What's inside" title={<>Eight tools.<br />One tracker.</>} intro="Every item here is built and tested today. If something is still coming, we say so." />
+            <ul className="features">
+              {FEATURE_AREAS.map((f, i) => (
+                <li key={f.id}>
+                  <Link to={`/features#${f.id}`} className={`feat ${CARD_COLORS[i % CARD_COLORS.length]}`} style={{ "--tilt": `${TILTS[i % TILTS.length]}deg` } as React.CSSProperties}>
+                    <span className="ico" aria-hidden><f.icon className="h-7 w-7" strokeWidth={2.6} /></span>
+                    <h3>{f.title}</h3>
+                    <p>{f.summary}</p>
+                    <ul>{f.points.slice(0, 4).map((p) => <li key={p}>{p}</li>)}</ul>
+                    <span className="more">Learn more →</span>
+                  </Link>
+                </li>
               ))}
             </ul>
           </div>
-          <ProductPreview />
-        </div>
-      </div>
+        </section>
 
-      <section aria-label="At a glance" className="border-b border-line">
-        <dl className="mx-auto grid max-w-6xl grid-cols-2 gap-6 px-4 py-10 md:grid-cols-4">
-          {PROOF.map((p) => (
-            <div key={p.label}>
-              <dt className="sr-only">{p.label}</dt>
-              <dd className="text-2xl font-semibold tracking-tight">{p.value}</dd>
-              <dd className="mt-1 text-sm text-ink-muted">{p.label}</dd>
+        <section className="block" id="query">
+          <div className="wrap">
+            <SectionHead
+              chip="Meridian Query Language"
+              title="Ask your backlog anything."
+              intro="Type a query and watch the example issues filter as you type. It uses the same fields and operators as the real search."
+            />
+            <QueryPlayground />
+          </div>
+        </section>
+
+        <section className="block" id="workflows">
+          <div className="wrap">
+            <SectionHead
+              chip="Workflow designer"
+              title={<>Draw the process.<br />{PRODUCT_NAME} enforces it.</>}
+              intro="Drag statuses onto a canvas and connect them. Transitions can require fields and run actions, and every published version is kept."
+            />
+            <WorkflowDiagram />
+            <div className="flow-notes">
+              <div className="note"><h3>Conditions and validators</h3>A transition can require a field, a role or a resolution before an issue is allowed through.</div>
+              <div className="note"><h3>Drafts and versions</h3>Edit a draft, publish when it&apos;s ready, and restore any earlier version as a new draft.</div>
+              <div className="note"><h3>Automation rules</h3>Assign, prioritise, label, move and comment, on a trigger or a schedule. Rules are settings, so no one&apos;s code ever runs.</div>
             </div>
-          ))}
-        </dl>
-      </section>
+          </div>
+        </section>
 
-      <Section id="everything" eyebrow="One product" title="Everything a team needs to get work done" intro="From the first idea in the backlog to the report on how the sprint went.">
-        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {FEATURE_AREAS.map((f) => (
-            <li key={f.id}>
-              <Link to={`/features#${f.id}`} className="group block h-full rounded-lg border border-line bg-surface p-5 transition-colors hover:border-accent">
-                <f.icon className="h-6 w-6 text-accent" aria-hidden />
-                <h3 className="mt-3 font-semibold">{f.title}</h3>
-                <p className="mt-1.5 text-sm text-ink-muted">{f.summary}</p>
-                <span className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent">
-                  Learn more <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </Section>
+        <section className="slab" id="security" aria-labelledby="landing-security">
+          <div className="wrap">
+            <span className="chip">Security</span>
+            <h2 id="landing-security">Your data stays <em>yours</em>.<br />The database enforces it.</h2>
+            <ul className="sec-grid">
+              {SECURITY_POINTS.map((s) => (
+                <li key={s.title} className="sec-item"><span className="k">{s.label}</span><h3>{s.title}</h3><p>{s.body}</p></li>
+              ))}
+            </ul>
+            <div className="codeblock" role="figure" aria-label="The database policy that isolates workspaces">
+              <pre>
+                <span className="c">-- Applied to every workspace table. The app sets the tenant from the signed token.</span>{"\n"}
+                <span className="k2">ALTER TABLE</span> issues <span className="k2">FORCE ROW LEVEL SECURITY</span>;{"\n"}
+                <span className="k2">CREATE POLICY</span> tenant_isolation <span className="k2">ON</span> issues{"\n"}
+                {"  "}<span className="k2">USING</span> (tenant_id = app_tenant_id()){"\n"}
+                {"  "}<span className="k2">WITH CHECK</span> (tenant_id = app_tenant_id());
+              </pre>
+            </div>
+            <div className="ctas"><Link className="btn" to="/security">Read the security overview</Link></div>
+          </div>
+        </section>
 
-      <div className="border-y border-line bg-sunken">
-        <Section id="how" eyebrow="How it works" title="Up and running in an afternoon">
-          <ol className="grid gap-6 md:grid-cols-3">
-            {STEPS.map((s, i) => (
-              <li key={s.title} className="rounded-lg border border-line bg-surface p-5">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-ink" aria-hidden>{i + 1}</span>
-                <h3 className="mt-4 font-semibold">{s.title}</h3>
-                <p className="mt-1.5 text-sm text-ink-muted">{s.body}</p>
-              </li>
-            ))}
-          </ol>
-        </Section>
-      </div>
+        <section className="block" id="pricing">
+          <div className="wrap">
+            <SectionHead chip="Pricing" title={<>Simple prices.<br />No surprises.</>} intro="Free for up to 10 people. After that, one price per person. Move the slider to see what your team would pay." />
+            <Pricing />
+          </div>
+        </section>
 
-      <Section id="trust" eyebrow="Security" title="Your data stays yours" intro="Each workspace is isolated by the database itself, not just by application code. Every request is authorised against the caller's own permissions.">
-        <div className="flex flex-wrap gap-3">
-          <Button asChild><Link to="/security">How we keep data safe</Link></Button>
-          <Button asChild variant="ghost"><Link to="/pricing">Compare plans</Link></Button>
+        <section className="block" id="faq">
+          <div className="wrap">
+            <SectionHead chip="Questions" title="Before you ask." />
+            <div className="faq">
+              {FAQ.map((f, i) => (
+                <details key={f.q} open={i === 0}>
+                  <summary>{f.q}</summary>
+                  <div className="a">{f.a}</div>
+                </details>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="final" aria-labelledby="landing-final">
+          <div className="wrap">
+            <div className="final-box">
+              <h2 id="landing-final">Your next sprint starts here.</h2>
+              <p>Set up a workspace, invite your team and draw your first workflow. It&apos;s free for up to 10 people.</p>
+              <div className="ctas">
+                {signedIn ? <Link className="btn dark" to="/">Open your workspace</Link> : <Link className="btn dark" to="/register">Create your workspace</Link>}
+                <Link className="btn alt" to="/features">See every feature</Link>
+              </div>
+              <svg className="big-star" viewBox="0 0 200 200" aria-hidden>
+                <path d="M100 6l20 62 64-8-50 42 34 56-58-26-46 50 4-66L6 92l64-18z" fill="var(--yellow)" stroke="#121016" strokeWidth="6" strokeLinejoin="round" />
+              </svg>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <div className="wrap">
+          <Link className="logo" to="/"><Mark size={14} />{PRODUCT_NAME}</Link>
+          <nav aria-label="Site">
+            <Link to="/features">Features</Link>
+            <Link to="/pricing">Pricing</Link>
+            <Link to="/security">Security</Link>
+            {signedIn ? <Link to="/">Open your workspace</Link> : <Link to="/login">Sign in</Link>}
+          </nav>
+          <span>© {new Date().getFullYear()} {PRODUCT_NAME}. Preview release.</span>
         </div>
-      </Section>
-
-      <section className="mx-auto max-w-6xl px-4 pb-20">
-        <div className="rounded-xl bg-accent px-6 py-12 text-center text-accent-ink sm:px-12">
-          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Bring your team&apos;s work together</h2>
-          <p className="mx-auto mt-3 max-w-xl text-lg opacity-90">Create a workspace in under a minute. Free for teams of up to 10.</p>
-          <Button asChild size="lg" className="mt-8 bg-surface text-ink hover:bg-sunken">
-            <Link to="/register">Create your workspace</Link>
-          </Button>
-        </div>
-      </section>
-    </MarketingLayout>
+      </footer>
+    </div>
   );
 }
