@@ -171,6 +171,38 @@ keda:
   sasl: scram_sha512
   tls: enable
 
+# Release services as canaries with Argo Rollouts (needs the Argo Rollouts controller and a
+# Prometheus that scrapes the pods; see templates/rollouts.yaml). Off: plain rolling updates.
+rollouts:
+  enabled: false
+  prometheusAddress: ""
+  # Each check runs this often over this window, and fails the release after failureLimit misses.
+  interval: 1m
+  window: 2m
+  failureLimit: 2
+  # The new pods' share of 5xx answers and of requests slower than 500 ms.
+  maxErrorRatio: 0.02
+  maxSlowRatio: 0.1
+  # Without a traffic-splitting mesh, weights are shares of replicas.
+  steps:
+    - setWeight: 25
+    - pause: { duration: 5m }
+    - setWeight: 50
+    - pause: { duration: 5m }
+    - setWeight: 75
+    - pause: { duration: 5m }
+
+# Admit only images CI signed and attested (needs Kyverno; see templates/image-verification.yaml).
+imageVerification:
+  enabled: false
+  # The CI workflow that may sign: its certificate's subject, e.g.
+  # ^https://github\.com/<owner>/<repo>/\.github/workflows/ci\.yml@refs/heads/main$
+  subjectRegExp: ""
+  issuer: https://token.actions.githubusercontent.com
+  rekorUrl: https://rekor.sigstore.dev
+  # Also require the CycloneDX SBOM attestation.
+  requireSbom: true
+
 migrations:
   enabled: true
   backoffLimit: 2

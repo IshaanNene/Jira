@@ -42,3 +42,8 @@ topologySpreadConstraints:
     labelSelector:
       matchLabels: {{- include "meridian.selector" . | nindent 8 }}
 {{- end -}}
+
+{{/* What a service's autoscaler scales: its Deployment, or its Rollout with rollouts.enabled. */}}
+{{- define "meridian.scaleTarget" -}}
+{{- if .Values.rollouts.enabled }} apiVersion: argoproj.io/v1alpha1, kind: Rollout, {{ else }} apiVersion: apps/v1, kind: Deployment, {{ end -}}
+{{- end -}}

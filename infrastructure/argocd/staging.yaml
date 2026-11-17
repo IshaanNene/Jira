@@ -37,3 +37,4 @@ spec:
   # HPAs and KEDA own replica counts.
   ignoreDifferences:
     - { group: apps, kind: Deployment, jsonPointers: [/spec/replicas] }
+    - { group: argoproj.io, kind: Rollout, jsonPointers: [/spec/replicas] }

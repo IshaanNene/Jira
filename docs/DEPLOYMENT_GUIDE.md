@@ -71,6 +71,17 @@ changes roll the pods.
   signing in to MSK with the platform's SCRAM credentials through a `TriggerAuthentication`; `maxReplicas`
   stays at or below the partition count (12 on MSK).
 
+- **Canaries** (`rollouts.enabled`, staging): services are Argo Rollouts `Rollout`s. A new version takes 25, 50
+  and 75 % of the replicas for five minutes each; the `meridian-canary` AnalysisTemplate checks the new pods'
+  own 5xx ratio and share of requests over 500 ms in Prometheus (`rollouts.prometheusAddress`) each minute, and
+  two misses abort the release and scale the canary back. `kubectl argo rollouts promote <service>` skips the
+  remaining pauses; `kubectl argo rollouts abort <service>` stops one by hand.
+
+- **Image signatures** (`imageVerification.enabled`, staging): a Kyverno `Policy` in the release namespace admits
+  pods running `image.registry/*` only if the digest carries a keyless cosign signature from CI's workflow on
+  `main` (`imageVerification.subjectRegExp`) and, by default, a signed CycloneDX SBOM attestation; pods are
+  pinned to the verified digest. An image built elsewhere, or a tag moved to an unsigned image, is refused.
+
 Every rendered manifest, for the default, kind and staging values, passes `kubeconform -strict` against the
 Kubernetes 1.31 schemas and the CRD catalog (ExternalSecret, ScaledObject, Argo CD) in CI.
 

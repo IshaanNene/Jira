@@ -37,3 +37,11 @@ keda:
   enabled: true
   sasl: scram_sha512
   tls: enable
+
+rollouts:
+  enabled: true
+  prometheusAddress: http://prometheus-server.observability.svc.cluster.local
+
+imageVerification:
+  enabled: true
+  subjectRegExp: '^https://github\.com/IshaanNene/Jira/\.github/workflows/ci\.yml@refs/heads/main$'

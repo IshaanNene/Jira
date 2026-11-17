@@ -1,0 +1,47 @@
+{{- if .Values.rollouts.enabled }}
+{{- $r := .Values.rollouts }}
+{{- $pods := `service="{{args.service}}", pod=~"{{args.rollout}}-{{args.canary-hash}}-.*"` }}
+# The checks every canary runs (see services.yaml). They look only at the new pods' own
+# requests, so the stable pods' traffic cannot hide a broken release. A canary that has
+# served nothing yet counts as healthy. Needs a Prometheus that scrapes the pods by their
+# prometheus.io annotations and labels samples with the pod name (the usual
+# `kubernetes-pods` job does).
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: meridian-canary
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+spec:
+  args:
+    - name: service
+    - name: rollout
+    - name: canary-hash
+  metrics:
+    # Share of the canary's requests answered with a 5xx.
+    - name: error-ratio
+      interval: {{ $r.interval }}
+      failureLimit: {{ $r.failureLimit }}
+      successCondition: {{ printf "result[0] <= %v" $r.maxErrorRatio | quote }}
+      provider:
+        prometheus:
+          address: {{ required "rollouts.prometheusAddress is required with rollouts.enabled" $r.prometheusAddress | quote }}
+          query: |
+            (
+              (sum(rate(http_requests_total{ {{- $pods }}, status=~"5.."}[{{ $r.window }}])) or vector(0))
+                / sum(rate(http_requests_total{ {{- $pods }}}[{{ $r.window }}]))
+            ) or vector(0)
+    # Share of the canary's requests slower than 500 ms (the latency SLO's threshold; the
+    # realtime streams, which stay open by design, are left out as in the SLO).
+    - name: slow-ratio
+      interval: {{ $r.interval }}
+      failureLimit: {{ $r.failureLimit }}
+      successCondition: {{ printf "result[0] <= %v" $r.maxSlowRatio | quote }}
+      provider:
+        prometheus:
+          address: {{ $r.prometheusAddress | quote }}
+          query: |
+            (
+              1 - sum(rate(http_request_duration_seconds_bucket{ {{- $pods }}, le="0.5", route!~".*/rt/.*"}[{{ $r.window }}]))
+                / sum(rate(http_request_duration_seconds_count{ {{- $pods }}, route!~".*/rt/.*"}[{{ $r.window }}]))
+            ) or vector(0)
+{{- end }}

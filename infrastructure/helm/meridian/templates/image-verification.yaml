@@ -1,0 +1,39 @@
+{{- if .Values.imageVerification.enabled }}
+{{- $v := .Values.imageVerification }}
+{{- $attestor := dict "keyless" (dict "subjectRegExp" (required "imageVerification.subjectRegExp is required" $v.subjectRegExp) "issuer" $v.issuer "rekor" (dict "url" $v.rekorUrl)) }}
+# Admission (Kyverno): a pod in this namespace may run one of the platform's images only if CI
+# signed that exact digest (keyless, the workflow identity below, logged in Rekor) and, with
+# requireSbom, attested its CycloneDX SBOM. The image reference is rewritten to the verified
+# digest, so a tag moved afterwards changes nothing. Other images (e.g. the gateway's Envoy) are
+# pinned by tag in values and are not covered. Applied before the workloads in each sync; on the
+# very first install the migration Jobs (pre-sync hooks) start before it exists.
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  name: meridian-signed-images
+  labels: {{- include "meridian.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: signed-by-ci
+      match:
+        any:
+          - resources: { kinds: [Pod] }
+      verifyImages:
+        - imageReferences: [{{ printf "%s/*" .Values.image.registry | quote }}]
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - entries: [{{- toJson $attestor }}]
+          {{- if $v.requireSbom }}
+          attestations:
+            - type: https://cyclonedx.org/bom
+              attestors:
+                - entries: [{{- toJson $attestor }}]
+          {{- end }}
+{{- end }}
