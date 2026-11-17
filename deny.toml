@@ -6,4 +6,11 @@ ignore = [
     # comes in through openidconnect, which only verifies identity providers' ID-token
     # signatures with their public keys; nothing here decrypts or signs with RSA.
     { id = "RUSTSEC-2023-0071", reason = "only RSA signature verification with public keys (OIDC ID tokens)" },
+    # Unmaintained notices (no vulnerability), published 2026-11-17 with no replacement release
+    # in the crates that pull them in. Drop these once object_store, oauth2/openidconnect and
+    # samael move off them.
+    # humantime: object_store parses its own configuration durations with it (attachments).
+    { id = "RUSTSEC-2026-0542", reason = "unmaintained, transitive via object_store; no safe upgrade yet" },
+    # chrono: timestamps inside oauth2/openidconnect and samael (SSO) and object_store.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, transitive via openidconnect, oauth2, samael, object_store; no safe upgrade yet" },
 ]

@@ -201,6 +201,9 @@ so that a new migration file is always embedded in the binary.
   utoipa 5, tower-http 0.6) to stay on APIs that were verified here. Upgrading is a tracked chore. `redis` (0.27 → 1)
   and `object_store` (0.11 → 0.14) were upgraded in Phase 8 to clear RustSec advisories (quick-xml denial of
   service, unmaintained rustls-pemfile).
+- `humantime` (RUSTSEC-2026-0542, via object_store) and `chrono` (RUSTSEC-2026-0543, via openidconnect, oauth2,
+  samael and object_store) were declared unmaintained on 2026-11-17: no vulnerability and no safe upgrade yet, so
+  both are acknowledged in `deny.toml` until those crates move off them.
 - A checkout inside an iCloud-synced folder (such as the Desktop) breaks local development: iCloud evicts files
   such as service logs and test caches, and anything that opens them blocks. Keep the repository outside iCloud.
 - Chart queries are the slowest read path (666/s on one replica, p99 658 ms at saturation): every request queries
