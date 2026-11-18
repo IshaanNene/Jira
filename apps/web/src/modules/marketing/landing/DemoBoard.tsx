@@ -36,10 +36,9 @@ export function DemoBoard() {
 
   return (
     <div className="demo" ref={frame} role="group" aria-label="Example sprint board">
-      <span className="stamp" aria-hidden>DRAG<br />ME</span>
       <div className="demo-bar">
         <div className="dots" aria-hidden><i /><i /><i /></div>
-        <span className="demo-title">PAY · Sprint 14 (example)</span>
+        <span className="demo-title">PAY · Sprint 14 · drag the cards</span>
         <span className="demo-sprint">6 days left</span>
       </div>
       <div className="board">
@@ -88,7 +87,7 @@ export function DemoBoard() {
                         <span className="epic" style={{ background: EPIC_COLOR[card.epic] }}>{card.epic}</span>
                         <span className="pts" title="Story points">{card.points}</span>
                       </div>
-                      <div className="row">
+                      <div className="moves">
                         <button type="button" className="mv" disabled={at === 0} aria-label={`Move ${card.key} left`} onClick={(e) => move(card.key, ORDER[at - 1]!, e.currentTarget)}>◀</button>
                         <button type="button" className="mv" disabled={at === ORDER.length - 1} aria-label={`Move ${card.key} right`} onClick={(e) => move(card.key, ORDER[at + 1]!, e.currentTarget)}>▶</button>
                       </div>

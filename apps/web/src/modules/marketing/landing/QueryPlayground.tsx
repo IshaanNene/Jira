@@ -30,15 +30,16 @@ export function QueryPlayground() {
           {outcome.error ?? (query.trim() ? "Query OK" : "Showing every issue")}
         </div>
         <div className="ql-chips" role="group" aria-label="Example queries">
-          {EXAMPLE_QUERIES.map((q) => (
+          {EXAMPLE_QUERIES.slice(0, 4).map((q) => (
             <button key={q} type="button" onClick={() => setQuery(q)}>{q}</button>
           ))}
         </div>
-        <p className="ql-help">
+        <details className="ql-help">
+          <summary>Syntax</summary>
           <b>Fields</b> {QUERY_FIELDS.join(", ")}<br />
           <b>Operators</b> = != &gt; &lt; &gt;= &lt;= ~ (contains) IN (…) IS EMPTY<br />
           <b>Join</b> AND, OR, NOT and (brackets)
-        </p>
+        </details>
       </div>
       <div className="results">
         <div className="results-head"><span>Matching example issues</span><output aria-label="Matching issues">{rows.length}</output></div>

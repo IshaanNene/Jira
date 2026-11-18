@@ -27,7 +27,7 @@ const SECTIONS = [
 
 const CARD_COLORS = ["c-yellow", "c-blue", "c-pink", "c-mint", "c-paper", "c-tomato", "c-yellow", "c-blue"];
 const TILTS = [-0.6, 0.5, -0.3, 0.7, -0.5, 0.4, -0.7, 0.3];
-const QUICK_SIZES = [5, 10, 25, 60, 150, 500];
+const PLAN_LINES = 5;
 
 function Mark({ size = 18 }: { size?: number }) {
   return (
@@ -60,9 +60,6 @@ function Pricing() {
           <label htmlFor="landing-seats">Your team size</label>
           <div className="seats"><output htmlFor="landing-seats">{people}</output><span className="unit">{people === 1 ? "person" : "people"}</span></div>
           <input id="landing-seats" type="range" min={1} max={500} value={people} onChange={(e) => setPeople(Number(e.target.value))} />
-          <div className="steps" role="group" aria-label="Quick team sizes">
-            {QUICK_SIZES.map((n) => <button key={n} type="button" onClick={() => setPeople(n)}>{n}</button>)}
-          </div>
         </div>
         <div className="calc-r" role="status">
           <span className="which">{q.plan} plan</span>
@@ -83,8 +80,7 @@ function Pricing() {
                 <div className="price">{plan.price} {plan.name === "Team" && <small>/ person / month</small>}</div>
                 <p className="muted">{plan.name === "Team" ? plan.blurb : `${plan.cadence} · ${plan.blurb}`}</p>
                 <ul>
-                  {plan.features.map((f) => <li key={f}>{f}</li>)}
-                  {plan.soon?.map((f) => <li key={f} className="soon">{f} (coming)</li>)}
+                  {plan.features.slice(0, PLAN_LINES).map((f) => <li key={f}>{f}</li>)}
                 </ul>
                 <Link className={plan.name === "Enterprise" ? "btn dark" : "btn"} to="/register">{plan.cta}</Link>
               </article>
@@ -92,7 +88,7 @@ function Pricing() {
           );
         })}
       </ul>
-      <p className="fine">Prices in US dollars, before tax. Dashed items are on the way and not built yet.</p>
+      <p className="fine">Prices in US dollars, before tax. <Link to="/pricing">Compare every plan in full →</Link></p>
     </>
   );
 }
@@ -146,9 +142,6 @@ export default function LandingPage() {
                 <Link className="btn" to="/register">Get started free <ArrowRight className="h-5 w-5" strokeWidth={3} aria-hidden /></Link>
                 <a className="btn alt" href="#query">Try the query language</a>
               </div>
-              <ul className="meta" aria-label="Highlights">
-                {["Free for up to 10 people", "Scrum + Kanban", "SSO · SCIM · passkeys", "Self-host on Kubernetes"].map((t) => <li key={t} className="tag">{t}</li>)}
-              </ul>
             </div>
             <DemoBoard />
           </div>
@@ -168,7 +161,6 @@ export default function LandingPage() {
                     <span className="ico" aria-hidden><f.icon className="h-7 w-7" strokeWidth={2.6} /></span>
                     <h3>{f.title}</h3>
                     <p>{f.summary}</p>
-                    <ul>{f.points.slice(0, 4).map((p) => <li key={p}>{p}</li>)}</ul>
                     <span className="more">Learn more →</span>
                   </Link>
                 </li>
@@ -209,7 +201,7 @@ export default function LandingPage() {
             <span className="chip">Security</span>
             <h2 id="landing-security">Your data stays <em>yours</em>.<br />The database enforces it.</h2>
             <ul className="sec-grid">
-              {SECURITY_POINTS.map((s) => (
+              {SECURITY_POINTS.slice(0, 3).map((s) => (
                 <li key={s.title} className="sec-item"><span className="k">{s.label}</span><h3>{s.title}</h3><p>{s.body}</p></li>
               ))}
             </ul>
