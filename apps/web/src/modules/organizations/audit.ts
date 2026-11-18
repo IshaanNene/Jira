@@ -98,6 +98,8 @@ export function describe(entry: AuditEntry, people: Record<string, string>): str
       return `${entry.action.split(".")[1]} a board`;
     case "board.columns_changed":
       return "changed a board's columns";
+    case "board.quick_filters_changed":
+      return "changed a board's quick filters";
     case "sprint.started":
       return `started sprint ${what}${d.issues ? ` with ${d.issues} issues` : ""}`;
     case "sprint.completed":

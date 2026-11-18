@@ -28,6 +28,7 @@ import { CardRow } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
 import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
 import { EpicPanel } from "../components/EpicPanel";
+import { QuickFilterBar, useQuickFilters } from "../components/QuickFilters";
 import { CompleteSprintDialog, SprintDialog, StartSprintDialog } from "../components/SprintDialogs";
 import { ALL_EPICS, BACKLOG, formatPoints, inEpic, totalPoints, type Move } from "../model";
 
@@ -52,7 +53,8 @@ function BacklogBody({ board }: { board: Board }) {
   const openCreateIssue = useUi((s) => s.openCreateIssue);
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [action, setAction] = useState<SprintAction | null>(null);
-  const mql = useMqlFilter(board.project_id);
+  const quick = useQuickFilters(board);
+  const mql = useMqlFilter(board.project_id, quick.queries);
   const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
   const [epicChoice, setEpic] = useState(ALL_EPICS);
   const [epicsOpen, setEpicsOpen] = useState(false);
@@ -126,6 +128,7 @@ function BacklogBody({ board }: { board: Board }) {
             <Layers className="h-3.5 w-3.5" /> Epics
           </Button>
           {!epicsOpen && <EpicFilter epics={data.epics} value={epic} onChange={setEpic} />}
+          <QuickFilterBar board={board} quick={quick} mql={mql} />
           <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
           {filtering && permissions.move_issues && <span className="text-sm text-ink-subtle">Clear the filters to rank issues by dragging.</span>}
         </div>

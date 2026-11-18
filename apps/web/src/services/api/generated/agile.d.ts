@@ -231,6 +231,8 @@ export interface components {
             /** Format: uuid */
             project_id: string;
             project_key: string;
+            /** @description Saved filters people can switch on above the board and backlog, in order. */
+            quick_filters: components["schemas"]["QuickFilter"][];
             /**
              * Format: int64
              * @description Send back in `If-Match` when editing.
@@ -400,6 +402,16 @@ export interface components {
              */
             sprint_id?: string | null;
         };
+        /**
+         * @description A saved filter of a board that people switch on and off above the board and backlog.
+         *     Its query is an MQL condition, run by search-service like any other query.
+         */
+        QuickFilter: {
+            id: string;
+            name: string;
+            /** @description An MQL condition, without `ORDER BY`. */
+            query: string;
+        };
         ReportIssue: {
             /** Format: uuid */
             id: string;
@@ -465,6 +477,8 @@ export interface components {
         UpdateBoardRequest: {
             columns?: components["schemas"]["Column"][] | null;
             name?: string | null;
+            /** @description Replaces the board's quick filters (at most 20). */
+            quick_filters?: components["schemas"]["QuickFilter"][] | null;
         };
         UpdateSprintRequest: {
             /** Format: date */

@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, KanbanSquare, Plus, Settings2, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, KanbanSquare, Plus, Settings2, Trash2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
@@ -18,7 +18,8 @@ import {
 } from "@/components/ui";
 import { useProjectStatuses } from "@/modules/issues";
 import { roleAtLeast, useProject } from "@/modules/projects";
-import { ApiError, errorMessage, type Board, type BoardColumn } from "@/services/api";
+import { mqlProblem } from "@/modules/search";
+import { ApiError, errorMessage, type Board, type BoardColumn, type QuickFilter } from "@/services/api";
 
 import { useBoardMutations, useBoards } from "../api";
 
@@ -87,6 +88,8 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
   const statuses = useProjectStatuses(board.project_id);
   const [name, setName] = useState(board.name);
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
+  const [quickFilters, setQuickFilters] = useState<QuickFilter[]>(board.quick_filters);
+  const [checking, setChecking] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -95,6 +98,7 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
     if (open) {
       setName(board.name);
       setColumns(board.columns);
+      setQuickFilters(board.quick_filters);
       setConfirmDelete(false);
       setError(undefined);
     }
@@ -109,12 +113,34 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
       return next;
     });
   const add = () => setColumns((cols) => [...cols, { id: `col-${Date.now().toString(36)}`, name: "", statuses: [], category: null, wip_limit: null }]);
+  const patchQuick = (index: number, change: Partial<QuickFilter>) => setQuickFilters((all) => all.map((f, i) => (i === index ? { ...f, ...change } : f)));
+  const addQuick = () => setQuickFilters((all) => [...all, { id: `qf-${Date.now().toString(36)}`, name: "", query: "" }]);
 
-  const save = (event: React.FormEvent) => {
+  const save = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(undefined);
+    // New and changed queries must run before they are saved; unchanged ones already did.
+    const saved = new Map(board.quick_filters.map((f) => [f.id, f.query.trim()]));
+    const changed = quickFilters.filter((f) => f.query.trim() && saved.get(f.id) !== f.query.trim());
+    if (changed.length > 0) {
+      setChecking(true);
+      try {
+        for (const filter of changed) {
+          const problem = await mqlProblem(board.project_id, filter.query);
+          if (problem) {
+            setError(`The query of "${filter.name.trim() || "a quick filter"}" can't run: ${problem}`);
+            return;
+          }
+        }
+      } catch (e) {
+        setError(`Couldn't check the quick filters' queries: ${reason(e)}`);
+        return;
+      } finally {
+        setChecking(false);
+      }
+    }
     update.mutate(
-      { board, patch: { name, columns } },
+      { board, patch: { name, columns, quick_filters: quickFilters } },
       {
         onSuccess: () => {
           toast.success("Board saved");
@@ -129,7 +155,7 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="Board settings" description="Each column shows the statuses listed for it. Dragging a card into a column moves the issue through its workflow." className="top-[8%] max-w-3xl">
-        <form onSubmit={save} className="space-y-4">
+        <form onSubmit={(e) => void save(e)} className="space-y-4">
           <Field label="Board name">
             <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required />
           </Field>
@@ -151,6 +177,22 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
               ))}
             </ul>
             <Button size="sm" variant="ghost" className="mt-2" onClick={add} disabled={columns.length >= 12}><Plus className="h-3.5 w-3.5" /> Add column</Button>
+          </div>
+          <div>
+            <div className="mb-1.5 text-sm font-medium text-ink">Quick filters</div>
+            <p className="mb-2 text-xs text-ink-subtle">Buttons above the board and backlog that show only the issues an MQL condition matches. Several switched on must all match.</p>
+            {quickFilters.length > 0 && (
+              <ul className="max-h-[30vh] space-y-2 overflow-y-auto pr-1">
+                {quickFilters.map((filter, index) => (
+                  <li key={filter.id} className="grid grid-cols-[1fr_2fr_auto] items-center gap-2 rounded border border-line bg-sunken/50 p-2">
+                    <Input value={filter.name} onChange={(e) => patchQuick(index, { name: e.target.value })} placeholder="Button label" aria-label={`Name of quick filter ${index + 1}`} maxLength={40} className="h-7 text-sm" required />
+                    <Input value={filter.query} onChange={(e) => patchQuick(index, { query: e.target.value })} placeholder="type = bug AND priority >= high" aria-label={`Query of ${filter.name || `quick filter ${index + 1}`}`} maxLength={1000} className="h-7 font-mono text-xs" required />
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setQuickFilters((all) => all.filter((_, i) => i !== index))} aria-label={`Remove quick filter ${filter.name || index + 1}`}><X className="h-3.5 w-3.5" /></Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button size="sm" variant="ghost" className="mt-2" onClick={addQuick} disabled={quickFilters.length >= 20}><Plus className="h-3.5 w-3.5" /> Add quick filter</Button>
           </div>
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}
           <div className="flex items-center justify-between gap-2 pt-1">
@@ -180,7 +222,7 @@ function BoardSettingsDialog({ board, open, onOpenChange }: { board: Board; open
             )}
             <span className="flex gap-2">
               <Button onClick={() => onOpenChange(false)}>Cancel</Button>
-              <Button type="submit" variant="primary" loading={update.isPending}>Save</Button>
+              <Button type="submit" variant="primary" loading={checking || update.isPending}>Save</Button>
             </span>
           </div>
         </form>

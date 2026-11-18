@@ -27,7 +27,10 @@ use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    domain::{burndown, column_for, default_columns, validate_columns, BurndownSample, Column, IssueFact, ScopeChange},
+    domain::{
+        burndown, column_for, default_columns, validate_columns, validate_quick_filters, BurndownSample, Column, IssueFact,
+        QuickFilter, ScopeChange,
+    },
     rank,
     sources::{Card, OFF_BOARD_TYPES},
     store, AppState,
@@ -75,6 +78,8 @@ pub struct BoardDto {
     /// scrum | kanban
     pub kind: String,
     pub columns: Vec<Column>,
+    /// Saved filters people can switch on above the board and backlog, in order.
+    pub quick_filters: Vec<QuickFilter>,
     /// Send back in `If-Match` when editing.
     pub version: i64,
     pub permissions: BoardPermissions,
@@ -104,6 +109,8 @@ pub struct CreateBoardRequest {
 pub struct UpdateBoardRequest {
     pub name: Option<String>,
     pub columns: Option<Vec<Column>>,
+    /// Replaces the board's quick filters (at most 20).
+    pub quick_filters: Option<Vec<QuickFilter>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -398,6 +405,8 @@ fn board_dto(board: &store::Board, role: ProjectRole) -> ApiResult<BoardDto> {
         name: board.name.clone(),
         kind: board.kind.clone(),
         columns: columns_of(board)?,
+        quick_filters: serde_json::from_value(board.quick_filters.clone())
+            .map_err(|e| ApiError::internal(anyhow::anyhow!("stored quick filters are invalid: {e}")))?,
         version: board.version,
         permissions: BoardPermissions {
             manage_board: role.allows(ProjectPermission::ManageProject),
@@ -688,12 +697,23 @@ pub async fn update_board(
     let expected = require_if_match(&headers)?;
     let (board, role) = open_board(&state, &ctx, id, ProjectPermission::ManageProject).await?;
     let name = body.name.as_deref().map(|n| validate_name(n, "board")).transpose()?.unwrap_or_else(|| board.name.clone());
-    let (columns, change) = match body.columns {
-        Some(columns) => (serde_json::to_value(validate_columns(columns)?).map_err(ApiError::internal)?, "columns_changed"),
-        None => (board.columns.clone(), "renamed"),
+    let mut change = "renamed";
+    let quick_filters = match body.quick_filters {
+        Some(filters) => {
+            change = "quick_filters_changed";
+            serde_json::to_value(validate_quick_filters(filters)?).map_err(ApiError::internal)?
+        }
+        None => board.quick_filters.clone(),
+    };
+    let columns = match body.columns {
+        Some(columns) => {
+            change = "columns_changed";
+            serde_json::to_value(validate_columns(columns)?).map_err(ApiError::internal)?
+        }
+        None => board.columns.clone(),
     };
     let mut tx = state.db.begin(ctx.tenant_id).await?;
-    let updated = store::update_board(tx.conn(), ctx.tenant_id, id, expected, &name, &columns)
+    let updated = store::update_board(tx.conn(), ctx.tenant_id, id, expected, &name, &columns, &quick_filters)
         .await
         .map_err(duplicate("This project already has a board with that name."))?;
     let Some(updated) = updated else {
@@ -1230,6 +1250,7 @@ pub async fn velocity(State(state): State<AppState>, ctx: OrgContext, Path(id): 
         CreateBoardRequest,
         UpdateBoardRequest,
         Column,
+        QuickFilter,
         Commitment,
         SprintDto,
         SprintList,

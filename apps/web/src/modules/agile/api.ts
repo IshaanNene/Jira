@@ -10,6 +10,7 @@ import {
   type BoardColumn,
   type BoardList,
   type BoardView,
+  type QuickFilter,
   type Sprint,
   type SprintList,
   type SprintReport,
@@ -111,7 +112,7 @@ export function useBoardMutations(projectKey: string) {
       onSuccess: done,
     }),
     update: useMutation({
-      mutationFn: async ({ board, patch }: { board: Board; patch: { name?: string; columns?: BoardColumn[] } }) =>
+      mutationFn: async ({ board, patch }: { board: Board; patch: { name?: string; columns?: BoardColumn[]; quick_filters?: QuickFilter[] } }) =>
         (await requestWithMeta<Board>("PATCH", `${BOARDS}/${board.id}`, { body: patch, ifMatch: board.version })).data,
       // Also on failure: a conflict means someone else changed the board.
       onSettled: done,

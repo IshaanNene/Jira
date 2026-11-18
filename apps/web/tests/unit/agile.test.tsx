@@ -19,6 +19,7 @@ import {
 } from "@/modules/agile/model";
 import BacklogPage from "@/modules/agile/pages/BacklogPage";
 import BoardPage from "@/modules/agile/pages/BoardPage";
+import { combineMql } from "@/modules/search";
 import type { BacklogView, Board, BoardCard, BoardColumn, BoardView, IssueTransition, Sprint } from "@/services/api";
 
 import { fakeApi, project, renderAt, signIn, STATUSES, type Call } from "./harness";
@@ -38,7 +39,7 @@ const COLUMNS: BoardColumn[] = [
 
 const board = (overrides: Partial<Board> = {}): Board => ({
   id: "b1", name: "PAY board", kind: "scrum", project_id: "00000000-0000-7000-8000-0000000000b1", project_key: "PAY", version: 1,
-  columns: COLUMNS,
+  columns: COLUMNS, quick_filters: [],
   permissions: { manage_board: false, manage_sprints: true, move_issues: true, transition_issues: true },
   ...overrides,
 });
@@ -456,6 +457,87 @@ describe("filtering the board and backlog with MQL", () => {
     expect(within(screen.getByRole("region", { name: "PAY Sprint 1" })).getByText("No issues here match the filter.")).toBeInTheDocument();
     expect(screen.getByText("Clear the filters to rank issues by dragging.")).toBeInTheDocument();
     expect(within(backlog).getByRole("button", { name: "Move PAY-3" })).toBeInTheDocument();
+  });
+
+  it("combines queries in brackets and drops sorting, but not inside quotes", () => {
+    expect(combineMql(["type = bug"])).toBe("type = bug");
+    expect(combineMql(["", "type = bug ORDER BY rank", "assignee = currentUser()"])).toBe("(type = bug) AND (assignee = currentUser())");
+    expect(combineMql(['summary ~ "order by"', "labels IN (order, by)"])).toBe('(summary ~ "order by") AND (labels IN (order, by))');
+    expect(combineMql(["order by created DESC"])).toBe("");
+  });
+
+  it("switches a board's quick filters on together with its MQL filter, kept in the URL", async () => {
+    signIn();
+    const filtered = board({
+      quick_filters: [
+        { id: "bugs", name: "Bugs", query: "type = bug" },
+        { id: "mine", name: "Mine", query: "assignee = currentUser()" },
+      ],
+    });
+    const api = fakeApi(
+      agileRoutes({
+        "GET /api/v1/boards": { items: [filtered] },
+        "GET /api/v1/projects": { items: [project()], next_cursor: null },
+        "GET /api/v1/boards/b1/backlog": { ...backlogView(), board: filtered },
+        [`GET ${IDS}`]: (call: Call) =>
+          call.query.get("mql")?.includes("currentUser")
+            ? { status: 422, body: { code: "validation_failed", detail: "Invalid", errors: [{ field: "mql", code: "invalid_query", message: "Not today.", span: [0, 4] }] } }
+            : { body: { ids: ["c3"], truncated: false } },
+      }),
+    );
+    renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog?mql=type%20%3D%20story%20ORDER%20BY%20rank&qf=gone");
+    const backlog = await screen.findByRole("region", { name: "Backlog" });
+    const quick = screen.getByRole("group", { name: "Quick filters" });
+    // An id the board no longer has is ignored; the MQL filter alone runs.
+    await waitFor(() => expect(api.sent("GET", IDS).at(-1)?.query.get("mql")).toBe("type = story ORDER BY rank"));
+
+    await userEvent.click(within(quick).getByRole("button", { name: "Bugs" }));
+    expect(within(quick).getByRole("button", { name: "Bugs" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(api.sent("GET", IDS).at(-1)?.query.get("mql")).toBe("(type = story) AND (type = bug)"));
+    await waitFor(() => expect(within(backlog).queryByText("PAY-4")).not.toBeInTheDocument());
+
+    // A quick filter whose query fails is reported, not pinned on the MQL editor.
+    await userEvent.click(within(quick).getByRole("button", { name: "Mine" }));
+    expect(await within(quick).findByRole("alert")).toHaveTextContent("These filters can't run together: Not today.");
+
+    await userEvent.click(within(quick).getByRole("button", { name: "Clear" }));
+    expect(within(quick).getByRole("button", { name: "Bugs" })).toHaveAttribute("aria-pressed", "false");
+    expect(within(quick).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("checks a new quick filter's query before saving it in board settings", async () => {
+    signIn();
+    const admin = board({ permissions: { manage_board: true, manage_sprints: true, move_issues: true, transition_issues: true } });
+    const api = fakeApi(
+      agileRoutes({
+        "GET /api/v1/boards": { items: [admin] },
+        "GET /api/v1/projects": { items: [project()], next_cursor: null },
+        "GET /api/v1/boards/b1/backlog": { ...backlogView(), board: admin },
+        [`GET ${IDS}`]: (call: Call) =>
+          call.query.get("mql") === "tpye = bug"
+            ? { status: 422, body: { code: "validation_failed", detail: "Invalid", errors: [{ field: "mql", code: "invalid_query", message: 'Unknown field "tpye".', span: [0, 4] }] } }
+            : { body: { ids: [], truncated: false } },
+        "PATCH /api/v1/boards/b1": (call: Call) => ({ body: { ...admin, ...(call.body as object), version: 2 }, headers: { etag: '"2"' } }),
+      }),
+    );
+    renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog");
+    await screen.findByRole("region", { name: "Backlog" });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Board settings" }));
+    await user.click(await screen.findByRole("button", { name: "Add quick filter" }));
+    await user.type(screen.getByRole("textbox", { name: "Name of quick filter 1" }), "Bugs");
+    await user.type(screen.getByRole("textbox", { name: "Query of Bugs" }), "tpye = bug");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent('The query of "Bugs" can\'t run: Unknown field "tpye".');
+    expect(api.sent("PATCH", "/api/v1/boards/b1")).toHaveLength(0);
+
+    await user.clear(screen.getByRole("textbox", { name: "Query of Bugs" }));
+    await user.type(screen.getByRole("textbox", { name: "Query of Bugs" }), "type = bug");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.sent("PATCH", "/api/v1/boards/b1")).toHaveLength(1));
+    const body = api.sent("PATCH", "/api/v1/boards/b1")[0]!.body as { quick_filters: { name: string; query: string }[] };
+    expect(body.quick_filters).toEqual([expect.objectContaining({ name: "Bugs", query: "type = bug" })]);
   });
 });
 

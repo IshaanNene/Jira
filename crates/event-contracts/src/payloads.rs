@@ -257,7 +257,7 @@ payload!(WorkflowUpdatedV1, "workflow.updated", 1, topics::WORKFLOW, "workflow")
 pub struct BoardUpdatedV1 {
     pub board_id: Uuid,
     pub project_id: Uuid,
-    /// created | renamed | columns_changed | deleted
+    /// created | renamed | columns_changed | quick_filters_changed | deleted
     pub change: String,
 }
 payload!(BoardUpdatedV1, "board.updated", 1, topics::AGILE, "board");

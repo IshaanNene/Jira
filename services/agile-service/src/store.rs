@@ -16,12 +16,13 @@ pub struct Board {
     pub name: String,
     pub kind: String,
     pub columns: Value,
+    pub quick_filters: Value,
     pub version: i64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
-const BOARD: &str = "id, project_id, project_key, name, kind, columns, version, created_at, updated_at";
+const BOARD: &str = "id, project_id, project_key, name, kind, columns, quick_filters, version, created_at, updated_at";
 
 pub async fn boards(conn: &mut PgConnection, tenant_id: Uuid, project_id: Uuid) -> ApiResult<Vec<Board>> {
     Ok(sqlx::query_as(&format!(
@@ -77,9 +78,10 @@ pub async fn update_board(
     expected: i64,
     name: &str,
     columns: &Value,
+    quick_filters: &Value,
 ) -> Result<Option<Board>, sqlx::Error> {
     sqlx::query_as(&format!(
-        "UPDATE boards SET name = $4, columns = $5, version = version + 1, updated_at = now() \
+        "UPDATE boards SET name = $4, columns = $5, quick_filters = $6, version = version + 1, updated_at = now() \
          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND deleted_at IS NULL RETURNING {BOARD}"
     ))
     .bind(tenant_id)
@@ -87,6 +89,7 @@ pub async fn update_board(
     .bind(expected)
     .bind(name)
     .bind(columns)
+    .bind(quick_filters)
     .fetch_optional(conn)
     .await
 }

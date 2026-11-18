@@ -89,6 +89,21 @@ export function useMqlSearch(mql: string, enabled = true) {
 
 /** Ids of the project's issues that match an MQL query, for filtering a board or backlog.
  * Nothing is fetched for an empty query. */
+/**
+ * Whether search can run this query in the project: `null` when it can, else the reason.
+ * Other failures (network, server) are thrown.
+ */
+export async function mqlProblem(projectId: string, mql: string): Promise<string | null> {
+  try {
+    await api.get<MatchingIds>(IDS_PATH, { query: { mql, project: projectId } });
+    return null;
+  } catch (error) {
+    const invalid = error instanceof ApiError && error.status === 422 ? error.fieldErrors.find((f) => f.field === "mql") : undefined;
+    if (invalid) return invalid.message;
+    throw error;
+  }
+}
+
 export function useMatchingIds(projectId: string, mql: string) {
   const orgId = useSession((s) => s.organization?.id);
   return useQuery({

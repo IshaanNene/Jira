@@ -279,9 +279,29 @@ async fn boards_are_configured_by_project_administrators() {
     assert_eq!(stale.status, StatusCode::CONFLICT);
     assert_eq!(stale.body["code"], "version_conflict");
 
+    // Quick filters: saved with the board, trimmed, and never sorting.
+    assert_eq!(updated.body["quick_filters"], json!([]));
+    let sorted = json!({ "quick_filters": [{ "id": "bugs", "name": "Bugs", "query": "type = bug ORDER BY created" }] });
+    let refused = h.call(Method::PATCH, &path, &admin, Some(sorted), Some(2)).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.body["errors"][0]["field"], "quick_filters");
+    assert_eq!(refused.body["errors"][0]["code"], "sorting_not_allowed");
+    let filters = json!({ "quick_filters": [
+        { "id": "bugs", "name": " Bugs ", "query": "type = bug" },
+        { "id": "mine", "name": "Only mine", "query": "assignee = currentUser() AND summary ~ \"order by\"" }
+    ] });
+    assert_eq!(h.call(Method::PATCH, &path, &member, Some(filters.clone()), Some(2)).await.status, StatusCode::FORBIDDEN);
+    let saved = h.call(Method::PATCH, &path, &admin, Some(filters), Some(2)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(saved.body["quick_filters"][0], json!({ "id": "bugs", "name": "Bugs", "query": "type = bug" }));
+    assert_eq!(saved.body["quick_filters"].as_array().unwrap().len(), 2);
+    assert_eq!(saved.body["columns"][1]["wip_limit"], 3, "columns are kept");
+    let listed = h.get(&path, &member).await;
+    assert_eq!(listed["quick_filters"][1]["name"], "Only mine");
+
     assert_eq!(h.call(Method::DELETE, &path, &admin, None, None).await.status, StatusCode::NO_CONTENT);
     assert_eq!(h.call(Method::GET, &path, &admin, None, None).await.status, StatusCode::NOT_FOUND);
-    assert_eq!(h.outbox().await, ["board.updated", "board.updated", "board.updated"]);
+    assert_eq!(h.outbox().await, ["board.updated", "board.updated", "board.updated", "board.updated"]);
     h.db.cleanup().await;
 }
 

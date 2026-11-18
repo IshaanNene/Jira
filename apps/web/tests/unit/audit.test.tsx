@@ -43,6 +43,7 @@ describe("audit sentences", () => {
       "let every member into PAY as Member",
     );
     expect(sentence(entry({ action: "board.columns_changed", resource_type: "board", resource_label: "" }), people)).toBe("changed a board's columns");
+    expect(sentence(entry({ action: "board.quick_filters_changed", resource_type: "board", resource_label: "" }), people)).toBe("changed a board's quick filters");
     // Actions the page doesn't know yet still read sensibly.
     expect(sentence(entry({ action: "widget.spun_up", resource_type: "widget", resource_label: "W1", details: {} }), people)).toBe("widget spun up W1");
   });

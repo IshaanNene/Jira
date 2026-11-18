@@ -16,6 +16,7 @@ import { AgileFrame, reason } from "../components/AgileFrame";
 import { CardTile } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
 import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
+import { QuickFilterBar, useQuickFilters } from "../components/QuickFilters";
 import { CompleteSprintDialog } from "../components/SprintDialogs";
 import { ALL_EPICS, columnOfList, inEpic, sprintTimeLeft, swimlanes, type Lane, type LaneGrouping } from "../model";
 
@@ -65,7 +66,8 @@ function BoardBody({ board }: { board: Board }) {
   const [grouping, setGrouping] = useState<LaneGrouping>("none");
   const [dragging, setDragging] = useState<BoardCard | null>(null);
   const [completing, setCompleting] = useState(false);
-  const mql = useMqlFilter(board.project_id);
+  const quick = useQuickFilters(board);
+  const mql = useMqlFilter(board.project_id, quick.queries);
   const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
   const matches = mql.matches;
 
@@ -131,6 +133,7 @@ function BoardBody({ board }: { board: Board }) {
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this board" aria-label="Search this board" className="h-8 pl-8 text-sm" />
         </div>
         <Button size="sm" variant={mine ? "primary" : "secondary"} aria-pressed={mine} onClick={() => setMine((v) => !v)}>Only my issues</Button>
+        <QuickFilterBar board={board} quick={quick} mql={mql} />
         <EpicFilter epics={view.data.epics} value={epic} onChange={setEpic} />
         <Select size="sm" className="w-48" aria-label="Swimlanes" value={grouping} onValueChange={(v) => setGrouping(v as LaneGrouping)} options={GROUPINGS} />
         <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />

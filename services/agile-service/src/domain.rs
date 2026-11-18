@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 pub const CATEGORIES: [&str; 3] = ["todo", "in_progress", "done"];
 pub const MAX_COLUMNS: usize = 12;
+pub const MAX_QUICK_FILTERS: usize = 20;
+const MAX_QUICK_QUERY: usize = 1000;
 
 /// One board column. An issue lands in the column that lists its status; a status no
 /// column lists falls into the column that catches its category, if there is one.
@@ -92,6 +94,86 @@ pub fn validate_columns(columns: Vec<Column>) -> ApiResult<Vec<Column>> {
             err("invalid_wip_limit", "A column limit must be between 1 and 999.".into());
         }
         out.push(column);
+    }
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(ApiError::Validation(errors))
+    }
+}
+
+/// A saved filter of a board that people switch on and off above the board and backlog.
+/// Its query is an MQL condition, run by search-service like any other query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuickFilter {
+    pub id: String,
+    pub name: String,
+    /// An MQL condition, without `ORDER BY`.
+    pub query: String,
+}
+
+/// Whether an MQL query sorts: `ORDER BY` outside a quoted string. Quick filters are
+/// combined with each other and the board's own filter, so they must not sort.
+pub fn mql_sorts(query: &str) -> bool {
+    let mut words: Vec<String> = Vec::new();
+    let (mut quote, mut word) = (None::<char>, String::new());
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(_) if c == '\\' => {
+                chars.next();
+            }
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c.is_alphanumeric() || c == '_' => word.push(c),
+            None => {
+                words.push(std::mem::take(&mut word));
+                // Anything but white space keeps "order" and "by" apart.
+                if !c.is_whitespace() {
+                    words.push(c.to_string());
+                }
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                }
+            }
+        }
+    }
+    words.push(word);
+    let words: Vec<String> = words.into_iter().filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect();
+    words.windows(2).any(|pair| pair[0] == "order" && pair[1] == "by")
+}
+
+/// Trims names and queries and rejects lists people could not tell apart or use.
+pub fn validate_quick_filters(filters: Vec<QuickFilter>) -> ApiResult<Vec<QuickFilter>> {
+    let mut errors = Vec::new();
+    let mut err = |code: &str, message: String| errors.push(FieldError::new("quick_filters", code, message));
+    if filters.len() > MAX_QUICK_FILTERS {
+        err("invalid_count", format!("A board can have at most {MAX_QUICK_FILTERS} quick filters."));
+    }
+    let (mut ids, mut names) = (HashSet::new(), HashSet::new());
+    let mut out = Vec::with_capacity(filters.len());
+    for mut filter in filters {
+        filter.name = filter.name.trim().to_owned();
+        filter.query = filter.query.trim().to_owned();
+        if filter.name.is_empty() || filter.name.chars().count() > 40 || filter.name.chars().any(char::is_control) {
+            err("invalid_name", "Quick filter names must be between 1 and 40 characters.".into());
+        } else if !names.insert(filter.name.to_lowercase()) {
+            err("duplicate_name", format!("Two quick filters are named \"{}\".", filter.name));
+        }
+        if !slug_like(&filter.id, 40) {
+            err("invalid_id", "Quick filter ids may contain letters, digits, - and _ (at most 40).".into());
+        } else if !ids.insert(filter.id.clone()) {
+            err("duplicate_id", format!("Two quick filters share the id \"{}\".", filter.id));
+        }
+        if filter.query.is_empty() || filter.query.chars().count() > MAX_QUICK_QUERY {
+            err("invalid_query", format!("\"{}\" needs a query of 1 to {MAX_QUICK_QUERY} characters.", filter.name));
+        } else if filter.query.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+            err("invalid_query", format!("The query of \"{}\" contains control characters.", filter.name));
+        } else if mql_sorts(&filter.query) {
+            err("sorting_not_allowed", format!("\"{}\" can't sort: remove ORDER BY from its query.", filter.name));
+        }
+        out.push(filter);
     }
     if errors.is_empty() {
         Ok(out)
@@ -202,6 +284,43 @@ mod tests {
             category: category.map(str::to_owned),
             wip_limit: None,
         }
+    }
+
+    fn quick(id: &str, name: &str, query: &str) -> QuickFilter {
+        QuickFilter { id: id.into(), name: name.into(), query: query.into() }
+    }
+
+    #[test]
+    fn quick_filters_are_trimmed_and_checked() {
+        let ok = validate_quick_filters(vec![quick("mine", "  Only mine ", " assignee = currentUser() ")]).unwrap();
+        assert_eq!(ok, [quick("mine", "Only mine", "assignee = currentUser()")]);
+        let codes = |filters: Vec<QuickFilter>| match validate_quick_filters(filters) {
+            Err(ApiError::Validation(errors)) => errors.into_iter().map(|e| e.code).collect::<Vec<_>>(),
+            other => panic!("expected validation errors, got {other:?}"),
+        };
+        assert_eq!(
+            codes(vec![quick("a", "Bugs", "type = bug"), quick("a", "bugs", "type = bug")]),
+            ["duplicate_name", "duplicate_id"]
+        );
+        assert_eq!(codes(vec![quick("a b", "", "")]), ["invalid_name", "invalid_id", "invalid_query"]);
+        assert_eq!(codes(vec![quick("s", "Sorted", "type = bug order  BY created")]), ["sorting_not_allowed"]);
+        assert_eq!(codes(vec![quick("c", "Control", "type = bug\u{0}")]), ["invalid_query"]);
+        assert_eq!(
+            codes((0..=MAX_QUICK_FILTERS).map(|n| quick(&format!("f{n}"), &format!("F{n}"), "type = bug")).collect()),
+            ["invalid_count"]
+        );
+        assert_eq!(codes(vec![quick("l", "Long", &"x".repeat(1001))]), ["invalid_query"]);
+    }
+
+    #[test]
+    fn order_by_counts_only_outside_quotes() {
+        assert!(mql_sorts("ORDER BY rank"));
+        assert!(mql_sorts("type = bug order\nby priority DESC"));
+        assert!(!mql_sorts(r#"summary ~ "order by" AND type = bug"#));
+        assert!(!mql_sorts(r#"summary ~ 'say \'order by\' twice'"#));
+        assert!(!mql_sorts("labels IN (order, bylaw)"));
+        assert!(!mql_sorts("reorder = by"));
+        assert!(!mql_sorts("labels IN (order, by)"));
     }
 
     #[test]

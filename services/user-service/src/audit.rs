@@ -141,7 +141,7 @@ pub fn entry_for(event: &Event) -> Result<Option<Entry>, HandlerError> {
         }
         "board.updated" => {
             let p: BoardUpdatedV1 = event.payload()?;
-            known(&p.change, &["created", "renamed", "columns_changed", "deleted"])
+            known(&p.change, &["created", "renamed", "columns_changed", "quick_filters_changed", "deleted"])
                 .map(|change| entry(format!("board.{change}"), "board", p.board_id, "").with("project_id", p.project_id))
         }
         "sprint.started" => {
