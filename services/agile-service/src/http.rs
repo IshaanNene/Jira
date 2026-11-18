@@ -261,11 +261,27 @@ pub struct EpicDto {
     pub key: String,
     pub summary: String,
     pub status_category: String,
+    /// The epic's child issues in the project, of any status.
+    pub issues: i64,
+    /// How many of them are done.
+    pub done: i64,
+    /// Their story points in all, and of those done.
+    pub points: f64,
+    pub done_points: f64,
 }
 
-impl From<&Card> for EpicDto {
-    fn from(card: &Card) -> Self {
-        Self { id: card.id, key: card.key.clone(), summary: card.summary.clone(), status_category: card.status_category.clone() }
+impl EpicDto {
+    fn new(card: &Card, progress: Option<&crate::cards::EpicProgress>) -> Self {
+        Self {
+            id: card.id,
+            key: card.key.clone(),
+            summary: card.summary.clone(),
+            status_category: card.status_category.clone(),
+            issues: progress.map_or(0, |p| p.issues),
+            done: progress.map_or(0, |p| p.done),
+            points: progress.map_or(0.0, |p| p.points),
+            done_points: progress.map_or(0.0, |p| p.done_points),
+        }
     }
 }
 
@@ -517,7 +533,15 @@ async fn load(state: &AppState, ctx: &OrgContext, board: &store::Board) -> ApiRe
             cards.insert(card.id, card);
         }
     }
-    let epics = crate::cards::epics(tx.conn(), ctx.tenant_id, board.project_id, since).await?.iter().map(EpicDto::from).collect();
+    let epic_cards = crate::cards::epics(tx.conn(), ctx.tenant_id, board.project_id, since).await?;
+    let keys: Vec<String> = epic_cards.iter().map(|c| c.key.clone()).collect();
+    let progress: HashMap<String, crate::cards::EpicProgress> =
+        crate::cards::epic_progress(tx.conn(), ctx.tenant_id, board.project_id, &keys)
+            .await?
+            .into_iter()
+            .map(|p| (p.key.clone(), p))
+            .collect();
+    let epics = epic_cards.iter().map(|c| EpicDto::new(c, progress.get(&c.key))).collect();
     tx.commit().await?;
     Ok(Loaded { cards, placements, truncated, epics })
 }

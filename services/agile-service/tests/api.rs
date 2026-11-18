@@ -293,6 +293,15 @@ async fn backlog_order_is_kept_and_changed_by_moves() {
     let viewer = h.user(&[(project, ProjectRole::Viewer)]);
     let ids: Vec<Uuid> = (1..=5).map(|n| h.issue(project, n, "task", None)).collect();
     let epic = h.issue(project, 6, "epic", None);
+    {
+        // The first two tasks belong to the epic, with 3 and 5 points.
+        let mut issues = h.world.issues.lock().unwrap();
+        for (id, points) in [(ids[0], 3.0), (ids[1], 5.0)] {
+            let card = &mut issues.iter_mut().find(|(_, _, c)| c.id == id).unwrap().2;
+            card.parent_key = Some("DEMO-6".into());
+            card.story_points = Some(points);
+        }
+    }
     let board = h.board(&admin, "scrum").await;
     let backlog_path = format!("/api/v1/boards/{board}/backlog");
     let move_path = format!("/api/v1/boards/{board}/move");
@@ -302,6 +311,8 @@ async fn backlog_order_is_kept_and_changed_by_moves() {
     assert_eq!(keys(&backlog["backlog"]), ["DEMO-1", "DEMO-2", "DEMO-3", "DEMO-4", "DEMO-5"]);
     assert_eq!(keys(&backlog["epics"]), ["DEMO-6"]);
     assert_eq!(backlog["epics"][0]["id"], json!(epic));
+    assert_eq!((backlog["epics"][0]["issues"].clone(), backlog["epics"][0]["done"].clone()), (json!(2), json!(0)));
+    assert_eq!(backlog["epics"][0]["points"], 8.0);
 
     // Two issues to the top (in the order given), one after another issue, one to the bottom.
     let top = json!({ "issue_ids": [ids[4], ids[3]], "before_id": ids[0] });
@@ -324,7 +335,12 @@ async fn backlog_order_is_kept_and_changed_by_moves() {
 
     // Finished issues leave the backlog.
     h.set_status(ids[1], "done", "done").await;
-    assert_eq!(keys(&h.get(&backlog_path, &admin).await["backlog"]), ["DEMO-4", "DEMO-1", "DEMO-3", "DEMO-5", "DEMO-7"]);
+    let backlog = h.get(&backlog_path, &admin).await;
+    assert_eq!(keys(&backlog["backlog"]), ["DEMO-4", "DEMO-1", "DEMO-3", "DEMO-5", "DEMO-7"]);
+    // The epic's progress counts its finished child.
+    let progress = &backlog["epics"][0];
+    assert_eq!((progress["issues"].clone(), progress["done"].clone()), (json!(2), json!(1)));
+    assert_eq!((progress["points"].as_f64(), progress["done_points"].as_f64()), (Some(8.0), Some(5.0)));
 
     let code = |reply: &Reply| reply.body["errors"][0]["code"].as_str().unwrap_or_default().to_owned();
     assert_eq!(h.post(&move_path, &viewer, json!({ "issue_ids": [ids[0]] })).await.status, StatusCode::FORBIDDEN);
@@ -641,7 +657,13 @@ async fn boards_read_a_copy_filled_once_and_kept_current_by_issue_events() {
     let path = format!("/api/v1/boards/{board}/view");
     let view = h.get(&path, &admin).await;
     // The epic is offered as a filter, not shown as a card.
-    assert_eq!(view["epics"], json!([{ "id": epic, "key": "DEMO-1206", "summary": "Issue 1206", "status_category": "todo" }]));
+    assert_eq!(
+        view["epics"],
+        json!([{
+            "id": epic, "key": "DEMO-1206", "summary": "Issue 1206", "status_category": "todo",
+            "issues": 1, "done": 0, "points": 0.0, "done_points": 0.0
+        }])
+    );
     let cards: Vec<&Value> = view["columns"].as_array().unwrap().iter().flat_map(|c| c["issues"].as_array().unwrap()).collect();
     assert_eq!(cards.len(), 1205, "every story and task, not the epic");
     assert_eq!(view["truncated"], false);

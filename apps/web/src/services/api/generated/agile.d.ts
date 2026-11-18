@@ -310,9 +310,26 @@ export interface components {
          */
         /** @description An epic the board's issues can be filtered by; issues belong to it through `parent_key`. */
         EpicDto: {
+            /**
+             * Format: int64
+             * @description How many of them are done.
+             */
+            done: number;
+            /** Format: double */
+            done_points: number;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: int64
+             * @description The epic's child issues in the project, of any status.
+             */
+            issues: number;
             key: string;
+            /**
+             * Format: double
+             * @description Their story points in all, and of those done.
+             */
+            points: number;
             status_category: string;
             summary: string;
         };

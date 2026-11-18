@@ -183,6 +183,42 @@ pub async fn epics(
     .await?)
 }
 
+/// How far along each of these epics is: its child issues in the project, how many are
+/// done, and their story points in all and done. Epics without children are left out.
+pub async fn epic_progress(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    project_id: Uuid,
+    epic_keys: &[String],
+) -> ApiResult<Vec<EpicProgress>> {
+    if epic_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_as(
+        "SELECT parent_key AS key, count(*) AS issues, \
+                count(*) FILTER (WHERE status_category = 'done') AS done, \
+                coalesce(sum(story_points), 0) AS points, \
+                coalesce(sum(story_points) FILTER (WHERE status_category = 'done'), 0) AS done_points \
+         FROM cards WHERE tenant_id = $1 AND project_id = $2 AND parent_key = ANY($3) AND NOT deleted \
+         GROUP BY parent_key",
+    )
+    .bind(tenant_id)
+    .bind(project_id)
+    .bind(epic_keys)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// One epic's children, counted by [`epic_progress`].
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EpicProgress {
+    pub key: String,
+    pub issues: i64,
+    pub done: i64,
+    pub points: f64,
+    pub done_points: f64,
+}
+
 /// These issues' cards, any type or status, as far as they exist in the project.
 pub async fn by_ids(conn: &mut PgConnection, tenant_id: Uuid, project_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Card>> {
     Ok(sqlx::query_as(&format!(

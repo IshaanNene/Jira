@@ -95,8 +95,8 @@ describe("epic filter", () => {
 
 describe("swimlanes", () => {
   const epics = [
-    { id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" },
-    { id: "e8", key: "PAY-8", summary: "Empty epic", status_category: "todo" },
+    { id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress", issues: 3, done: 1, points: 8, done_points: 3 },
+    { id: "e8", key: "PAY-8", summary: "Empty epic", status_category: "todo", issues: 0, done: 0, points: 0, done_points: 0 },
   ];
   const cards = [
     card(1, { assignee_id: "u2" }),
@@ -270,7 +270,7 @@ describe("backlog page", () => {
     const view: BacklogView = {
       ...backlogView(),
       backlog: [card(3, { parent_key: "PAY-9", parent_summary: "Checkout" }), card(4), card(5, { parent_key: "PAY-9", parent_summary: "Checkout" })],
-      epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" }],
+      epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress", issues: 3, done: 1, points: 8, done_points: 3 }],
     };
     fakeApi(agileRoutes({ "GET /api/v1/boards/b1/backlog": view }));
     renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog");
@@ -292,6 +292,41 @@ describe("backlog page", () => {
     await waitFor(() => expect(within(backlog).queryByText("PAY-3")).not.toBeInTheDocument());
     expect(within(backlog).getByText("PAY-4")).toBeInTheDocument();
     expect(within(sprintSection).getByText("PAY-1")).toBeInTheDocument();
+  });
+
+  it("lists epics with their progress and filters by the one chosen", async () => {
+    signIn();
+    const view: BacklogView = {
+      ...backlogView(),
+      backlog: [card(3, { parent_key: "PAY-9", parent_summary: "Checkout" }), card(4)],
+      epics: [
+        { id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress", issues: 3, done: 1, points: 8, done_points: 3 },
+        { id: "e8", key: "PAY-8", summary: "Empty epic", status_category: "todo", issues: 0, done: 0, points: 0, done_points: 0 },
+      ],
+    };
+    fakeApi(agileRoutes({ "GET /api/v1/boards/b1/backlog": view }));
+    renderAt(<BacklogPage />, "/projects/:projectKey/backlog", "/projects/PAY/backlog");
+    const backlog = await screen.findByRole("region", { name: "Backlog" });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Epics" }));
+    const panel = screen.getByRole("complementary", { name: "Epics" });
+    expect(within(panel).getByRole("progressbar", { name: "PAY-9 progress" })).toHaveAttribute("aria-valuenow", "33");
+    expect(within(panel).getByText("1 of 3 issues done · 3 of 8 pts")).toBeInTheDocument();
+    expect(within(panel).getByText("No issues yet")).toBeInTheDocument();
+    // The panel replaces the dropdown while it is open.
+    expect(screen.queryByRole("combobox", { name: "Filter by epic" })).not.toBeInTheDocument();
+
+    const checkout = within(panel).getByRole("button", { name: /Checkout/ });
+    await user.click(checkout);
+    expect(checkout).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(within(backlog).queryByText("PAY-4")).not.toBeInTheDocument());
+    await user.click(checkout);
+    expect(await within(backlog).findByText("PAY-4")).toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("button", { name: "Close epics" }));
+    expect(screen.queryByRole("complementary", { name: "Epics" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter by epic" })).toBeInTheDocument();
   });
 });
 
@@ -330,7 +365,7 @@ describe("board page", () => {
       agileRoutes({
         "GET /api/v1/boards/b1/view": {
           board: board(), sprint: running, truncated: false, unmapped: [],
-          epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress" }],
+          epics: [{ id: "e9", key: "PAY-9", summary: "Checkout", status_category: "in_progress", issues: 3, done: 1, points: 8, done_points: 3 }],
           columns: [
             { ...COLUMNS[0], issues: [card(1, checkout), card(2)] },
             { ...COLUMNS[1], issues: [card(3, { ...checkout, status: "in_progress", status_category: "in_progress" })] },

@@ -1,5 +1,5 @@
 import { DndContext, DragOverlay, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
-import { MoreHorizontal, Plus } from "lucide-react";
+import { Layers, MoreHorizontal, Plus } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -27,6 +27,7 @@ import { AgileFrame, reason } from "../components/AgileFrame";
 import { CardRow } from "../components/cards";
 import { collision, DraggableCard, DropList, readDrop, useCardSensors } from "../components/dnd";
 import { effectiveEpic, EpicFilter } from "../components/EpicFilter";
+import { EpicPanel } from "../components/EpicPanel";
 import { CompleteSprintDialog, SprintDialog, StartSprintDialog } from "../components/SprintDialogs";
 import { ALL_EPICS, BACKLOG, formatPoints, inEpic, totalPoints, type Move } from "../model";
 
@@ -54,6 +55,7 @@ function BacklogBody({ board }: { board: Board }) {
   const mql = useMqlFilter(board.project_id);
   const [mqlOpen, setMqlOpen] = useState(Boolean(mql.applied));
   const [epicChoice, setEpic] = useState(ALL_EPICS);
+  const [epicsOpen, setEpicsOpen] = useState(false);
 
   if (backlog.isPending) return <div className="space-y-3 px-6" aria-busy><Skeleton className="h-32" /><Skeleton className="h-64" /></div>;
   if (backlog.isError) return <ErrorState className="py-16" error={backlog.error} onRetry={() => void backlog.refetch()} />;
@@ -120,14 +122,19 @@ function BacklogBody({ board }: { board: Board }) {
     <div className="h-full overflow-y-auto px-6 pb-8">
       <div className="mb-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
-          <EpicFilter epics={data.epics} value={epic} onChange={setEpic} />
+          <Button variant={epicsOpen ? "secondary" : "ghost"} size="sm" aria-pressed={epicsOpen} onClick={() => setEpicsOpen((o) => !o)}>
+            <Layers className="h-3.5 w-3.5" /> Epics
+          </Button>
+          {!epicsOpen && <EpicFilter epics={data.epics} value={epic} onChange={setEpic} />}
           <MqlFilterButton filter={mql} open={mqlOpen} onOpenChange={setMqlOpen} />
           {filtering && permissions.move_issues && <span className="text-sm text-ink-subtle">Clear the filters to rank issues by dragging.</span>}
         </div>
         {mqlOpen && <MqlFilterPanel filter={mql} label="backlog" onClose={() => setMqlOpen(false)} />}
       </div>
+      <div className="flex flex-col gap-4 md:flex-row md:items-start">
+      {epicsOpen && <EpicPanel epics={data.epics} value={epic} onChange={setEpic} onClose={() => setEpicsOpen(false)} />}
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-        <div className="space-y-6">
+        <div className="min-w-0 flex-1 space-y-6">
           {data.sprints.map(({ sprint, issues }) => {
             const blocked = sprint.state === "future" ? startBlocked(sprint, issues) : null;
             return (
@@ -191,6 +198,7 @@ function BacklogBody({ board }: { board: Board }) {
         </div>
         <DragOverlay>{dragging && <CardRow card={dragging} statusName={statusName(dragging.status)} overlay />}</DragOverlay>
       </DndContext>
+      </div>
 
       <SprintDialog board={board} sprint={action?.kind === "edit" ? action.sprint : undefined} open={action?.kind === "create" || action?.kind === "edit"} onOpenChange={(open) => !open && setAction(null)} />
       {action?.kind === "start" && (
